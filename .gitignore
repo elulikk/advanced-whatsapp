@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
+.env
+*.env
+.venv/
+venv/
+auth*/
+sessions/
+*.db
+*.sqlite*
+Microsoft/
+*.lnk
+desktop.ini
