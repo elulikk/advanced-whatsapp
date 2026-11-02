@@ -1,7 +1,12 @@
 import os
 import sys
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Versión portable (MAGSAPP.exe hecho con PyInstaller): los archivos de la app están en sys._MEIPASS
+# (carpeta _internal) y Node.js y FFmpeg vienen incluidos en _internal/runtime.
+FROZEN = bool(getattr(sys, "frozen", False))
+BASE_DIR = getattr(sys, "_MEIPASS", None) if FROZEN else None
+BASE_DIR = BASE_DIR or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+RUNTIME_DIR = os.path.join(BASE_DIR, "runtime")
 GATEWAY_DIR = os.path.join(BASE_DIR, "gateway")
 
 # Directorio de datos locales en el perfil de usuario para evitar bloqueos de Google Drive
@@ -23,6 +28,8 @@ GATEWAY_PORT = int(os.environ.get("MAGSAPP_GATEWAY_PORT") or 5016)
 GATEWAY_URL = f"http://127.0.0.1:{GATEWAY_PORT}"
 
 WEBHOOK_PORT = int(os.environ.get("MAGSAPP_WEBHOOK_PORT") or 5015)
+# La copia de prueba no compite con la real por la instancia única ni toca accesos directos ni registro
+TEST_COPY = WEBHOOK_PORT != 5015
 WEBHOOK_URL = f"http://127.0.0.1:{WEBHOOK_PORT}/api/whatsapp/incoming"
 CONNECTION_WEBHOOK_URL = f"http://127.0.0.1:{WEBHOOK_PORT}/api/whatsapp/connection"
 
@@ -194,6 +201,7 @@ PREF_DEFAULTS = {
     "close_to_tray": True,       # la X deja MAGSAPP en la bandeja (sigue avisando)
     "status_receipts": True,     # al ver un estado, el contacto ve que lo viste
     "typing_indicator": True,    # mandar "escribiendo…" mientras escribo
+    "tags_palette_open": True,   # panel de tags abierto debajo de los filtros de la lista de chats
 }
 
 _pref_cache = {}
@@ -211,6 +219,18 @@ def set_pref(key: str, value: bool) -> bool:
     cfg = load_app_config()
     cfg.set("GENERAL", key, "true" if value else "false")
     _pref_cache[key] = bool(value)
+    return save_app_config(cfg)
+
+
+def get_tag_palette_view() -> str:
+    """Vista del panel de tags: 'grid' (solo iconos) o 'list' (con nombres)."""
+    v = load_app_config().get("GENERAL", "tags_palette_view", fallback="grid").strip()
+    return v if v in ("grid", "list") else "grid"
+
+
+def set_tag_palette_view(view: str) -> bool:
+    cfg = load_app_config()
+    cfg.set("GENERAL", "tags_palette_view", view if view in ("grid", "list") else "grid")
     return save_app_config(cfg)
 
 

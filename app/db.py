@@ -99,6 +99,12 @@ def merge_lid_duplicates(conn: Optional[sqlite3.Connection] = None, only_jid: Op
                 avatar_path = COALESCE(avatar_path, (SELECT avatar_path FROM chats WHERE jid = ?))
             WHERE jid = ?
         """, (lid_jid, lid_jid, lid_jid, target))
+        # Los tags del chat '@lid' pasan al chat de teléfono (si la tabla ya existe)
+        try:
+            conn.execute("UPDATE OR IGNORE chat_tags SET chat_jid = ? WHERE chat_jid = ?", (target, lid_jid))
+            conn.execute("DELETE FROM chat_tags WHERE chat_jid = ?", (lid_jid,))
+        except sqlite3.OperationalError:
+            pass
         conn.execute("DELETE FROM chats WHERE jid = ?", (lid_jid,))
         merged += 1
 
@@ -230,6 +236,10 @@ def init_db():
             cursor.execute("ALTER TABLE chats ADD COLUMN muted_until INTEGER DEFAULT 0")
         except Exception:
             pass
+
+        # Tags visuales de los chats (definiciones y asignaciones)
+        from app.tags import ensure_tables as _ensure_tag_tables
+        _ensure_tag_tables(conn)
 
         # Migración puntual de datos heredados (antes se ejecutaba en cada arranque)
         if cursor.execute("PRAGMA user_version").fetchone()[0] < 1:
@@ -380,9 +390,11 @@ def save_message(
     quoted_sender: Optional[str] = None,
     status: str = "sent",
     chat_name: Optional[str] = None,
-    media_raw: Optional[str] = None
+    media_raw: Optional[str] = None,
+    already_read: bool = False
 ) -> bool:
-    """Guarda un mensaje con soporte para respuestas citadas y filtrado de mensajes vacíos."""
+    """Guarda un mensaje con soporte para respuestas citadas y filtrado de mensajes vacíos.
+    already_read: mensaje recibido que ya leíste en otro dispositivo (no suma a "sin leer")."""
     clean_text = (text or "").strip()
     # Descartar mensajes fantasma completamente vacíos
     if not clean_text and (media_type == "text" or not media_type) and not media_path and not quoted_text:
@@ -406,12 +418,17 @@ def save_message(
 
         is_new = cursor.execute("SELECT 1 FROM messages WHERE id = ?", (msg_id,)).fetchone() is None
 
-        if is_new and from_me:
+        if is_new:
             # Si WhatsApp ya avisó (entregado/leído) antes de que guardáramos el mensaje, respetarlo
             with _early_status_lock:
                 early = _early_status.pop(msg_id, None)
-            if early and _STATUS_RANK.get(early, 0) > _STATUS_RANK.get(status, 0):
+            if from_me and early and _STATUS_RANK.get(early, 0) > _STATUS_RANK.get(status, 0):
                 status = early
+            elif not from_me and early == "read":
+                already_read = True   # lo leíste en el celular antes de que llegara acá
+
+        if not from_me and already_read:
+            status = "read"
 
         cursor.execute("""
             INSERT INTO messages (
@@ -453,7 +470,7 @@ def save_message(
         if not snippet and not clean_text:
             snippet = "Mensaje multimedia"
 
-        unread_increment = 1 if (is_new and not from_me) else 0
+        unread_increment = 1 if (is_new and not from_me and not already_read) else 0
 
         cursor.execute("""
             UPDATE chats 
@@ -828,6 +845,76 @@ def mark_chat_as_read(chat_jid: str) -> List[tuple]:
     return newly_read
 
 
+def mark_messages_read_elsewhere(message_ids: List[str]) -> List[str]:
+    """Mensajes recibidos que leíste en el celular (u otro dispositivo). Los marca leídos y ajusta el
+    contador de cada chat. Si el aviso llega antes que el mensaje, queda guardado para cuando llegue.
+    Devuelve los chats que cambiaron."""
+    ids = list(dict.fromkeys(i for i in (message_ids or []) if i))
+    if not ids:
+        return []
+    newly: Dict[str, int] = {}
+    with db_conn() as conn:
+        found = set()
+        for start in range(0, len(ids), 500):
+            part = ids[start:start + 500]
+            marks = ",".join("?" * len(part))
+            for r in conn.execute(f"SELECT id, chat_jid, from_me, status FROM messages WHERE id IN ({marks})", part):
+                found.add(r["id"])
+                if not r["from_me"] and r["status"] != "read":
+                    newly[r["chat_jid"]] = newly.get(r["chat_jid"], 0) + 1
+            conn.execute(f"UPDATE messages SET status = 'read' WHERE id IN ({marks}) AND from_me = 0", part)
+        for mid in ids:
+            if mid not in found:
+                _stash_early_status(mid, "read")
+        for chat_jid, count in newly.items():
+            _settle_unread(conn, chat_jid, count)
+        conn.commit()
+    return list(newly)
+
+
+def _settle_unread(conn, chat_jid: str, newly_read: int) -> None:
+    """Descuenta del contador los mensajes recién leídos; si el último recibido ya está leído, queda en 0
+    (en WhatsApp leer un chat lee todo lo anterior, aunque esos mensajes viejos no estén guardados acá)."""
+    conn.execute("""
+        UPDATE chats SET unread_count = CASE
+            WHEN (SELECT status FROM messages WHERE chat_jid = ? AND from_me = 0
+                  ORDER BY timestamp DESC LIMIT 1) = 'read' THEN 0
+            ELSE MAX(0, unread_count - ?) END
+        WHERE jid = ?
+    """, (chat_jid, newly_read, chat_jid))
+
+
+def mark_chat_read_elsewhere(chat_jid: str) -> bool:
+    """El chat se marcó como leído en el celular: sin avisar de nuevo a WhatsApp. True si cambió algo."""
+    with db_conn() as conn:
+        row = conn.execute("SELECT unread_count FROM chats WHERE jid = ?", (chat_jid,)).fetchone()
+        if not row:
+            return False
+        changed = conn.execute(
+            "UPDATE messages SET status = 'read' WHERE chat_jid = ? AND from_me = 0 AND status != 'read'",
+            (chat_jid,)).rowcount
+        conn.execute("UPDATE chats SET unread_count = 0 WHERE jid = ?", (chat_jid,))
+        conn.commit()
+        return bool(row["unread_count"]) or changed > 0
+
+
+def mark_chat_unread_elsewhere(chat_jid: str) -> bool:
+    """El chat se marcó como no leído en el celular: se muestra con contador (como en WhatsApp)."""
+    with db_conn() as conn:
+        changed = conn.execute("UPDATE chats SET unread_count = 1 WHERE jid = ? AND unread_count = 0",
+                               (chat_jid,)).rowcount
+        conn.commit()
+        return changed > 0
+
+
+def mark_all_chats_as_read() -> Dict[str, List[str]]:
+    """Botón "Marcar todos como leídos": deja todos los chats en 0. Devuelve {chat_jid: [ids]} de los
+    mensajes recibidos que no estaban leídos, para avisar a WhatsApp."""
+    with db_conn() as conn:
+        jids = [r["jid"] for r in conn.execute("SELECT jid FROM chats WHERE unread_count != 0")]
+    return {jid: [mid for mid, _ in mark_chat_as_read(jid)] for jid in jids}
+
+
 _REACTIONS_OF_CHAT = "DELETE FROM reactions WHERE message_id IN (SELECT id FROM messages WHERE chat_jid = ?)"
 
 
@@ -876,6 +963,10 @@ def delete_chat(chat_jid: str):
         cursor.execute(_REACTIONS_OF_CHAT, (chat_jid,))
         cursor.execute("DELETE FROM messages WHERE chat_jid = ?", (chat_jid,))
         cursor.execute("DELETE FROM chats WHERE jid = ?", (chat_jid,))
+        try:
+            cursor.execute("DELETE FROM chat_tags WHERE chat_jid = ?", (chat_jid,))
+        except sqlite3.OperationalError:
+            pass
         conn.commit()
 
 
@@ -884,7 +975,7 @@ _STATUS_RANK = {"sent": 1, "delivered": 2, "read": 3}
 # Estados que llegan de WhatsApp antes de que el mensaje enviado esté guardado (se aplican al guardarlo)
 _early_status: Dict[str, str] = {}
 _early_status_lock = threading.Lock()
-_EARLY_STATUS_MAX = 500
+_EARLY_STATUS_MAX = 2000   # también guarda "leído en el celular" de mensajes recibidos que aún no llegaron
 
 
 def _stash_early_status(msg_id: str, status: str) -> None:

@@ -45,7 +45,9 @@ from app.media_service import (
 from app.ui.chat_list import AvatarWidget, format_hour, format_day_label, resolve_display_name
 from app.ui.theme import C, HEADER_H, R_MD, R_LG, R_SM
 from app.ui.icons import icon, tool_button, image as icon_image, pixmap as icon_pixmap
-from app.ui.effects import HoverFade, overlay, menu_below
+from app.ui.effects import HoverFade, overlay, menu_below, mix
+from app import tags as tagdb
+from app.ui.tag_widgets import HeaderTagList, tag_id_from_mime
 from app.ui.attachments import AttachmentBar, DropOverlay, kind_for, MAX_ATTACHMENTS
 from app.ui.voice_player import (
     voice_player, render_voice_image, resource_url, format_clock, IMG_W, IMG_H, WAVE_X0, WAVE_X1,
@@ -101,7 +103,8 @@ class ChatBrowser(QTextBrowser):
     reacciones), se les quita el fondo y se pintan debajo del texto con esquinas redondeadas. Una tabla con
     `border-style: solid` y borde 0 lleva además una franja de acento a la izquierda del color del borde.
     Los iconos de línea del chat se piden como imágenes `icon:<nombre>`."""
-    ICONS = {"react": ("smile", "text_3", 15), "pin": ("pin", "text_2", 12),
+    ICONS = {"react": ("smile", "text_3", 15), "reply": ("reply", "text_3", 15),
+             "forward": ("forward", "text_3", 15), "pin": ("pin", "text_2", 12),
              "summary": ("sparkle", "text_3", 14), "summary_on": ("sparkle", "accent_hi", 14),
              "sel_on": ("select", "accent_hi", 20), "sel_off": ("box", "text_2", 20)}
 
@@ -393,6 +396,9 @@ class ChatViewPanel(QWidget):
         self._voice_clock.timeout.connect(self._on_voice_tick)
         self.input_text.set_font_scale(self._font_scale)
         self.polish_input.set_font_scale(self._font_scale)
+        # Tags del chat abierto: sus efectos (fondo, letra, cabecera) se aplican al abrirlo y cuando cambian
+        self._tag_fx = tagdb.chat_effects([])
+        tagdb.tag_signals.changed.connect(self._apply_chat_tags)
         self.show_empty_state()
 
     def _init_ui(self):
@@ -460,7 +466,15 @@ class ChatViewPanel(QWidget):
 
         self.lbl_contact_name = QLabel("Contacto")
         self.lbl_contact_name.setStyleSheet(f"font-size: 14px; font-weight: 600; color: {C['text']};")
-        title_layout.addWidget(self.lbl_contact_name)
+        name_row = QHBoxLayout()
+        name_row.setSpacing(10)
+        name_row.setContentsMargins(0, 0, 0, 0)
+        name_row.addWidget(self.lbl_contact_name)
+        # Tags del chat abierto, al lado del nombre
+        self.header_tags = HeaderTagList()
+        name_row.addWidget(self.header_tags)
+        name_row.addStretch(1)
+        title_layout.addLayout(name_row)
 
         self.lbl_contact_status = QLabel("")
         self.lbl_contact_status.setStyleSheet(f"font-size: 12px; color: {C['text_2']};")
@@ -560,15 +574,8 @@ class ChatViewPanel(QWidget):
         self.txt_messages.customContextMenuRequested.connect(self._show_message_context_menu)
         self.txt_messages.setFrameShape(QFrame.NoFrame)
         self.txt_messages.document().setDocumentMargin(12)
-        self.txt_messages.setStyleSheet(f"""
-            QTextBrowser {{
-                background-color: {C['chat_bg']};
-                border: none;
-                padding: 0 8px;
-                selection-background-color: {C['accent']};
-                selection-color: {C['on_accent']};
-            }}
-        """)
+        self._msg_bg = None
+        self._set_messages_bg(C["chat_bg"])
         self.chat_layout.addWidget(self.txt_messages, stretch=1)
 
         # Estado de scroll: seguir el final del chat o conservar la posición al repintar
@@ -600,6 +607,9 @@ class ChatViewPanel(QWidget):
         self.txt_messages.installEventFilter(self)
         self.txt_messages.viewport().installEventFilter(self)
         self.txt_messages.viewport().setAcceptDrops(True)
+        # La cabecera también recibe tags arrastrados desde la paleta
+        self.header_frame.setAcceptDrops(True)
+        self.header_frame.installEventFilter(self)
 
         bar_qss = (f"background-color: {C['surface']}; border-top: 1px solid {C['border']};")
 
@@ -985,8 +995,50 @@ class ChatViewPanel(QWidget):
         newly_read = mark_chat_as_read(jid)
         self.gateway.send_read_receipts(jid, [mid for mid, _ in newly_read])
         self._messages_limit = 40
+        self._apply_chat_tags(refresh=False)
         self.refresh_messages(scroll_to_bottom=True)
         self.input_text.setFocus()
+
+    # ── Tags del chat: cabecera y efectos de la ventana ──
+
+    def _set_messages_bg(self, color: str):
+        if color == self._msg_bg:
+            return
+        self._msg_bg = color
+        self.txt_messages.setStyleSheet(f"""
+            QTextBrowser {{
+                background-color: {color};
+                border: none;
+                padding: 0 8px;
+                selection-background-color: {C['accent']};
+                selection-color: {C['on_accent']};
+            }}
+        """)
+
+    def _apply_chat_tags(self, refresh: bool = True):
+        """Muestra los tags del chat abierto y aplica sus efectos; si hay varios, manda el de más prioridad."""
+        chat = self.current_chat
+        tags = tagdb.tags_for_chat(chat.get("jid")) if chat else []
+        last_time = (chat or {}).get("last_message_time", 0)
+        fx = tagdb.chat_effects(tags)
+        old_text = self._tag_fx.get("text")
+        self._tag_fx = fx
+
+        self._set_messages_bg(mix(C["chat_bg"], fx["bg"], fx["bg_strength"] / 100).name() if fx["bg"]
+                              else C["chat_bg"])
+        if fx["header"]:
+            head_bg = mix(C["surface"], fx["header"], 0.28).name()
+            self.header_frame.setStyleSheet(
+                f"#paneHeader {{ background-color: {head_bg}; border-bottom: 2px solid {fx['header']}; }}")
+        else:
+            head_bg = C["surface"]
+            self.header_frame.setStyleSheet("")
+        self.header_tags.set_tags(tags, last_time)
+        self.header_avatar.tag_ring = head_bg
+        self.header_avatar.set_tags(tags)
+        self.header_avatar.update()
+        if refresh and chat and fx["text"] != old_text:
+            self.refresh_messages(scroll_to_bottom=False)
 
     def _open_psych_analysis(self):
         if not self.current_chat:
@@ -1153,6 +1205,10 @@ class ChatViewPanel(QWidget):
                 self._request_summary(msg)
             elif action == "react":
                 self._open_reaction_picker(msg)
+            elif action == "reply" and not self._select_mode:
+                self._start_reply(msg)
+            elif action == "forward" and not self._select_mode:
+                self._forward_messages([msg])
             elif action in ("contactmsg", "contactsave"):
                 self._on_shared_contact_action(action, msg, url.query())
 
@@ -1246,6 +1302,20 @@ class ChatViewPanel(QWidget):
     def _react_link(msg_id: str) -> str:
         return (f'<a href="magsapp://react/{msg_id}" style="text-decoration: none;" title="Reaccionar">'
                 f'<img src="icon:react" width="15" height="15" style="vertical-align: middle;"/></a>&nbsp;&nbsp;')
+
+    @staticmethod
+    def _reply_forward_links(msg: dict) -> str:
+        """Botones Responder y Reenviar junto a la hora de cada mensaje."""
+        mid = msg["id"]
+        mt = msg.get("media_type") or "text"
+        out = ""
+        if mt != "revoked":
+            out += (f'<a href="magsapp://reply/{mid}" style="text-decoration: none;" title="Responder">'
+                    f'<img src="icon:reply" width="15" height="15" style="vertical-align: middle;"/></a>&nbsp;&nbsp;')
+        if mt in FORWARDABLE_TYPES:
+            out += (f'<a href="magsapp://forward/{mid}" style="text-decoration: none;" title="Reenviar">'
+                    f'<img src="icon:forward" width="15" height="15" style="vertical-align: middle;"/></a>&nbsp;&nbsp;')
+        return out
 
     @staticmethod
     def _summary_link(msg: dict, hidden: bool) -> str:
@@ -1408,7 +1478,8 @@ class ChatViewPanel(QWidget):
             html_blocks.append(block)
 
         meta_style = f'color: {C["text_2"]}; font-size: 10px;'
-        bubble_text = f'color: {C["text"]}; font-size: 13px;'
+        # Color de letra: el del tag del chat con ese efecto, si tiene
+        bubble_text = f'color: {self._tag_fx.get("text") or C["text"]}; font-size: 13px;'
         panel = self._panel_html
         # Chip centrado (fecha, «cargar anteriores»): ChatBrowser lo pinta como píldora
         chip = (lambda inner: f"""
@@ -1533,7 +1604,7 @@ class ChatViewPanel(QWidget):
             summary_link = self._summary_link(msg, mid in self._summary_hidden)
             edited_mark = (f'<span style="{meta_style} font-style: italic;">Editado&nbsp;</span>'
                            if msg.get("edited") and media_type != "revoked" else "")
-            meta = (f'{summary_link}{self._react_link(mid)}{pin_mark}{edited_mark}'
+            meta = (f'{summary_link}{self._reply_forward_links(msg)}{self._react_link(mid)}{pin_mark}{edited_mark}'
                     f'<span style="{meta_style}">{hora}</span>{ticks}')
 
             if media_type == "audio" or media_type == "sticker" or (media_type in ["location", "contact"] and media_html):
@@ -1741,6 +1812,16 @@ class ChatViewPanel(QWidget):
                 return True
             if event.key() in (Qt.Key_Return, Qt.Key_Enter) and event.modifiers() & Qt.ShiftModifier:
                 self._on_search_submit(backward=True)
+                return True
+        # Soltar un tag de la paleta sobre el chat abierto (mensajes o cabecera) = ponérselo
+        if obj in (self.txt_messages.viewport(), self.header_frame) and self.current_chat \
+                and etype in (QEvent.DragEnter, QEvent.DragMove, QEvent.Drop):
+            tag_id = tag_id_from_mime(event.mimeData())
+            if tag_id:
+                event.setDropAction(Qt.CopyAction)
+                event.accept()
+                if etype == QEvent.Drop:
+                    tagdb.assign_tag(self.current_chat.get("jid"), tag_id)
                 return True
         # Arrastrar archivos al chat o al campo de mensaje = adjuntar
         drop_targets = (self.txt_messages.viewport(), self.input_text.viewport())

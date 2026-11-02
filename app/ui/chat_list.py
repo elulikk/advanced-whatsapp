@@ -1,21 +1,23 @@
 import os
-import re
 from datetime import datetime
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QFrame, QMenu, QMessageBox, QToolButton, QButtonGroup
 )
 from PySide6.QtCore import Qt, Signal, QSize, QTimer, QRectF
-from PySide6.QtGui import QPainter, QBrush, QColor, QFont, QPainterPath, QPixmap
+from PySide6.QtGui import QPainter, QBrush, QColor, QFont, QPainterPath, QPixmap, QPen, QIcon
 
 import time
 
 from app.db import (get_chats, get_total_unread_count, clear_chat_messages, delete_chat, mark_chat_as_read,
-                    set_chat_muted, is_chat_muted, db_conn, get_all_contacts, get_or_create_chat)
+                    mark_all_chats_as_read, set_chat_muted, is_chat_muted, db_conn)
 from app.gateway_manager import GatewayManager
 from app.ui.theme import C, HEADER_H, R_LG, unread_badge_qss
 from app.ui.icons import icon, tool_button, pixmap
 from app.ui.effects import HoverFade, mix, overlay, menu_below
+from app import tags as tagdb
+from app.ui.tag_widgets import (TagPalettePanel, TagManagerDialog, paint_avatar_tags, tags_tooltip, tag_pixmap,
+                                tag_id_from_mime, paint_row_effect)
 
 DIAS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
 MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
@@ -46,42 +48,6 @@ def resolve_display_name(chat_data: dict) -> str:
         return f"Contacto ({user_part[-4:] if len(user_part) >= 4 else user_part})"
 
     return raw_name
-
-
-# Códigos de área argentinos de 3 dígitos (el resto, salvo el 11, son de 4)
-_AR_AREA3 = {"221", "223", "261", "264", "280", "291", "299", "341", "342", "343", "351", "362", "370",
-             "376", "379", "381", "383", "387", "388"}
-
-
-def search_phone_candidate(text: str) -> str:
-    """Si lo buscado parece un número de teléfono, devuelve sus dígitos con código de país
-    (sin '+' se asume celular argentino: 2944586958 → 5492944586958); si no, ''."""
-    text = (text or "").strip()
-    if not text or not re.fullmatch(r"\+?[\d\s\-().]+", text):
-        return ""
-    d = "".join(ch for ch in text if ch.isdigit())
-    if not 10 <= len(d) <= 15:
-        return ""
-    if text.startswith("+"):
-        return d
-    d = d[2:] if d.startswith("00") else d
-    d = d[1:] if d.startswith("0") and len(d) == 11 else d
-    if len(d) == 10:
-        return "549" + d
-    if d.startswith("54") and not d.startswith("549") and len(d) == 12:
-        return "549" + d[2:]
-    return d
-
-
-def format_phone(digits: str) -> str:
-    """'5492944586958' → '+54 9 2944 58-6958' (números argentinos); otros: '+<dígitos>'."""
-    if digits.startswith("549") and len(digits) == 13:
-        n = digits[3:]
-        area = 2 if n.startswith("11") else 3 if n[:3] in _AR_AREA3 else 4
-        sub = n[area:]
-        cut = len(sub) - 4
-        return f"+54 9 {n[:area]} {sub[:cut]}-{sub[cut:]}"
-    return f"+{digits}"
 
 
 def format_hour(ts: int) -> str:
@@ -149,7 +115,15 @@ class AvatarWidget(QWidget):
         self.avatar_path = avatar_path
         self._pix_cache = (None, None)   # (ruta, pixmap escalado)
         self._fade = None
+        self.tags = []                   # tags del chat que se dibujan encima (en orden de prioridad)
+        self.tag_ring = C["panel"]       # color del anillo de los tags (el fondo sobre el que está el avatar)
         self.setFixedSize(size, size)
+
+    def set_tags(self, tags: list):
+        tags = list(tags or [])
+        if tags != self.tags:
+            self.tags = tags
+            self.update()
 
     def set_clickable(self, tooltip: str = ""):
         """Cursor de mano y un leve brillo con fundido al pasar el mouse."""
@@ -215,6 +189,10 @@ class AvatarWidget(QWidget):
         if self._fade is not None and self._fade.value > 0.002:
             painter.fillPath(path, overlay(0.14 * self._fade.value))
 
+        if self.tags:
+            painter.setClipping(False)
+            paint_avatar_tags(painter, self.size_px, self.tags, self.tag_ring)
+
 
 class ElidedLabel(QLabel):
     """Etiqueta de una línea que recorta con '…' en lugar de estirar el panel."""
@@ -261,11 +239,13 @@ class ChatItemWidget(QWidget):
     lados, que aparece con un fundido al pasar el mouse y queda marcada si es el chat abierto."""
     INSET = 8     # margen de la tarjeta respecto del borde de la lista (igual que el buscador)
 
-    def __init__(self, chat_data: dict, parent=None, ai_state: str = ""):
+    def __init__(self, chat_data: dict, parent=None, ai_state: str = "", tags: list = None):
         super().__init__(parent)
         self.chat_data = chat_data
         self.ai_state = ai_state
         self._selected = False
+        self._drop_hover = False
+        self._row_fx = {}          # efectos de los tags sobre esta fila: "row" (tinte) y "name" (color del nombre)
         self._fade = HoverFade(self)
 
         layout = QHBoxLayout(self)
@@ -276,6 +256,7 @@ class ChatItemWidget(QWidget):
         name = resolve_display_name(chat_data)
         self.avatar = AvatarWidget(name, size=42, avatar_path=chat_data.get("avatar_path"))
         layout.addWidget(self.avatar)
+        self.set_tags(tags or [])
 
         grid = QVBoxLayout()
         grid.setSpacing(2)
@@ -317,23 +298,52 @@ class ChatItemWidget(QWidget):
     def set_selected(self, selected: bool):
         if selected != self._selected:
             self._selected = selected
+            # El anillo de los tags toma el color de la tarjeta, así se ven "recortados" igual
+            self.avatar.tag_ring = C["selected"] if selected else C["panel"]
+            self.avatar.update()
+            self.update()
+
+    def set_tags(self, tags: list):
+        self.avatar.tag_ring = C["selected"] if self._selected else C["panel"]
+        self.avatar.set_tags(tags)
+        self.avatar.setToolTip(tags_tooltip(tags, self.chat_data.get("last_message_time", 0)))
+        fx = tagdb.chat_effects(tags or [])
+        row_fx = {"row": fx["row"], "name": fx["name"]}
+        if row_fx != self._row_fx:
+            self._row_fx = row_fx
+            if hasattr(self, "lbl_preview"):
+                self._apply(self.chat_data)
+            self.update()
+
+    def set_drop_hover(self, on: bool):
+        if on != self._drop_hover:
+            self._drop_hover = on
             self.update()
 
     def paintEvent(self, event):
         h = self._fade.value
-        if not self._selected and h <= 0.002:
+        tint = self._row_fx.get("row")
+        if not self._selected and h <= 0.002 and not self._drop_hover and not tint:
             return
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.setPen(Qt.NoPen)
         p.setBrush(mix(C["selected"], "#33444d", h) if self._selected else overlay(0.055 * h))
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(self.INSET, 1, -self.INSET, -1), R_LG, R_LG)
+        card = QRectF(self.rect()).adjusted(self.INSET, 1, -self.INSET, -1)
+        p.drawRoundedRect(card, R_LG, R_LG)
+        paint_row_effect(p, card, tint, R_LG)
+        if self._drop_hover:
+            # Destino del tag que se está arrastrando
+            p.setBrush(overlay(0.06))
+            p.setPen(QPen(QColor(C["accent"]), 1.5, Qt.DashLine))
+            p.drawRoundedRect(card.adjusted(0.75, 0.75, -0.75, -0.75), R_LG, R_LG)
         p.end()
 
     def _apply(self, chat_data: dict):
         unread = chat_data.get("unread_count", 0) or 0
+        name_color = self._row_fx.get("name") or C["text"]
         self.lbl_name.setStyleSheet(
-            f"font-size: 13px; color: {C['text']}; font-weight: {'600' if unread else '400'};")
+            f"font-size: 13px; color: {name_color}; font-weight: {'600' if unread else '400'};")
         if self.ai_state in AI_PREVIEW:
             txt, color = AI_PREVIEW[self.ai_state]
             self.lbl_preview.setText(txt)
@@ -370,39 +380,72 @@ class ChatItemWidget(QWidget):
         self._apply(self.chat_data)
 
 
-class UnknownNumberWidget(QWidget):
-    """Fila de un número que no está en los chats: se puede escribirle directo o agregarlo como contacto."""
-    add_clicked = Signal()
+class ChatListWidget(QListWidget):
+    """Lista de chats que acepta tags arrastrados desde la paleta: el tag cae en el chat bajo el mouse."""
+    tag_dropped = Signal(int, str)    # id del tag, jid del chat
 
-    def __init__(self, data: dict, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self._fade = HoverFade(self)
-        self.setCursor(Qt.PointingHandCursor)
-        layout = QHBoxLayout(self)
-        pad = ChatItemWidget.INSET + 8
-        layout.setContentsMargins(pad, 0, pad, 0)
-        layout.setSpacing(12)
+        self.setAcceptDrops(True)
+        self.viewport().setAcceptDrops(True)
+        self.setDropIndicatorShown(False)
+        self._hover_widget = None
 
-        name = data.get("name") or format_phone(data["phone"])
-        layout.addWidget(AvatarWidget(name, size=42, avatar_path=data.get("avatar_path")))
-        lbl = ElidedLabel(name)
-        lbl.setStyleSheet(f"font-size: 13px; color: {C['text']};")
-        layout.addWidget(lbl, stretch=1)
-        if not data.get("name"):
-            btn = tool_button("user_plus", "Agregar a contactos")
-            btn.clicked.connect(self.add_clicked.emit)
-            layout.addWidget(btn)
-
-    def paintEvent(self, event):
-        h = self._fade.value
-        if h <= 0.002:
+    def _set_hover(self, item):
+        w = self.itemWidget(item) if item is not None else None
+        if w is self._hover_widget:
             return
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        p.setPen(Qt.NoPen)
-        p.setBrush(overlay(0.055 * h))
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(ChatItemWidget.INSET, 1, -ChatItemWidget.INSET, -1), R_LG, R_LG)
-        p.end()
+        if self._hover_widget is not None:
+            try:
+                self._hover_widget.set_drop_hover(False)
+            except RuntimeError:   # la fila se destruyó al recargar la lista
+                pass
+        self._hover_widget = w
+        if w is not None:
+            w.set_drop_hover(True)
+
+    def dragEnterEvent(self, e):
+        if tag_id_from_mime(e.mimeData()):
+            e.setDropAction(Qt.CopyAction)
+            e.accept()
+        else:
+            super().dragEnterEvent(e)
+
+    def dragMoveEvent(self, e):
+        if not tag_id_from_mime(e.mimeData()):
+            return super().dragMoveEvent(e)
+        pos = e.position().toPoint()
+        item = self.itemAt(pos)
+        self._set_hover(item)
+        # Cerca de los bordes la lista se desplaza sola, para llegar a otros chats
+        sb = self.verticalScrollBar()
+        if pos.y() < 28:
+            sb.setValue(sb.value() - 12)
+        elif pos.y() > self.viewport().height() - 28:
+            sb.setValue(sb.value() + 12)
+        if item is not None:
+            e.setDropAction(Qt.CopyAction)
+            e.accept()
+        else:
+            e.ignore()
+
+    def dragLeaveEvent(self, e):
+        self._set_hover(None)
+        super().dragLeaveEvent(e)
+
+    def dropEvent(self, e):
+        tag_id = tag_id_from_mime(e.mimeData())
+        if not tag_id:
+            return super().dropEvent(e)
+        item = self.itemAt(e.position().toPoint())
+        self._set_hover(None)
+        data = item.data(Qt.UserRole) if item else None
+        if isinstance(data, dict) and data.get("jid"):
+            e.setDropAction(Qt.CopyAction)
+            e.accept()
+            self.tag_dropped.emit(tag_id, data["jid"])
+        else:
+            e.ignore()
 
 
 class ChatListPanel(QWidget):
@@ -430,12 +473,20 @@ class ChatListPanel(QWidget):
         self._chat_items = {}  # jid -> (item, widget)
         self._ai_states = {}   # jid -> "pending" | "ready" | "error" (redactor de IA)
         self._selected_row = None  # ChatItemWidget marcado como chat abierto
+        self._last_purge = 0.0     # último barrido de tags vencidos
 
         self.setObjectName("chatListPanel")
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(f"#chatListPanel {{ background-color: {C['panel']}; }}")
         self._init_ui()
         self.reload_chats()
+
+        # Tags: repintar al cambiar y barrer los vencidos cada minuto
+        tagdb.tag_signals.changed.connect(self._refresh_tags)
+        self._tag_timer = QTimer(self)
+        self._tag_timer.setInterval(60000)
+        self._tag_timer.timeout.connect(self._purge_expired_tags)
+        self._tag_timer.start()
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -455,6 +506,12 @@ class ChatListPanel(QWidget):
         self.lbl_title.setObjectName("paneTitle")
         header_layout.addWidget(self.lbl_title)
         header_layout.addStretch()
+
+        # Panel de tags: se abre y se cierra como el redactor (y queda como lo dejaste)
+        self.btn_tags = tool_button("tag", "Tags: mostrar u ocultar el panel para marcar chats")
+        self.btn_tags.setCheckable(True)
+        self.btn_tags.clicked.connect(lambda: self.tag_panel.set_open(not self.tag_panel.is_open()))
+        header_layout.addWidget(self.btn_tags)
 
         self.btn_new = tool_button("new_chat", "Nuevo chat  (Ctrl+N)")
         self.btn_new.clicked.connect(self.new_chat_requested.emit)
@@ -525,11 +582,26 @@ class ChatListPanel(QWidget):
         chips.addWidget(self.btn_filter_all)
         chips.addWidget(self.btn_filter_unread)
         chips.addStretch()
+        # Red de seguridad: si algún chat quedó "sin leer" por error, se limpia todo de un clic
+        self.btn_read_all = tool_button("check_all", "Marcar todos los chats como leídos",
+                                        size=28, icon_size=16, text="Marcar leídos")
+        self.btn_read_all.clicked.connect(self.mark_all_read)
+        self.btn_read_all.hide()
+        chips.addWidget(self.btn_read_all)
         search_layout.addLayout(chips)
+
+        # Panel de tags: se arrastran sobre un chat para marcarlo
+        self.tag_panel = TagPalettePanel()
+        self.tag_panel.manage_requested.connect(self.open_tag_manager)
+        self.tag_panel.chip_clicked.connect(self._on_tag_chip_clicked)
+        self.tag_panel.open_changed.connect(self.btn_tags.setChecked)
+        self.btn_tags.setChecked(self.tag_panel.is_open())
+        search_layout.addWidget(self.tag_panel)
         layout.addWidget(search_box)
 
         # ── Lista ──
-        self.list_widget = QListWidget()
+        self.list_widget = ChatListWidget()
+        self.list_widget.tag_dropped.connect(self._on_tag_dropped)
         self.list_widget.setObjectName("chatList")
         self.list_widget.setVerticalScrollMode(QListWidget.ScrollPerPixel)
         self.list_widget.verticalScrollBar().setSingleStep(18)
@@ -606,21 +678,14 @@ class ChatListPanel(QWidget):
             if event.key() == Qt.Key_Escape and self.txt_search.text():
                 self.txt_search.clear()
                 return True
-            if event.key() == Qt.Key_Down and self._first_selectable():
+            if event.key() == Qt.Key_Down and self.list_widget.count():
                 self.list_widget.setFocus()
-                self.list_widget.setCurrentItem(self._first_selectable())
+                self.list_widget.setCurrentRow(0)
                 return True
         return super().eventFilter(obj, event)
 
-    def _first_selectable(self):
-        for row in range(self.list_widget.count()):
-            item = self.list_widget.item(row)
-            if item.flags() & Qt.ItemIsSelectable:
-                return item
-        return None
-
     def _open_first_result(self):
-        item = self._first_selectable()
+        item = self.list_widget.item(0)
         if item:
             self.list_widget.setCurrentItem(item)
             self._on_item_clicked(item)
@@ -642,17 +707,29 @@ class ChatListPanel(QWidget):
         elif act == act_new:
             self.new_chat_requested.emit()
         elif act == act_read_all:
-            for chat in get_chats(filter_unread=True, limit=10000):
-                if chat.get("jid"):
-                    GatewayManager.get_instance().send_read_receipts(
-                        chat["jid"], [mid for mid, _ in mark_chat_as_read(chat["jid"])])
-            self.reload_chats(select_jid=self._current_jid())
-            self.all_marked_read.emit()
+            self.mark_all_read()
+
+    def mark_all_read(self):
+        """Deja todos los chats en 0 y avisa a WhatsApp (tildes azules) de lo que no estaba leído."""
+        total = get_total_unread_count()
+        if total:
+            res = QMessageBox.question(
+                self, "Marcar todos como leídos",
+                f"¿Marcar todos los chats como leídos? ({total} mensajes sin leer)",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+            )
+            if res != QMessageBox.Yes:
+                return
+        gw = GatewayManager.get_instance()
+        for jid, ids in mark_all_chats_as_read().items():
+            gw.send_read_receipts(jid, ids)
+        self.reload_chats(select_jid=self._current_jid())
+        self.all_marked_read.emit()
 
     def _current_jid(self):
         item = self.list_widget.currentItem()
         data = item.data(Qt.UserRole) if item else None
-        return data.get("jid") if isinstance(data, dict) and not data.get("_unsaved") else None
+        return data.get("jid") if isinstance(data, dict) else None
 
     def _set_filter_unread(self, unread: bool):
         self._filter_unread = unread
@@ -663,12 +740,12 @@ class ChatListPanel(QWidget):
     def _on_search_changed(self, text: str):
         self._search_timer.start()
 
-    def _add_chat_item(self, chat: dict):
+    def _add_chat_item(self, chat: dict, tags: list = None):
         item = QListWidgetItem(self.list_widget)
         item.setSizeHint(QSize(0, self.ROW_HEIGHT))
         item.setData(Qt.UserRole, chat)
         jid = chat.get("jid")
-        widget = ChatItemWidget(chat, ai_state=self._ai_states.get(jid, ""))
+        widget = ChatItemWidget(chat, ai_state=self._ai_states.get(jid, ""), tags=tags)
         self.list_widget.setItemWidget(item, widget)
         if jid:
             self._chat_items[jid] = (item, widget)
@@ -695,8 +772,14 @@ class ChatListPanel(QWidget):
         search = self.txt_search.text().strip()
         chats = get_chats(search=search, filter_unread=self._filter_unread, limit=self._page_size, offset=0)
         self.all_chats = chats
+        if time.time() - self._last_purge > 30:
+            self._last_purge = time.time()
+            tagdb.purge_expired()
+        tag_map = tagdb.tags_for_chats([c.get("jid") for c in chats])
 
-        self.unread_total_changed.emit(get_total_unread_count())
+        unread_total = get_total_unread_count()
+        self.btn_read_all.setVisible(unread_total > 0)
+        self.unread_total_changed.emit(unread_total)
 
         # Conservar la posición del scroll: al vaciar la lista se volvía arriba
         sb = self.list_widget.verticalScrollBar()
@@ -708,15 +791,12 @@ class ChatListPanel(QWidget):
 
         selected_item = None
         for chat in chats:
-            item = self._add_chat_item(chat)
+            item = self._add_chat_item(chat, tag_map.get(chat.get("jid")))
             if select_jid and chat.get("jid") == select_jid:
                 selected_item = item
 
         if len(chats) < self._page_size:
             self._has_more = False
-
-        # Número buscado que no está en los chats: se ofrece escribirle o agregarlo, como WhatsApp
-        extra = self._add_unknown_number(search, chats)
 
         if selected_item:
             self.list_widget.setCurrentItem(selected_item)
@@ -724,59 +804,13 @@ class ChatListPanel(QWidget):
         sb.setValue(min(saved_scroll, sb.maximum()))
         self.list_widget.setUpdatesEnabled(True)
 
-        empty = not chats and not extra
+        empty = not chats
         self.list_widget.setVisible(not empty)
         self.lbl_no_results.setVisible(empty)
         if empty:
             self.lbl_no_results.setText(
                 "No hay chats que coincidan." if search else
                 ("No tienes chats sin leer." if self._filter_unread else "Todavía no hay chats."))
-
-    def _add_unknown_number(self, search: str, chats: list) -> bool:
-        """Agrega al final de la lista la sección «Usuarios que no están en tus contactos» cuando lo buscado
-        es un número sin chat. Devuelve True si agregó algo."""
-        # Con filas de alturas distintas (encabezado + fila) la lista no puede ser uniforme
-        self.list_widget.setUniformItemSizes(True)
-        digits = search_phone_candidate(search)
-        if not digits or self._filter_unread or self._has_more:
-            return False
-        tail = digits[-10:]
-        for c in chats:
-            known = "".join(ch for ch in (c.get("phone") or "") if ch.isdigit()) or (c.get("jid") or "").split("@")[0]
-            if known.endswith(tail):
-                return False
-
-        jid = f"{digits}@s.whatsapp.net"
-        data = {"jid": jid, "phone": digits, "_unsaved": True}
-        saved = next((c for c in get_all_contacts(search=tail)
-                      if "".join(ch for ch in (c.get("phone") or "") if ch.isdigit()).endswith(tail)), None)
-        if saved:
-            data.update(name=saved.get("name"), avatar_path=saved.get("avatar_path"))
-
-        self.list_widget.setUniformItemSizes(False)
-        head = QListWidgetItem(self.list_widget)
-        head.setFlags(Qt.NoItemFlags)
-        head.setSizeHint(QSize(0, 36))
-        lbl = QLabel("Contactos" if saved else "Usuarios que no están en tus contactos")
-        lbl.setStyleSheet(f"font-size: 12px; color: {C['text_3']}; padding: 10px 0 0 {ChatItemWidget.INSET + 8}px;")
-        self.list_widget.setItemWidget(head, lbl)
-
-        item = QListWidgetItem(self.list_widget)
-        item.setSizeHint(QSize(0, self.ROW_HEIGHT))
-        item.setData(Qt.UserRole, data)
-        widget = UnknownNumberWidget(data)
-        widget.add_clicked.connect(lambda d=data: self._add_unknown_contact(d))
-        self.list_widget.setItemWidget(item, widget)
-        return True
-
-    def _open_unknown_number(self, data: dict):
-        self.chat_selected.emit(get_or_create_chat(data["jid"], name=data.get("name"), phone=data["phone"]))
-
-    def _add_unknown_contact(self, data: dict):
-        from app.ui.contact_dialog import ContactEditDialog
-        dlg = ContactEditDialog({"jid": data["jid"], "phone": data["phone"], "name": ""}, parent=self)
-        dlg.contact_saved.connect(lambda updated: self._open_unknown_number({**data, "name": updated.get("name")}))
-        dlg.exec()
 
     def _on_scroll(self, value):
         sb = self.list_widget.verticalScrollBar()
@@ -804,11 +838,12 @@ class ChatListPanel(QWidget):
             return
 
         self._current_offset = next_offset
+        tag_map = tagdb.tags_for_chats([c.get("jid") for c in more_chats])
         for chat in more_chats:
             jid = chat.get("jid")
             if jid and jid in self._chat_items:
                 continue
-            self._add_chat_item(chat)
+            self._add_chat_item(chat, tag_map.get(jid))
 
         if len(more_chats) < self._page_size:
             self._has_more = False
@@ -854,9 +889,7 @@ class ChatListPanel(QWidget):
 
     def _on_item_clicked(self, item: QListWidgetItem):
         chat_data = item.data(Qt.UserRole)
-        if chat_data and chat_data.get("_unsaved"):
-            self._open_unknown_number(chat_data)
-        elif chat_data:
+        if chat_data:
             self.chat_selected.emit(chat_data)
 
     def _show_chat_context_menu(self, pos):
@@ -864,7 +897,7 @@ class ChatListPanel(QWidget):
         if not item:
             return
         chat_data = item.data(Qt.UserRole)
-        if not chat_data or chat_data.get("_unsaved"):
+        if not chat_data:
             return
 
         menu = QMenu(self)
@@ -882,6 +915,7 @@ class ChatListPanel(QWidget):
             for label, secs in (("8 horas", 8 * 3600), ("1 semana", 7 * 86400), ("Siempre", -1)):
                 mute_actions[mute_menu.addAction(label)] = secs
         act_edit = menu.addAction(icon("user"), "Guardar / editar contacto")
+        tag_actions, act_untag_all, act_tags_cfg = self._add_tag_menu(menu, chat_data.get("jid"))
         menu.addSeparator()
         act_clear = menu.addAction(icon("eraser", C["danger"], active_color=C["danger"]), "Vaciar chat…")
         act_delete = menu.addAction(icon("trash", C["danger"], active_color=C["danger"]), "Eliminar chat…")
@@ -890,6 +924,19 @@ class ChatListPanel(QWidget):
         if act is None:
             return
         jid = chat_data.get("jid")
+        if act in tag_actions:
+            tag_id, has = tag_actions[act]
+            if has:
+                tagdb.remove_tag(jid, tag_id)
+            else:
+                tagdb.assign_tag(jid, tag_id)
+            return
+        if act is act_untag_all:
+            tagdb.remove_tag(jid)
+            return
+        if act is act_tags_cfg:
+            self.open_tag_manager()
+            return
         if act == act_read:
             GatewayManager.get_instance().send_read_receipts(
                 jid, [mid for mid, _ in mark_chat_as_read(jid)])
@@ -913,6 +960,54 @@ class ChatListPanel(QWidget):
             self._confirm_clear_chat(chat_data)
         elif act == act_delete:
             self._confirm_delete_chat(chat_data)
+
+    # ── Tags ──
+
+    def _add_tag_menu(self, menu: QMenu, jid: str):
+        """Submenú «Tags»: los que tiene el chat aparecen tildados (tocarlos los quita)."""
+        current = {t["id"] for t in tagdb.tags_for_chat(jid)}
+        sub = menu.addMenu(icon("tag"), "Tags")
+        actions = {}
+        for t in tagdb.list_tags():
+            has = t["id"] in current
+            a = sub.addAction(QIcon(tag_pixmap(t, 16)), ("Quitar «%s»" if has else "Poner «%s»") % t["name"])
+            a.setCheckable(True)
+            a.setChecked(has)
+            actions[a] = (t["id"], has)
+        if actions:
+            sub.addSeparator()
+        act_all = sub.addAction(icon("eraser"), "Quitar todos los tags") if current else None
+        act_cfg = sub.addAction(icon("settings"), "Configurar tags…")
+        return actions, act_all, act_cfg
+
+    def open_tag_manager(self, tag_id: int = 0):
+        TagManagerDialog(select_id=tag_id or 0, parent=self.window()).exec()
+
+    def _on_tag_dropped(self, tag_id: int, jid: str):
+        tagdb.assign_tag(jid, tag_id)
+
+    def _on_tag_chip_clicked(self, tag_id: int):
+        """Un clic sin arrastrar en la paleta solo explica cómo se usa (así no se ponen tags por accidente)."""
+        from PySide6.QtWidgets import QToolTip
+        from PySide6.QtGui import QCursor
+        t = tagdb.get_tag(tag_id)
+        if t:
+            QToolTip.showText(QCursor.pos(), f"Arrastrá «{t['name']}» sobre un chat para ponérselo.", self)
+
+    def _refresh_tags(self):
+        """Actualiza los tags de las filas cargadas sin recargar la lista."""
+        if not self._chat_items:
+            return
+        tag_map = tagdb.tags_for_chats(list(self._chat_items.keys()))
+        for jid, (_item, widget) in list(self._chat_items.items()):
+            try:
+                widget.set_tags(tag_map.get(jid, []))
+            except RuntimeError:
+                pass
+
+    def _purge_expired_tags(self):
+        self._last_purge = time.time()
+        tagdb.purge_expired()   # si borra algo, avisa por tag_signals y la lista se repinta
 
     def _open_edit_contact_dialog(self, chat_data: dict):
         from app.ui.contact_dialog import ContactEditDialog
