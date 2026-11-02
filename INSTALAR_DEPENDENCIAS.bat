@@ -32,9 +32,16 @@ echo [1/5] Verificando Python...
 call :find_python
 if defined PYTHON_EXE goto python_ok
 
-if "%HAS_WINGET%"=="0" goto python_manual
+if "%HAS_WINGET%"=="0" goto python_direct
 echo [INFO] Python no encontrado. Instalando Python 3.13 con winget...
 winget install -e --id Python.Python.3.13 --scope user --silent --accept-source-agreements --accept-package-agreements
+call :find_python
+if defined PYTHON_EXE goto python_ok
+
+:python_direct
+REM Plan B: si winget no esta o fallo, bajar Python en .zip (sin instalador)
+echo [INFO] Probando con Python sin instalador...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%MDIR%\tools\instalar_python.ps1"
 call :find_python
 if defined PYTHON_EXE goto python_ok
 
@@ -165,6 +172,7 @@ for %%P in (
     "%LOCALAPPDATA%\Programs\Python\Python311\python.exe"
     "C:\Python311\python.exe"
     "%ProgramFiles%\Python311\python.exe"
+    "%LOCALAPPDATA%\MAGSAPP-Tools\python\python.exe"
 ) do (
     if not defined PYTHON_EXE if exist %%P call :try_python %%P
 )

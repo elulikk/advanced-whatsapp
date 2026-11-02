@@ -43,7 +43,8 @@ def find_node_executable() -> Optional[str]:
     common_paths = [
         r"C:\Program Files\nodejs\node.exe",
         r"C:\Program Files (x86)\nodejs\node.exe",
-        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "node", "node.exe")
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "node", "node.exe"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "MAGSAPP-Tools", "node", "node.exe"),  # INSTALAR_MAGSAPP.ps1
     ]
     for p in common_paths:
         if os.path.isfile(p):
@@ -94,7 +95,9 @@ class GatewayManager:
         modules = os.path.join(RUNTIME_GATEWAY_DIR, "node_modules", "@whiskeysockets")
         if os.path.isdir(modules) and not pkg_changed:
             return None
-        npm = shutil.which("npm") or shutil.which("npm.cmd")
+        node = find_node_executable()
+        beside_node = os.path.join(os.path.dirname(node), "npm.cmd") if node else ""
+        npm = beside_node if os.path.isfile(beside_node) else (shutil.which("npm") or shutil.which("npm.cmd"))
         if not npm:
             return "npm no está instalado o no se encuentra en el PATH."
         flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0

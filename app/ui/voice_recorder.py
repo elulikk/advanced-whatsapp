@@ -50,7 +50,8 @@ def find_ffmpeg() -> Optional[str]:
     local = os.environ.get("LOCALAPPDATA", "")
     candidates = [os.path.join(local, "Microsoft", "WinGet", "Links", "ffmpeg.exe")]
     candidates += glob.glob(os.path.join(local, "Microsoft", "WinGet", "Packages", "*FFmpeg*", "*", "bin", "ffmpeg.exe"))
-    candidates += [r"C:\ffmpeg\bin\ffmpeg.exe",
+    candidates += [os.path.join(local, "MAGSAPP-Tools", "ffmpeg", "bin", "ffmpeg.exe"),  # INSTALAR_MAGSAPP.ps1
+                   r"C:\ffmpeg\bin\ffmpeg.exe",
                    os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "ffmpeg", "bin", "ffmpeg.exe")]
     return next((c for c in candidates if os.path.isfile(c)), None)
 
