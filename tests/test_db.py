@@ -221,3 +221,67 @@ def test_summary_kept_on_resync_and_cleared_when_text_changes():
     assert db.get_message("m1")["summary"] == "RESUMEN: saluda"
     db.save_message("m1", "111@s.whatsapp.net", "111@s.whatsapp.net", "Ana", False, "hola, editado", int(time.time()))
     assert db.get_message("m1")["summary"] is None
+
+
+# ── Leídos en el celular ──
+
+CHAT = "111@s.whatsapp.net"
+
+
+def _unread(jid=CHAT):
+    return db.get_chat(jid)["unread_count"]
+
+
+def _in(i, ts, **kw):
+    return db.save_message(i, CHAT, CHAT, "Ana", False, "hola", ts, **kw)
+
+
+def test_already_read_message_does_not_count():
+    _in("a1", 100, already_read=True)
+    assert _unread() == 0
+    assert db.get_messages(CHAT)[0]["status"] == "read"
+
+
+def test_read_on_phone_receipts_clear_counter():
+    _in("a1", 100); _in("a2", 101); _in("a3", 102)
+    assert _unread() == 3
+    assert db.mark_messages_read_elsewhere(["a1", "a2", "a3"]) == [CHAT]
+    assert _unread() == 0
+
+
+def test_read_on_phone_latest_message_reads_whole_chat():
+    # El contador vino del historial (5) pero acá solo hay 1 mensaje: leer el último deja el chat en 0
+    db.save_sync_batch([{"jid": CHAT, "unread_count": 5}], [], [])
+    _in("a1", 100)
+    db.mark_messages_read_elsewhere(["a1"])
+    assert _unread() == 0
+
+
+def test_read_on_phone_partial_keeps_newer_unread():
+    _in("a1", 100); _in("a2", 101)
+    db.mark_messages_read_elsewhere(["a1"])
+    assert _unread() == 1
+
+
+def test_receipt_before_message_is_applied_on_arrival():
+    assert db.mark_messages_read_elsewhere(["early1"]) == []
+    _in("early1", 100)
+    assert _unread() == 0
+
+
+def test_chat_read_and_unread_on_phone():
+    _in("a1", 100); _in("a2", 101)
+    assert db.mark_chat_read_elsewhere(CHAT)
+    assert _unread() == 0
+    assert not db.mark_chat_read_elsewhere(CHAT)   # ya estaba: nada que recargar
+    assert db.mark_chat_unread_elsewhere(CHAT)
+    assert _unread() == 1
+
+
+def test_mark_all_chats_as_read():
+    _in("a1", 100)
+    db.save_message("b1", "222@s.whatsapp.net", "222@s.whatsapp.net", "Beto", False, "hey", 100)
+    result = db.mark_all_chats_as_read()
+    assert set(result) == {CHAT, "222@s.whatsapp.net"}
+    assert result[CHAT] == ["a1"]
+    assert db.get_total_unread_count() == 0

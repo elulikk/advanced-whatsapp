@@ -9,7 +9,7 @@ import requests
 from typing import Optional, Dict, Any
 
 from app.config import (
-    GATEWAY_DIR, DATA_DIR, AUTH_DIR, MEDIA_DIR,
+    FROZEN, RUNTIME_DIR, GATEWAY_DIR, DATA_DIR, AUTH_DIR, MEDIA_DIR,
     GATEWAY_PORT, GATEWAY_URL, WEBHOOK_URL, CONNECTION_WEBHOOK_URL,
     TOKEN_HEADER, get_gateway_token
 )
@@ -34,6 +34,9 @@ def gateway_build_id() -> str:
 
 
 def find_node_executable() -> Optional[str]:
+    bundled = os.path.join(RUNTIME_DIR, "node.exe")   # versión portable
+    if os.path.isfile(bundled):
+        return bundled
     node = shutil.which("node")
     if node:
         return node
@@ -153,12 +156,17 @@ class GatewayManager:
         if not node_bin:
             return {"success": False, "error": "Node.js no está instalado o no se encuentra en el PATH."}
 
-        try:
-            dep_error = self.ensure_dependencies(self.ensure_runtime_files())
-        except OSError as e:
-            dep_error = f"No se pudieron copiar los archivos del gateway: {e}"
-        if dep_error:
-            return {"success": False, "error": dep_error}
+        if FROZEN:
+            # La versión portable trae el gateway con sus node_modules ya instalados
+            gateway_cwd = GATEWAY_DIR
+        else:
+            gateway_cwd = RUNTIME_GATEWAY_DIR
+            try:
+                dep_error = self.ensure_dependencies(self.ensure_runtime_files())
+            except OSError as e:
+                dep_error = f"No se pudieron copiar los archivos del gateway: {e}"
+            if dep_error:
+                return {"success": False, "error": dep_error}
 
         env = os.environ.copy()
         env["PORT"] = str(GATEWAY_PORT)
@@ -189,7 +197,7 @@ class GatewayManager:
         try:
             self.process = subprocess.Popen(
                 [node_bin, "server.js"],
-                cwd=RUNTIME_GATEWAY_DIR,
+                cwd=gateway_cwd,
                 env=env,
                 creationflags=flags,
                 stdout=subprocess.DEVNULL,

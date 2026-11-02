@@ -738,6 +738,39 @@ function reportMessageStatus(messageId, status) {
     }).catch(err => console.error('[Baileys] Error reportando estado:', err.message));
 }
 
+// Lecturas hechas en otro dispositivo (celular): se juntan unos instantes y van en un solo aviso.
+// Van por la entrega confiable (con bandeja de salida): si se perdieran, los chats quedarían "sin leer".
+const PYTHON_READ_ELSEWHERE_URL = `${PYTHON_API}/read_elsewhere`;
+const readElsewhereQueue = new Map();   // chat_jid -> { chat_jid, alt_jid, message_ids:Set, all, unread }
+let readElsewhereTimer = null;
+
+function queueReadElsewhere(jid, altJid, { messageId, all, unread } = {}) {
+    if (!jid) return;
+    const chatJid = preferPhoneJid(jid, altJid);
+    let entry = readElsewhereQueue.get(chatJid);
+    if (!entry) {
+        // El chat puede estar guardado por LID o por teléfono: se mandan los dos
+        entry = { chat_jid: chatJid, alt_jid: chatJid !== jid ? jid : (altJid || null),
+                  message_ids: new Set(), all: false, unread: false };
+        readElsewhereQueue.set(chatJid, entry);
+    }
+    if (messageId) entry.message_ids.add(messageId);
+    if (all) { entry.all = true; entry.unread = false; }
+    if (unread) { entry.unread = true; entry.all = false; }
+    if (!readElsewhereTimer) readElsewhereTimer = setTimeout(flushReadElsewhere, 400);
+}
+
+function flushReadElsewhere() {
+    readElsewhereTimer = null;
+    if (!readElsewhereQueue.size) return;
+    const chats = [...readElsewhereQueue.values()].map(e => ({ ...e, message_ids: [...e.message_ids] }));
+    readElsewhereQueue.clear();
+    const total = chats.reduce((n, c) => n + c.message_ids.length, 0);
+    console.log(`[Baileys] Leídos en otro dispositivo: ${chats.length} chats, ${total} mensajes.`);
+    deliverReliably(PYTHON_READ_ELSEWHERE_URL, { chats })
+        .catch(err => console.error('[Baileys] Error avisando lecturas:', err.message));
+}
+
 // Eventos livianos para la ventana (presencia, llamadas, estados nuevos): si no llegan, no pasa nada grave
 const PYTHON_BASE_URL = PYTHON_WEBHOOK_URL.replace(/\/incoming$/, '');
 function postEvent(name, payload) {
@@ -956,7 +989,8 @@ async function initWhatsApp() {
                         quoted_sender: quotedSender,
                         timestamp: Number(m.messageTimestamp || Math.floor(Date.now() / 1000)),
                         // En el historial los mensajes propios traen su estado real (entregado/leído)
-                        status: m.key.fromMe ? (ackToStatus(m.status) || 'sent') : 'delivered'
+                        status: m.key.fromMe ? (ackToStatus(m.status) || 'sent')
+                            : (ackToStatus(m.status) === 'read' ? 'read' : 'delivered')
                     });
                 }
             }
@@ -1066,9 +1100,26 @@ async function initWhatsApp() {
         // ── Recibos de mensajes propios: enviado / entregado / leído ──
         sock.ev.on('messages.update', (updates) => {
             for (const u of updates || []) {
-                if (!u.key?.fromMe || !u.key?.id) continue;
+                if (!u.key?.id) continue;
                 const st = ackToStatus(u.update?.status);
-                if (st) reportMessageStatus(u.key.id, st);
+                if (!st) continue;
+                if (u.key.fromMe) {
+                    reportMessageStatus(u.key.id, st);
+                } else if (st === 'read' && isIndividualJid(u.key.remoteJid)) {
+                    // Mensaje recibido que leíste en el celular (u otro dispositivo vinculado)
+                    queueReadElsewhere(u.key.remoteJid, u.key.remoteJidAlt, { messageId: u.key.id });
+                }
+            }
+        });
+
+        // ── Chat marcado como leído / no leído desde el celular (sincronización de WhatsApp) ──
+        // Baileys solo manda 0 (leído) o -1 (marcado como no leído) desde esa sincronización;
+        // los números positivos son sumas de mensajes nuevos y los cuenta la app sola.
+        sock.ev.on('chats.update', (updates) => {
+            for (const u of updates || []) {
+                if (!isIndividualJid(u.id)) continue;
+                if (u.unreadCount === 0) queueReadElsewhere(u.id, null, { all: true });
+                else if (u.unreadCount === -1) queueReadElsewhere(u.id, null, { unread: true });
             }
         });
         sock.ev.on('message-receipt.update', (receipts) => {
@@ -1235,6 +1286,8 @@ async function initWhatsApp() {
                         edited: Boolean(details.editOf),
                         revoked: Boolean(details.revokeOf),
                         upsert_type: type,
+                        // Al reconectar, Baileys junta el "leído en el celular" dentro del propio mensaje
+                        already_read: !fromMe && ackToStatus(msg.status) === 'read',
                         chat_jid: remoteJid,
                         sender_jid: msg.key.participant || remoteJid,
                         push_name: (isGroupMsg && fromMe) ? '' : resolved.name,

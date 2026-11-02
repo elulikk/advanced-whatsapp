@@ -40,6 +40,10 @@ MIC_PRIVACY_HINT = ("Revisa en Windows: Configuración → Privacidad y segurida
 
 def find_ffmpeg() -> Optional[str]:
     """FFmpeg del PATH o de las ubicaciones habituales en Windows (winget, C:\\ffmpeg)."""
+    from app.config import RUNTIME_DIR
+    bundled = os.path.join(RUNTIME_DIR, "ffmpeg.exe")   # versión portable
+    if os.path.isfile(bundled):
+        return bundled
     found = shutil.which("ffmpeg")
     if found:
         return found

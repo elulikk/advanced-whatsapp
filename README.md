@@ -58,6 +58,9 @@ Aplicación de escritorio nativa para Windows tipo **WhatsApp Desktop**, constru
      "escribiendo…" del contacto en la cabecera y el tuyo hacia él; los mensajes editados se actualizan con la marca
      *Editado* y los borrados para todos reemplazan al original (antes aparecían como mensajes nuevos). Fotos y audios
      viejos que WhatsApp ya borró del servidor se le piden de nuevo al celular automáticamente.
+     Lo que leés en el celular queda leído también en MAGSAPP (en vivo y al reconectar tras un rato sin conexión),
+     y si un chat se marca "no leído" en el celular también aparece así. Botón **Marcar leídos** junto a los filtros
+     (aparece solo si hay chats sin leer) como red de seguridad.
 
 2. **Vinculación por Código QR**:
    - Diálogo modal con código QR en alta definición generado al vuelo.
@@ -117,19 +120,71 @@ MAGSAPP/
 ├── tests/test_db.py          # Pruebas de la capa SQLite (pytest)
 ├── main.py                   # Punto de entrada de la aplicación
 ├── requirements.txt          # Dependencias de Python (PySide6, requests)
+├── INSTALAR_DEPENDENCIAS.bat # Instalador: dependencias + accesos directos con icono
 ├── INICIAR_MAGSAPP.bat       # Lanzador directo de Windows
+├── assets/                   # Icono de la app (magsapp.ico/.png) y SVG del tema
+├── tools/instalar.py         # Paso final del instalador (gateway, registro, accesos)
+├── tools/generar_iconos.py   # Regenera los archivos de assets/
+├── tools/build_portable.py   # Arma la versión portable (zip) y, opcional, el instalador
+├── tools/instalador.iss      # Script de Inno Setup del instalador
 └── README.md                 # Documentación
 ```
 
 ---
 
+## 🛠️ Instalación (después de `git clone`)
+
+```powershell
+git clone <url-del-repo> MAGSAPP
+```
+
+1. Doble clic en **`INSTALAR_DEPENDENCIAS.bat`** (no hace falta ser administrador). Instala lo que falte:
+   - **Python 3.13**, **Node.js LTS** y **FFmpeg** (con `winget`, si no están).
+   - Las librerías de Python (`requirements.txt`) y las del gateway de WhatsApp (`npm install`).
+   - Registra MAGSAPP en Windows (nombre e icono en las notificaciones, protocolo `magsapp://`).
+   - Crea el acceso directo **MAGSAPP** con su icono en el **escritorio** y en el **menú Inicio**
+     (con la API de Windows: `IShellLink` + AppUserModelID, para que la barra de tareas y las notificaciones
+     muestren MAGSAPP y no Python).
+2. Abrí MAGSAPP desde el icono del escritorio (o buscando "MAGSAPP" en el menú Inicio).
+
+Se puede volver a ejecutar las veces que haga falta (por ejemplo, si moviste la carpeta: los accesos se actualizan).
+El icono está en `assets/magsapp.ico`; para cambiar el diseño, editá y ejecutá `python tools/generar_iconos.py`.
+
+## 📦 Versión para compartir (portable)
+
+Para pasarle MAGSAPP a alguien que no tiene Python ni nada instalado:
+
+```powershell
+python tools/build_portable.py
+```
+
+Genera `dist/MAGSAPP-<versión>.zip` (y la carpeta `dist/MAGSAPP/`). Adentro va todo: `MAGSAPP.exe` con Python y
+las librerías, Node.js con el gateway ya instalado y FFmpeg. Quien lo recibe descomprime la carpeta donde quiera y
+abre `MAGSAPP.exe`; la primera vez la app crea su icono en el escritorio y en el menú Inicio. El zip incluye un
+`LEEME.txt` con esos pasos.
+
+- **Versión**: sale de `APP_VERSION` en `app/config.py`; subila antes de armar una versión nueva.
+- **Actualizar**: el amigo cierra MAGSAPP (bandeja › Salir) y reemplaza la carpeta. Los chats y la sesión de
+  WhatsApp viven en `~/.magsapp`, así que no se pierden.
+- **Aviso de Windows**: como el `.exe` no está firmado, la primera vez aparece "Windows protegió su PC"
+  → *Más información* → *Ejecutar de todas formas*.
+- El build usa un entorno aparte (`build/venv`) con solo `requirements.txt`, para no arrastrar otras librerías de
+  la PC. Requiere Python, Node.js/npm y FFmpeg en la PC que arma la versión.
+- **Tiempos**: la primera vez ~10 min; después ~2 min, porque reutiliza lo guardado en `build/` (el venv se rehace
+  solo si cambia `requirements.txt` y `npm ci` solo si cambia `gateway/package.json`). Para empezar de cero, borrá
+  `build/`.
+- **Probar sin cerrar tu MAGSAPP**: con `MAGSAPP_WEBHOOK_PORT=5115` y `MAGSAPP_GATEWAY_PORT=5116` corre una copia de
+  prueba que no choca con la abierta ni toca accesos directos ni registro (usá también otro `USERPROFILE` para que
+  tenga datos propios).
+- **Instalador (opcional)**: `python tools/build_portable.py --instalador` arma además
+  `dist/MAGSAPP-Setup-<versión>.exe` con Inno Setup (`winget install JRSoftware.InnoSetup`): instala sin pedir
+  administrador, crea los accesos, aparece en "Aplicaciones" para desinstalar y, corrido encima de una versión
+  anterior, la actualiza. Script: `tools/instalador.iss`.
+
 ## 🏃 Cómo Iniciar la Aplicación
 
-Simplemente haz doble clic en el archivo:
-```
-INICIAR_MAGSAPP.bat
-```
-O desde la consola:
+Desde el acceso directo del escritorio, o con doble clic en `INICIAR_MAGSAPP.bat`
+(si faltan dependencias, abre el instalador). O desde la consola:
 ```powershell
 python main.py
 ```

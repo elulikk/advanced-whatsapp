@@ -52,18 +52,47 @@ def _setup_logging():
 # Una sola MAGSAPP: si ya hay una abierta, se le pasa el pedido (mostrar / abrir un chat) y esta se cierra.
 # Se hace antes de cargar Qt para que el clic en una notificación responda rápido.
 from app.windows_integration import acquire_single_instance, forward_to_running_instance, APP_ID
+from app.config import DATA_DIR
+
+PID_FILE = os.path.join(DATA_DIR, "app.pid")
+
+
+def _log_relaunch(text: str):
+    """La segunda instancia no abre el log completo: deja una línea para saber qué pasó al reabrir."""
+    try:
+        with open(os.path.join(DATA_DIR, "app.log"), "a", encoding="utf-8", errors="replace") as f:
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [reabrir pid {os.getpid()}] {text}\n")
+    except OSError:
+        pass
+
 
 if not acquire_single_instance():
     if not (BACKGROUND and not LAUNCH_URI):   # el inicio automático no debe traer al frente la ventana
-        if not forward_to_running_instance(LAUNCH_URI or "magsapp://show") and not LAUNCH_URI:
+        t0 = time.monotonic()
+        ok = forward_to_running_instance(LAUNCH_URI or "magsapp://show")
+        _log_relaunch(f"{'ok' if ok else 'SIN RESPUESTA'} en {time.monotonic() - t0:.1f}s ({LAUNCH_URI or 'show'})")
+        if not ok and not LAUNCH_URI:
+            try:
+                with open(PID_FILE, encoding="utf-8") as f:
+                    running = f.read().strip()
+            except OSError:
+                running = "?"
             try:
                 import ctypes
+                # MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST: con pythonw el aviso quedaba escondido detrás
                 ctypes.windll.user32.MessageBoxW(
                     None, "MAGSAPP ya está abierto pero no responde.\n\nCerralo desde el Administrador de tareas "
-                    "(proceso pythonw.exe) y volvé a abrirlo.", "MAGSAPP", 0x30)
+                    f"(pestaña Detalles, proceso pythonw.exe con PID {running}; ojo que otras apps de Python "
+                    "también se llaman pythonw.exe) y volvé a abrirlo.", "MAGSAPP", 0x30 | 0x10000 | 0x40000)
             except Exception:
                 pass
     sys.exit(0)
+
+try:
+    with open(PID_FILE, "w", encoding="utf-8") as f:
+        f.write(str(os.getpid()))
+except OSError:
+    pass
 
 _setup_logging()
 
@@ -71,7 +100,7 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QIcon
 
-ICON_PATH = os.path.join(BASE_DIR, "assets", "magsapp.ico")
+from app.windows_integration import ICON_ICO as ICON_PATH
 
 
 def _set_windows_app_id():

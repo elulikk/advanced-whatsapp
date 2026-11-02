@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
-from app.config import BASE_DIR, DATA_DIR
+from app.config import BASE_DIR, DATA_DIR, FROZEN, TEST_COPY, WEBHOOK_PORT
 
 APP_ID = "MagTecnologia.MAGSAPP.1"
 APP_DISPLAY_NAME = "MAGSAPP"
@@ -54,9 +54,16 @@ def pythonw_executable() -> str:
     return exe
 
 
+def launch_target():
+    """(ejecutable, argumentos) para abrir MAGSAPP: MAGSAPP.exe en la versión portable, pythonw main.py si no."""
+    if FROZEN:
+        return sys.executable, ""
+    return pythonw_executable(), f'"{MAIN_SCRIPT}"'
+
+
 def launch_command(*args: str) -> str:
-    parts = [f'"{pythonw_executable()}"', f'"{MAIN_SCRIPT}"'] + [f'"{a}"' for a in args]
-    return " ".join(parts)
+    exe, base_args = launch_target()
+    return " ".join([f'"{exe}"'] + ([base_args] if base_args else []) + [f'"{a}"' for a in args])
 
 
 # ── Registro (HKCU, no requiere permisos de administrador) ───────────────────
@@ -95,9 +102,27 @@ def register_protocol() -> None:
         _log(f"No se pudo registrar el protocolo magsapp://: {e}")
 
 
-def ensure_start_menu_shortcut() -> bool:
-    """Acceso directo en el menú Inicio con la identidad de MAGSAPP (buscar "MAGSAPP", anclar, notificaciones)."""
-    if not IS_WINDOWS:
+def _known_folder(folder_id: str) -> Optional[str]:
+    """Carpeta especial de Windows (SHGetKnownFolderPath): sigue al Escritorio aunque esté en OneDrive."""
+    try:
+        ptr = ctypes.c_wchar_p()
+        hr = ctypes.windll.shell32.SHGetKnownFolderPath(ctypes.byref(_guid(folder_id)), 0, None, ctypes.byref(ptr))
+        if hr != 0:
+            return None
+        path = ptr.value
+        ctypes.windll.ole32.CoTaskMemFree(ptr)
+        return path
+    except Exception:
+        return None
+
+
+FOLDERID_DESKTOP = "{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}"
+FOLDERID_PROGRAMS = "{A77F5D77-2E2B-44C3-A6A2-ABA601054A51}"   # menú Inicio > Programas del usuario
+
+
+def _ensure_shortcut(folder: Optional[str]) -> bool:
+    """Crea (o actualiza si la carpeta de la app cambió) MAGSAPP.lnk en `folder`, con icono e identidad propios."""
+    if not IS_WINDOWS or not folder:
         return False
     try:
         import pythoncom
@@ -106,9 +131,8 @@ def ensure_start_menu_shortcut() -> bool:
     except Exception:
         return False   # pywin32 no instalado: las notificaciones igual funcionan por el registro
     try:
-        programs = os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows", "Start Menu", "Programs")
-        lnk_path = os.path.join(programs, f"{APP_DISPLAY_NAME}.lnk")
-        target, args = pythonw_executable(), f'"{MAIN_SCRIPT}"'
+        lnk_path = os.path.join(folder, f"{APP_DISPLAY_NAME}.lnk")
+        target, args = launch_target()
         pythoncom.CoInitialize()
         link = pythoncom.CoCreateInstance(shell.CLSID_ShellLink, None, pythoncom.CLSCTX_INPROC_SERVER,
                                           shell.IID_IShellLink)
@@ -116,7 +140,10 @@ def ensure_start_menu_shortcut() -> bool:
         if os.path.exists(lnk_path):
             try:
                 persist.Load(lnk_path)
-                if os.path.normcase(link.GetPath(0)[0]) == os.path.normcase(target) and link.GetArguments() == args:
+                icon_ok = (not os.path.exists(ICON_ICO)
+                           or os.path.normcase(link.GetIconLocation()[0]) == os.path.normcase(ICON_ICO))
+                if (os.path.normcase(link.GetPath(0)[0]) == os.path.normcase(target)
+                        and link.GetArguments() == args and icon_ok):
                     store = link.QueryInterface(propsys.IID_IPropertyStore)
                     if str(store.GetValue(pscon.PKEY_AppUserModel_ID).GetValue()) == APP_ID:
                         return True
@@ -134,18 +161,50 @@ def ensure_start_menu_shortcut() -> bool:
         store = link.QueryInterface(propsys.IID_IPropertyStore)
         store.SetValue(pscon.PKEY_AppUserModel_ID, propsys.PROPVARIANTType(APP_ID, pythoncom.VT_LPWSTR))
         store.Commit()
+        os.makedirs(folder, exist_ok=True)
         persist.Save(lnk_path, 0)
         return True
     except Exception as e:
-        _log(f"No se pudo crear el acceso directo del menú Inicio: {e}")
+        _log(f"No se pudo crear el acceso directo en {folder}: {e}")
         return False
+
+
+def ensure_start_menu_shortcut() -> bool:
+    """Acceso directo en el menú Inicio con la identidad de MAGSAPP (buscar "MAGSAPP", anclar, notificaciones)."""
+    programs = _known_folder(FOLDERID_PROGRAMS) or os.path.join(
+        os.environ.get("APPDATA", ""), "Microsoft", "Windows", "Start Menu", "Programs")
+    return _ensure_shortcut(programs)
+
+
+DESKTOP_FLAG = os.path.join(DATA_DIR, "acceso_escritorio_creado")
+
+
+def ensure_desktop_shortcut(first_run_only: bool = False) -> bool:
+    """Acceso directo en el escritorio. Con first_run_only (al abrir la app) se crea solo la primera vez:
+    si después el usuario lo borra no se vuelve a crear; si existe, se actualiza si la carpeta cambió."""
+    folder = _known_folder(FOLDERID_DESKTOP)
+    if not folder:
+        return False
+    exists = os.path.exists(os.path.join(folder, f"{APP_DISPLAY_NAME}.lnk"))
+    if first_run_only and not exists and os.path.exists(DESKTOP_FLAG):
+        return False
+    done = _ensure_shortcut(folder)
+    if done:
+        try:
+            open(DESKTOP_FLAG, "a").close()
+        except OSError:
+            pass
+    return done
 
 
 def integrate_with_windows() -> None:
     """Se llama al arrancar (en segundo plano): deja todo registrado y actualizado si la carpeta cambió."""
+    if TEST_COPY:
+        return
     register_app_identity()
     register_protocol()
     ensure_start_menu_shortcut()
+    ensure_desktop_shortcut(first_run_only=True)
 
 
 # ── Inicio con Windows ───────────────────────────────────────────────────────
@@ -184,7 +243,7 @@ def set_autostart(enabled: bool) -> bool:
 
 def refresh_autostart_command() -> None:
     """Si la carpeta de la app se movió, la entrada de inicio apunta al lugar nuevo."""
-    if is_autostart_enabled():
+    if not TEST_COPY and is_autostart_enabled():
         set_autostart(True)
 
 
@@ -201,7 +260,8 @@ def acquire_single_instance() -> bool:
     try:
         kernel32 = ctypes.windll.kernel32
         kernel32.CreateMutexW.restype = wintypes.HANDLE
-        _mutex_handle = kernel32.CreateMutexW(None, False, "Local\\MAGSAPP_SingleInstance")
+        name = "Local\\MAGSAPP_SingleInstance" + (f"_{WEBHOOK_PORT}" if TEST_COPY else "")
+        _mutex_handle = kernel32.CreateMutexW(None, False, name)
         return kernel32.GetLastError() != 183   # ERROR_ALREADY_EXISTS
     except Exception:
         return True

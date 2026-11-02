@@ -73,6 +73,11 @@ class MainWindow(QMainWindow):
         self._tray = None
         self._base_icon = QApplication.instance().windowIcon()
         self._ensure_tray()
+        # Windows puede perder el icono (o no registrarlo al arrancar): volver a registrarlo cada tanto
+        self._tray_timer = QTimer(self)
+        self._tray_timer.setInterval(300000)
+        self._tray_timer.timeout.connect(lambda: self._reregister_tray() if not self.isVisible() else None)
+        self._tray_timer.start()
 
         self.notifications = NotificationCenter(
             is_viewing=self._is_viewing_chat, is_foreground=self._is_foreground,
@@ -248,6 +253,7 @@ class MainWindow(QMainWindow):
         signals.call_event.connect(self._on_call_event)
         signals.contact_status.connect(self.status_panel.on_contact_status)
         signals.app_activate.connect(self.handle_uri)
+        signals.read_elsewhere.connect(self._on_read_elsewhere)
 
     def _check_initial_connection(self):
         st = self.gateway.get_status()
@@ -435,6 +441,12 @@ class MainWindow(QMainWindow):
         if self.chat_view_panel.current_chat:
             self.chat_view_panel._on_media_event(data.get("message_id"))
 
+    def _on_read_elsewhere(self, jids: list):
+        """Leíste (o marcaste no leído) en el celular: fuera sus notificaciones y se actualiza la lista."""
+        for jid in jids or []:
+            self.notifications.chat_opened(jid)
+        self._chat_reload_timer.start()
+
     def _on_history_synced(self):
         self._history_sync_timer.start()
 
@@ -504,6 +516,7 @@ class MainWindow(QMainWindow):
         # La barra de tareas recrea el botón al mostrar la ventana: volver a poner el contador
         self._badge.reset()
         QTimer.singleShot(300, lambda: self._update_unread_ui(self._unread_total))
+        QTimer.singleShot(1000, self._reregister_tray)
 
     # ── Segundo plano: los estados programados necesitan que el gateway siga vivo ──
 
@@ -540,6 +553,14 @@ class MainWindow(QMainWindow):
         self._tray.activated.connect(self._on_tray_activated)
         self._tray.show()
         return self._tray
+
+    def _reregister_tray(self):
+        """Crea la bandeja si no existe; si existe, la quita y la vuelve a poner para que Windows la registre de nuevo."""
+        if not self._tray:
+            self._ensure_tray()
+            return
+        self._tray.hide()
+        self._tray.show()
 
     def _toggle_notifications(self, on: bool):
         set_pref("notify_enabled", on)

@@ -3,7 +3,10 @@ MAGSAPP - Análisis psicológico
 ==============================
 Tres enfoques:
   - normal:      lectura psicológica del contacto (personalidad, puntos fuertes y débiles, etc.).
-  - comerciante: lectura del contacto como cliente (interés de compra, objeciones, cómo venderle).
+  - comerciante: intenciones del contacto como cliente (qué busca, etapa de compra, qué le molestó,
+                 objeciones, palancas, cómo responderle). No describe su personalidad.
+La profundidad del análisis de un chat se ajusta a cuánto escribió el sujeto (ver _depth_rule):
+si casi no escribió ("gracias"), la respuesta es de 1-3 líneas y sin inferencias.
   - interno:     análisis de MÍ en todos los chats (lo que escriben los demás va solo como contexto).
 
 Cada sujeto (un chat, o "_yo" para el análisis interno) tiene su carpeta en ANALYSIS_DIR con:
@@ -123,16 +126,23 @@ _FORMATS = {
         "8. Notas clave para recordar (viñetas cortas)"
     ),
     ("comerciante", "short"): (
-        "Responde en español, MUY breve (máximo 100 palabras), en 4 viñetas cortas: "
-        "personalidad/tono, estado emocional, interés de compra, y cómo responderle."
+        "Responde en español, MUY breve (máximo 100 palabras), en viñetas cortas, incluyendo SOLO las "
+        "que tengan evidencia en lo que escribió el cliente: qué quiere o busca, intención y etapa de "
+        "compra, si algo le molestó, dudas u objeciones, y el próximo paso concreto para responderle."
     ),
     ("comerciante", "full"): (
         "Responde en español, con texto claro (sin tablas) y estas secciones:\n"
-        "1. Perfil y personalidad percibida (tono, estilo de comunicación)\n"
-        "2. Estado emocional actual\n"
-        "3. Nivel de interés e intención de compra\n"
-        "4. Objeciones, miedos o motivaciones detectadas\n"
-        "5. Cómo conviene responderle (estrategia y tono) y próximo paso sugerido"
+        "1. Qué busca o qué quiere resolver\n"
+        "2. Intención y etapa de compra (curioseando, comparando, decidido, ya compró, postventa) "
+        "y nivel de interés (bajo/medio/alto), con el motivo\n"
+        "3. Qué le molestó o le generó fricción (demoras, precio, respuestas, trato, producto…), "
+        "citando lo que dijo\n"
+        "4. Dudas y objeciones sin resolver\n"
+        "5. Puntos débiles / palancas: lo que más le pesa para decidir (precio, urgencia, confianza, "
+        "calidad, comodidad…)\n"
+        "6. Señales de riesgo (se enfría, compara con otros, puede abandonar o quejarse)\n"
+        "7. Cómo responderle (tono) y próximo paso sugerido\n"
+        "Si una sección no tiene evidencia, escribe solo «Sin señales» en vez de rellenarla."
     ),
     ("interno", "short"): (
         "Responde en español, hablándome de tú, breve (máximo 200 palabras), en viñetas: rasgos de "
@@ -173,7 +183,10 @@ def _intro(focus: str, name: str, n_messages: int, n_chats: int, with_context: b
         return (
             "Eres un psicólogo experto en comportamiento del consumidor y comunicación comercial. "
             "A continuación tienes los últimos mensajes de una conversación de WhatsApp entre un vendedor "
-            "y un cliente. Analiza SOLO al cliente, basándote únicamente en lo que escribió/dijo."
+            "y un cliente. Analiza SOLO al cliente, basándote únicamente en lo que escribió/dijo. "
+            "El objetivo es detectar sus intenciones como cliente (qué quiere, qué tan cerca está de "
+            "comprar, qué le molestó, qué lo frena), NO describir cómo es como persona: no hables de su "
+            "personalidad, su vida ni sus emociones salvo que influyan directamente en la compra."
         )
     return (
         "Eres un psicólogo experto en análisis de personalidad y comunicación interpersonal. "
@@ -182,9 +195,64 @@ def _intro(focus: str, name: str, n_messages: int, n_chats: int, with_context: b
     )
 
 
+MINIMAL_WORDS = 25    # por debajo: la persona casi no escribió ("gracias", "ok", "precio?")
+MODERATE_WORDS = 120  # por debajo: conversación corta, análisis breve aunque se pida detallado
+_STAMP = re.compile(r"^\[[^\]]*\] ")
+_MEDIA_TAG = re.compile(r"\[[^\]]*\]|\(transcripción\)")
+
+
+def subject_stats(material: str, focus: str, name: str) -> Tuple[int, int]:
+    """(mensajes, palabras) que escribió el sujeto (el cliente / el contacto) dentro del material."""
+    me, other = ("Vendedor (yo)", f"Cliente ({name})") if focus == "comerciante" else ("Yo", name)
+    n_msgs = n_words = 0
+    current = None
+    for line in material.splitlines():
+        body = _STAMP.sub("", line, count=1)
+        if body.startswith(other + ": "):
+            current, text = "other", body[len(other) + 2:]
+            n_msgs += 1
+        elif body.startswith(me + ": "):
+            current, text = "me", ""
+        else:  # continuación de un mensaje de varias líneas
+            text = line if current == "other" else ""
+        n_words += len(_MEDIA_TAG.sub(" ", text).split())
+    return n_msgs, n_words
+
+
+def _depth_rule(focus: str, n_msgs: int, n_words: int) -> Tuple[str, str]:
+    """Devuelve ('minimal' | 'moderate' | 'rich', instrucción) según cuánto escribió el sujeto."""
+    who = "el cliente" if focus == "comerciante" else "esta persona"
+    amount = f"{n_msgs} mensaje{'s' if n_msgs != 1 else ''}, ~{n_words} palabras"
+    if n_words < MINIMAL_WORDS:
+        return "minimal", (
+            f"IMPORTANTE: {who} escribió muy poco ({amount}). Responde en español en 1 a 3 líneas: qué "
+            "dijo o pidió y, solo si es evidente, qué quiere. NO deduzcas ni infieras nada más "
+            "(personalidad, emociones, objeciones, nivel de interés, motivaciones): si solo saludó, "
+            "agradeció o confirmó, dilo así y termina. No uses las notas previas para rellenar."
+        )
+    if n_words < MODERATE_WORDS:
+        return "moderate", (
+            f"La conversación es corta ({who}: {amount}). El análisis debe ser proporcional: breve, "
+            "incluye solo los puntos que se apoyan en algo que escribió y omite el resto. No infieras "
+            "rasgos ni intenciones sin evidencia directa."
+        )
+    return "rich", (
+        "Cada conclusión debe apoyarse en algo concreto que escribió (cítalo brevemente cuando ayude). "
+        "La profundidad debe corresponder a lo que hay en la conversación: no rellenes."
+    )
+
+
 def build_prompt(material: str, focus: str, length: str, name: str, n_messages: int,
                  n_chats: int = 1, notes: str = "", with_context: bool = True) -> str:
-    parts = [_intro(focus, name, n_messages, n_chats, with_context), _FORMATS[(focus, length)], _DISCLAIMER]
+    parts = [_intro(focus, name, n_messages, n_chats, with_context)]
+    if focus == "interno":
+        parts += [_FORMATS[(focus, length)], _DISCLAIMER]
+    else:
+        level, rule = _depth_rule(focus, *subject_stats(material, focus, name))
+        if level == "minimal":
+            parts.append(rule)
+        else:
+            parts += [_FORMATS[(focus, "short" if level == "moderate" else length)], rule, _DISCLAIMER]
     if notes.strip():
         parts.append(
             "=== NOTAS PREVIAS (de análisis anteriores; úsalas como contexto y confírmalas o corrígelas "

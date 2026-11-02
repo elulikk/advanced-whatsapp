@@ -7,7 +7,8 @@ from PySide6.QtCore import QObject, Signal
 from app.config import WEBHOOK_PORT, TOKEN_HEADER, get_gateway_token
 from app.db import (
     save_message, save_contact, save_sync_batch, update_chat_avatar, update_message_status, set_reaction,
-    message_exists, revoke_message_local, apply_message_edit
+    message_exists, revoke_message_local, apply_message_edit,
+    mark_messages_read_elsewhere, mark_chat_read_elsewhere, mark_chat_unread_elsewhere
 )
 
 
@@ -22,6 +23,7 @@ class WebhookSignals(QObject):
     call_event = Signal(dict)           # {call_id, chat_jid, name, status: offer|timeout|reject|accept|terminate}
     contact_status = Signal(dict)       # estado nuevo (o borrado) de un contacto
     app_activate = Signal(str)          # otra instancia (o una notificación) pide abrir/mostrar algo: magsapp://...
+    read_elsewhere = Signal(list)       # [chat_jid]: chats que leíste (o marcaste no leídos) en el celular
 
 
 signals = WebhookSignals()
@@ -105,7 +107,8 @@ class WebhookHandler(BaseHTTPRequestHandler):
                         quoted_sender=quoted_sender,
                         status="delivered" if not from_me else "sent",
                         chat_name=chat_name,
-                        media_raw=media_raw
+                        media_raw=media_raw,
+                        already_read=bool(data.get("already_read"))
                     )
 
                     # Emitir señal a la UI únicamente si el mensaje fue almacenado válidamente.
@@ -159,6 +162,29 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 return
             except Exception as e:
                 _log_error("sync_batch", e)
+                self.send_response(500)
+                self.end_headers()
+                return
+
+        elif self.path == "/api/whatsapp/read_elsewhere":
+            # Lo que leíste en el celular: mensajes sueltos o el chat entero (o marcado como no leído)
+            try:
+                changed = set()
+                for ch in data.get("chats") or []:
+                    jids = [j for j in (ch.get("chat_jid"), ch.get("alt_jid")) if j]
+                    if ch.get("message_ids"):
+                        changed.update(mark_messages_read_elsewhere(ch["message_ids"]))
+                    for jid in jids:
+                        if ch.get("all") and mark_chat_read_elsewhere(jid):
+                            changed.add(jid)
+                        elif ch.get("unread") and mark_chat_unread_elsewhere(jid):
+                            changed.add(jid)
+                if changed:
+                    signals.read_elsewhere.emit(sorted(changed))
+                self._ok()
+                return
+            except Exception as e:
+                _log_error("read_elsewhere", e)   # 500 = el gateway lo reintenta
                 self.send_response(500)
                 self.end_headers()
                 return

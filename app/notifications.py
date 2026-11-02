@@ -85,6 +85,8 @@ class NotificationCenter(QObject):
     def _on_message(self, data: dict):
         if not data.get("is_new") or data.get("from_me") or not get_pref("notify_enabled"):
             return
+        if data.get("already_read"):
+            return   # ya lo leíste en el celular
         if data.get("upsert_type") not in (None, "notify"):
             return   # "append": historial o copias de otros dispositivos
         chat_jid = data.get("chat_jid") or ""
