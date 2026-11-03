@@ -47,7 +47,7 @@ LEEME = """Advanced WhatsApp {version}
 
 Actualizar a una versión nueva:
    cerrá Advanced WhatsApp (icono junto al reloj > Salir) y reemplazá esta carpeta por la nueva.
-   Tus chats y la sesión de WhatsApp no se pierden: se guardan en tu usuario (carpeta .advancedwhatsapp).
+   Tus chats y la sesión de WhatsApp no se pierden: se guardan en tu usuario (carpeta .magsapp).
 """
 
 

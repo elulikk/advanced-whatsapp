@@ -30,7 +30,7 @@ const PYTHON_STATUS_URL = process.env.PYTHON_STATUS_URL || `${PYTHON_API}/status
 const PYTHON_AVATAR_URL = process.env.PYTHON_AVATAR_URL || `${PYTHON_API}/avatar`;
 const PYTHON_REACTION_URL = process.env.PYTHON_REACTION_URL || `${PYTHON_API}/reaction`;
 
-const USER_DATA_DIR = path.join(os.homedir(), '.advancedwhatsapp');
+const USER_DATA_DIR = path.join(os.homedir(), '.magsapp');
 const AUTH_DIR = process.env.AUTH_DIR || path.join(USER_DATA_DIR, 'auth_info_baileys');
 const MEDIA_DIR = process.env.MEDIA_DIR || path.join(USER_DATA_DIR, 'media');
 const AVATARS_DIR = path.join(MEDIA_DIR, 'avatars');

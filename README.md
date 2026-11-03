@@ -15,7 +15,7 @@ Aplicación de escritorio nativa para Windows tipo **WhatsApp Desktop**, constru
    - Envío de archivos adjuntos (imágenes y documentos): botón, arrastrar o pegar con `Ctrl+V` (capturas, imágenes copiadas o archivos copiados en el Explorador).
    - Notas de voz: con el campo vacío el botón verde es un micrófono. Graba, pausa, descarta (`Esc`) o envía (`Enter`);
      llegan como nota de voz de WhatsApp con su duración y su onda. Requiere **FFmpeg** (`winget install Gyan.FFmpeg`)
-     para convertir a OGG/Opus; las notas enviadas quedan en `~/.advancedwhatsapp/media/enviados/`.
+     para convertir a OGG/Opus; las notas enviadas quedan en `~/.magsapp/media/enviados/`.
 
    - **Modo resumen**: el botón ✨ junto a la hora de cada mensaje (o «Resumir con IA» en su menú) resume,
      simplifica e interpreta el mensaje con IA: *en pocas palabras*, *qué quiere decir* y *qué espera*. Usa los
@@ -28,18 +28,18 @@ Aplicación de escritorio nativa para Windows tipo **WhatsApp Desktop**, constru
      estar encendida y con internet**; al cerrar la ventana con estados pendientes, Advanced WhatsApp ofrece quedar en la bandeja
      y mientras haya pendientes le pide a Windows que no se suspenda (no evita la suspensión al cerrar la tapa).
      Se envían a los contactos de tu agenda; si la PC estuvo apagada, un estado se publica tarde solo hasta 6 h después
-     de su hora (pasado eso queda como "Vencido"). Cola en `~/.advancedwhatsapp/estados_programados.json`, copias de los archivos
-     en `~/.advancedwhatsapp/media/estados_programados/`.
+     de su hora (pasado eso queda como "Vencido"). Cola en `~/.magsapp/estados_programados.json`, copias de los archivos
+     en `~/.magsapp/media/estados_programados/`.
 
    - **Mis estados activos**: en la misma pestaña se ven los estados publicados en las últimas 24 h (desde Advanced WhatsApp o
      desde el celular), cuántos y quiénes los vieron, se puede abrir la foto/video y eliminarlos para todos.
-     Solo se registran los estados y vistas que llegan mientras Advanced WhatsApp está conectado (`~/.advancedwhatsapp/mis_estados.json`).
+     Solo se registran los estados y vistas que llegan mientras Advanced WhatsApp está conectado (`~/.magsapp/mis_estados.json`).
 
    - **Estados de tus contactos**: en la pestaña Estados aparecen los contactos que publicaron en las últimas 24 h
      (anillo verde = sin ver). El visor es como el del celular: barras de progreso, avanza solo, `←`/`→` o clic a los
      costados para pasar, `Espacio` o mantener apretado para pausar, fotos, videos, audios y textos con su fondo.
      Al verlo, el contacto recibe el "visto" (se puede desactivar en Configuración). Se registran los estados que
-     llegan mientras Advanced WhatsApp está abierto (`~/.advancedwhatsapp/estados_contactos.json`). Punto verde en el menú si hay sin ver.
+     llegan mientras Advanced WhatsApp está abierto (`~/.magsapp/estados_contactos.json`). Punto verde en el menú si hay sin ver.
 
    - **Notificaciones de Windows**: toasts nativos con el nombre y la foto del contacto, el texto (o la miniatura de
      la foto) y botones *Responder* / *Marcar como leído*. Una notificación por chat ("3 mensajes nuevos") que se
@@ -71,15 +71,15 @@ Aplicación de escritorio nativa para Windows tipo **WhatsApp Desktop**, constru
 3. **Robustez**:
    - El gateway se vigila cada 10 s: si se cae o deja de responder, se relanza solo. Si queda abierto un gateway de
      otra versión, se reemplaza; y si la app se cierra de golpe, el gateway se apaga solo (sin procesos huérfanos).
-   - Bandeja de salida en disco (`~/.advancedwhatsapp/outbox.json`): si la ventana no responde, los mensajes se guardan y se
+   - Bandeja de salida en disco (`~/.magsapp/outbox.json`): si la ventana no responde, los mensajes se guardan y se
      entregan en orden después. Antes, tras unos reintentos, se perdían.
    - Reconexión con espera creciente (3 s → 60 s) sin internet; errores sueltos de Baileys ya no tumban el gateway.
    - Advanced WhatsApp figura "en línea" solo con la ventana al frente: así el celular sigue recibiendo sus notificaciones.
-   - Errores de Python a `~/.advancedwhatsapp/app.log` (con `pythonw` no hay consola); arranque de Node en `gateway_stderr.log`.
+   - Errores de Python a `~/.magsapp/app.log` (con `pythonw` no hay consola); arranque de Node en `gateway_stderr.log`.
 
 4. **Arquitectura Robusta y Desacoplada**:
    - **Frontend**: PySide6 (Qt para Python) de alto rendimiento, nativo para Windows.
-   - **Base de Datos Local**: SQLite en modo WAL (`advancedwhatsapp.db`) en el perfil del usuario para máxima velocidad y evitar bloqueos de Google Drive.
+   - **Base de Datos Local**: SQLite en modo WAL (`magsapp.db`) en el perfil del usuario para máxima velocidad y evitar bloqueos de Google Drive.
    - **Gateway Baileys**: Microservicio en Node.js en segundo plano (puerto `5016`) que se comunica con los servidores de WhatsApp mediante WebSockets seguros.
    - **Webhook en Tiempo Real**: Servidor local HTTP (puerto `5015`) que despacha los mensajes y cambios de estado instantáneamente a la UI mediante Qt Signals.
 
@@ -165,7 +165,7 @@ abre `AdvancedWhatsapp.exe`; la primera vez la app crea su icono en el escritori
 
 - **Versión**: sale de `APP_VERSION` en `app/config.py`; subila antes de armar una versión nueva.
 - **Actualizar**: el amigo cierra Advanced WhatsApp (bandeja › Salir) y reemplaza la carpeta. Los chats y la sesión de
-  WhatsApp viven en `~/.advancedwhatsapp`, así que no se pierden.
+  WhatsApp viven en `~/.magsapp`, así que no se pierden.
 - **Aviso de Windows**: como el `.exe` no está firmado, la primera vez aparece "Windows protegió su PC"
   → *Más información* → *Ejecutar de todas formas*.
 - El build usa un entorno aparte (`build/venv`) con solo `requirements.txt`, para no arrastrar otras librerías de
@@ -200,13 +200,13 @@ python main.py
 ## 🔒 Seguridad y datos
 
 - El gateway (`5016`) y el webhook (`5015`) escuchan solo en `127.0.0.1` y exigen el header `X-AdvancedWhatsapp-Token`
-  (excepto `GET /status`). El token se genera una vez en `~/.advancedwhatsapp/gateway.token`.
-- Los datos viven en `~/.advancedwhatsapp/` (base de datos, sesión, media, logs). Las API keys de IA se guardan en
-  texto plano en `~/.advancedwhatsapp/config.ini`; si faltan, se heredan de `MAGNETO/config.ini`.
-- Los análisis psicológicos viven en `~/.advancedwhatsapp/analisis/<chat>/` (`notas.txt` acumulativo y editable +
-  `ultimo_<enfoque>.txt`); el análisis interno (botón 🧠 del rail) en `~/.advancedwhatsapp/analisis/_yo/`.
+  (excepto `GET /status`). El token se genera una vez en `~/.magsapp/gateway.token`.
+- Los datos viven en `~/.magsapp/` (base de datos, sesión, media, logs). Las API keys de IA se guardan en
+  texto plano en `~/.magsapp/config.ini`; si faltan, se heredan de `MAGNETO/config.ini`.
+- Los análisis psicológicos viven en `~/.magsapp/analisis/<chat>/` (`notas.txt` acumulativo y editable +
+  `ultimo_<enfoque>.txt`); el análisis interno (botón 🧠 del rail) en `~/.magsapp/analisis/_yo/`.
 - En el primer arranque se ejecuta `npm install` automáticamente (requiere Node.js y npm en el PATH).
-  El log queda en `~/.advancedwhatsapp/npm_install.log`.
+  El log queda en `~/.magsapp/npm_install.log`.
 
 ## 🧪 Pruebas
 

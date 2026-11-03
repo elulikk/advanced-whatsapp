@@ -3,7 +3,7 @@
 ; que le pasa AppVersion, SourceDir (dist\Advanced WhatsApp) y OutputDir.
 ;
 ; Instala por usuario (sin pedir administrador) en AppData\Local\Programs\Advanced WhatsApp. Correr una versión
-; nueva encima actualiza: cierra Advanced WhatsApp, reemplaza los archivos y conserva los datos (~\.advancedwhatsapp).
+; nueva encima actualiza: cierra Advanced WhatsApp, reemplaza los archivos y conserva los datos (~\.magsapp).
 ; Para actualizaciones silenciosas: AdvancedWhatsapp-Setup-x.y.z.exe /SILENT /SUPPRESSMSGBOXES
 
 #ifndef AppVersion
@@ -79,7 +79,7 @@ begin
   if CurStep = ssPostInstall then
   begin
     { El instalador ya decidió el icono del escritorio: que la app no lo cree por su cuenta }
-    DataDir := ExpandConstant('{%USERPROFILE}\.advancedwhatsapp');
+    DataDir := ExpandConstant('{%USERPROFILE}\.magsapp');
     ForceDirectories(DataDir);
     SaveStringToFile(DataDir + '\acceso_escritorio_creado', '', False);
   end;

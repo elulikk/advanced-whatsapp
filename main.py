@@ -17,7 +17,7 @@ BACKGROUND = "--background" in ARGS
 
 
 def _setup_logging():
-    """Con pythonw no hay consola: los print() y los errores no capturados van a ~/.advancedwhatsapp/app.log."""
+    """Con pythonw no hay consola: los print() y los errores no capturados van a ~/.magsapp/app.log."""
     from app.config import DATA_DIR
     log_path = os.path.join(DATA_DIR, "app.log")
     try:

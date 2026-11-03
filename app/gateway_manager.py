@@ -109,7 +109,7 @@ class GatewayManager:
                     creationflags=flags, timeout=600
                 )
             if r.returncode != 0:
-                return "Falló 'npm install' (ver ~/.advancedwhatsapp/npm_install.log)."
+                return "Falló 'npm install' (ver ~/.magsapp/npm_install.log)."
         except Exception as e:
             return f"Falló 'npm install': {e}"
         return None

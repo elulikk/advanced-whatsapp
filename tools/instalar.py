@@ -2,7 +2,7 @@
 Advanced WhatsApp - Paso final de la instalación (lo llama INSTALAR_DEPENDENCIAS.bat)
 ==========================================================================
 1. Comprueba que las librerías de Python quedaron instaladas.
-2. Prepara el gateway de WhatsApp (copia a ~/.advancedwhatsapp/gateway y corre npm install).
+2. Prepara el gateway de WhatsApp (copia a ~/.magsapp/gateway y corre npm install).
 3. Registra Advanced WhatsApp en Windows (nombre e icono en notificaciones, protocolo advancedwhatsapp://).
 4. Crea los accesos directos con el icono de Advanced WhatsApp en el escritorio y en el menú Inicio.
 

@@ -11,11 +11,11 @@ GATEWAY_DIR = os.path.join(BASE_DIR, "gateway")
 
 # Directorio de datos locales en el perfil de usuario para evitar bloqueos de Google Drive
 USER_HOME = os.path.expanduser("~")
-DATA_DIR = os.path.join(USER_HOME, ".advancedwhatsapp")
+DATA_DIR = os.path.join(USER_HOME, ".magsapp")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # Rutas de base de datos y sesión
-DB_PATH = os.path.join(DATA_DIR, "advancedwhatsapp.db")
+DB_PATH = os.path.join(DATA_DIR, "magsapp.db")
 MEDIA_DIR = os.path.join(DATA_DIR, "media")
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
@@ -62,7 +62,7 @@ MAGNETO_CONFIG_PATH = os.path.abspath(os.path.join(BASE_DIR, "..", "MAGNETO", "c
 
 def load_app_config():
     """
-    Carga la configuración de Advanced WhatsApp desde ~/.advancedwhatsapp/config.ini.
+    Carga la configuración de Advanced WhatsApp desde ~/.magsapp/config.ini.
     Si alguna sección o API Key falta, intenta heredarla de MAGNETO/config.ini.
     """
     import configparser
@@ -135,7 +135,7 @@ def load_app_config():
 
 
 def save_app_config(config) -> bool:
-    """Guarda la configuración en el archivo local de ~/.advancedwhatsapp/config.ini."""
+    """Guarda la configuración en el archivo local de ~/.magsapp/config.ini."""
     try:
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             config.write(f)
