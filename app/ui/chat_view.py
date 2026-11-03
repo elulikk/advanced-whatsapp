@@ -772,7 +772,7 @@ class ChatViewPanel(QWidget):
         if prov not in pa.PROVIDERS:
             prov, model = pa.default_provider_model()
         self.cmb_polish_provider.setCurrentText(prov)
-        self._set_polish_model(model or load_app_config().get(prov.upper(), "model", fallback=""))
+        self._set_polish_model(model or pa.config_model(prov))
         self.cmb_polish_provider.currentTextChanged.connect(self._on_polish_provider_changed)
         self.cmb_polish_model.activated.connect(lambda _: self._save_polish_choice())
 
@@ -2711,7 +2711,7 @@ class ChatViewPanel(QWidget):
 
     def _on_polish_provider_changed(self, prov: str):
         self.cmb_polish_model.clear()
-        self._set_polish_model(load_app_config().get(prov.upper(), "model", fallback=""))
+        self._set_polish_model(pa.config_model(prov))
         self._load_polish_models(prov)
         self._save_polish_choice()
 

@@ -336,6 +336,11 @@ def build_export(focus: str, name: str, analysis: str, qa: List[Tuple[str, str]]
 _CONFIG_SECTION = {"Claude": "ANTHROPIC"}
 
 
+def config_model(provider: str) -> str:
+    """Modelo guardado en config.ini para ese proveedor (la sección de Claude es [ANTHROPIC])."""
+    return load_app_config().get(_CONFIG_SECTION.get(provider, provider.upper()), "model", fallback="")
+
+
 def default_provider_model() -> Tuple[str, str]:
     """Proveedor y modelo activos en la configuración de Advanced WhatsApp."""
     cfg = load_app_config()

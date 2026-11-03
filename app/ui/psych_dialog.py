@@ -350,8 +350,7 @@ class PsychAnalysisDialog(QDialog):
 
     @staticmethod
     def _config_model(prov: str) -> str:
-        from app.config import load_app_config
-        return load_app_config().get(prov.upper(), "model", fallback="")
+        return pa.config_model(prov)
 
     def _load_models_async(self, prov: str):
         def run():
