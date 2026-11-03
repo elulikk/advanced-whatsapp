@@ -173,36 +173,14 @@ class SplashScreen(QWidget):
             p.setBrush(col)
             p.drawEllipse(QPointF(x, y), size, size)
 
-        # Globo de chat verde de WhatsApp con los puntitos de "escribiendo"
         cx = OX + 40 * SCALE
-        by = FLAME_TOP + 0.34 * (FLAME_BOTTOM - FLAME_TOP)
-        bubble = QPainterPath()
-        bubble.addEllipse(QPointF(cx, by), 22, 22)
-        tail = QPainterPath()
-        tail.moveTo(cx - 17, by + 10)
-        tail.lineTo(cx - 24, by + 28)
-        tail.lineTo(cx - 3, by + 20)
-        tail.closeSubpath()
-        bubble = bubble.united(tail)
-        p.setPen(QPen(QColor(10, 4, 2, 220), 3.5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-        p.setBrush(QColor(C["accent_hi"]))
-        p.drawPath(bubble)
-        p.setPen(Qt.NoPen)
-        for i in range(3):
-            lift = max(0.0, math.sin(t * 5.0 - i * 0.9)) * 4
-            p.setBrush(QColor("#ffffff"))
-            p.drawEllipse(QPointF(cx - 10 + i * 10, by - lift), 3.2, 3.2)
-
         # Nombre y porcentaje (con contorno oscuro para que se lea sobre el fuego)
-        self._draw_text(p, "ADVANCED WHATSAPP", cx, FLAME_TOP + 0.50 * (FLAME_BOTTOM - FLAME_TOP), 13, QFont.DemiBold, 2.5)
-        self._draw_text(p, f"{int(self._shown)}%", cx, FLAME_TOP + 0.68 * (FLAME_BOTTOM - FLAME_TOP), 52, QFont.Black, 0)
+        self._draw_text(p, "ADVANCED WHATSAPP", cx, FLAME_TOP + 0.46 * (FLAME_BOTTOM - FLAME_TOP), 13, QFont.DemiBold, 2.5)
+        self._draw_text(p, f"{int(self._shown)}%", cx, FLAME_TOP + 0.64 * (FLAME_BOTTOM - FLAME_TOP), 56, QFont.Black, 0)
 
-        # Estado debajo de la llama
-        p.setPen(QColor(C["text_2"]))
-        f = QFont("Segoe UI")
-        f.setPixelSize(12)
-        p.setFont(f)
-        p.drawText(QRectF(10, FLAME_BOTTOM + 14, W - 20, 30), Qt.AlignHCenter | Qt.AlignTop, self._status)
+        # Estado debajo de la llama (con contorno para que se lea sobre cualquier fondo)
+        cx = OX + 40 * SCALE
+        self._draw_text(p, self._status, cx, FLAME_BOTTOM + 30, 13, QFont.DemiBold, 0.5)
         p.end()
 
     @staticmethod
