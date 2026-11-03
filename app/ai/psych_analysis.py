@@ -247,6 +247,16 @@ def _depth_rule(focus: str, n_msgs: int, n_words: int) -> Tuple[str, str]:
     )
 
 
+_AUTO_HEADER = re.compile(r"^===== \d{4}-\d{2}-\d{2} \d{2}:\d{2} · .*? =====[ \t]*$", re.M)
+
+
+def user_notes(raw: str) -> str:
+    """Solo lo que escribió el usuario: se descartan los análisis y respuestas que la app agregó a las notas
+    (sus encabezados empiezan con la fecha). Así un «Rehacer» no parte de conclusiones anteriores de la IA y
+    no se arma un efecto bola de nieve de autoconfirmación."""
+    return _AUTO_HEADER.split(raw or "")[0].strip()
+
+
 def search_block(searches: List[str], name: str, n_words: int) -> str:
     """Instrucción para responder solo preguntas puntuales sobre el contacto, con veredicto y evidencia."""
     numbered = "\n".join(f"{i}. {q}" for i, q in enumerate(searches, 1))
@@ -277,11 +287,13 @@ def build_prompt(material: str, focus: str, length: str, name: str, n_messages: 
             parts.append(rule)
         else:
             parts += [_FORMATS[(focus, "short" if level == "moderate" else length)], rule, _DISCLAIMER]
-    if notes.strip():
+    notes = user_notes(notes)
+    if notes:
         parts.append(
-            "=== NOTAS PREVIAS (de análisis anteriores; úsalas como contexto y confírmalas o corrígelas "
-            f"según la evidencia nueva) ===\n{notes.strip()[-NOTES_IN_PROMPT:]}\n=== FIN NOTAS ==="
+            "=== MIS NOTAS (las escribí yo; son mi contexto, no conclusiones de un análisis anterior) ===\n"
+            f"{notes[-NOTES_IN_PROMPT:]}\n=== FIN NOTAS ==="
         )
+    parts.append("Haz la lectura desde cero, solo con la evidencia de los mensajes: no hay análisis previos.")
     label = ("MIS CONVERSACIONES" if with_context else "MIS MENSAJES") if focus == "interno" else f"CONVERSACIÓN (últimos {n_messages} mensajes)"
     parts.append(f"=== {label} ===\n{material}\n=== FIN ===")
     return "\n\n".join(parts)

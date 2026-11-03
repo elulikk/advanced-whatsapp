@@ -169,8 +169,9 @@ class PsychAnalysisDialog(QDialog):
         self.notes_edit = QPlainTextEdit()
         self.notes_edit.setStyleSheet(f"QPlainTextEdit {{ {_TEXT} }}")
         self.notes_edit.setPlaceholderText(
-            "Cada análisis y cada pregunta se agregan acá automáticamente. También puedes escribir tus "
-            "propias notas: se usan como contexto en los próximos análisis.")
+            "Cada análisis y cada pregunta se agregan acá automáticamente (solo para que los consultes: no se "
+            "le vuelven a enviar a la IA, así «Rehacer» parte de cero). Tus propias notas escríbelas ARRIBA "
+            "DE TODO, antes del primer encabezado con fecha: esas sí se usan como contexto.")
         nt_lay.addWidget(self.notes_edit, stretch=1)
         nt_row = QHBoxLayout()
         self.lbl_notes = QLabel("")

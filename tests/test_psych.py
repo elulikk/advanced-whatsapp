@@ -106,3 +106,17 @@ def test_save_analysis_records_relation_and_searches():
     assert "Relación: Amigo" in head and "Búsquedas: ¿Me quiere estafar?" in head
     assert pa.load_analysis("111@s.whatsapp.net", "normal")["text"] == "Resultado"
     assert "Preguntas de la búsqueda" in pa.load_notes("111@s.whatsapp.net")
+
+
+def test_redo_ignores_previous_ai_output():
+    jid = "111@s.whatsapp.net"
+    pa.save_notes(jid, "Es mi primo, ojo con la plata.\n")
+    pa.save_analysis(jid, "Ana", "CONCLUSION_VIEJA_ESTAFADOR", "normal", "short", "Claude", "m", 5)
+    pa.save_question(jid, "normal", "¿Y?", "RESPUESTA_VIEJA")
+    notes = pa.load_notes(jid)
+    assert "CONCLUSION_VIEJA_ESTAFADOR" in notes            # sigue guardado para consultarlo
+    mat = "Ana: " + "hola cómo estás todo bien por acá " * 6
+    p = pa.build_prompt(mat, "normal", "short", "Ana", 1, notes=notes)
+    assert "CONCLUSION_VIEJA_ESTAFADOR" not in p and "RESPUESTA_VIEJA" not in p
+    assert "Es mi primo, ojo con la plata." in p and "desde cero" in p
+    assert pa.user_notes(pa.load_notes("sin-notas")) == ""
