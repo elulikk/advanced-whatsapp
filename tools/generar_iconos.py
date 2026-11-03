@@ -15,35 +15,69 @@ import struct
 import sys
 
 from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QLinearGradient, QPainter, QPainterPath
+from PySide6.QtGui import (QColor, QGuiApplication, QImage, QLinearGradient, QPainter, QPainterPath, QPen,
+                           QRadialGradient, QTransform)
 
 ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
 SIZES = (16, 20, 24, 32, 40, 48, 64, 128, 256)
 
-ACCENT_TOP = "#25b88f"
-ACCENT_BOTTOM = "#14826a"
+BG_TOP = "#1c0e09"
+BG_BOTTOM = "#050505"
+FIRE_TOP = "#ffd23f"
+FIRE_MID = "#ff7a18"
+FIRE_BOTTOM = "#d92b0b"
 DARK = "#0b1114"
 
 
+def flame_path(s: float) -> QPainterPath:
+    """Llama (coordenadas de un lienzo de 256 px, escaladas por s)."""
+    f = QPainterPath()
+    f.moveTo(128 * s, 62 * s)
+    f.cubicTo(138 * s, 88 * s, 168 * s, 100 * s, 168 * s, 134 * s)
+    f.cubicTo(168 * s, 158 * s, 150 * s, 176 * s, 128 * s, 176 * s)
+    f.cubicTo(106 * s, 176 * s, 88 * s, 158 * s, 88 * s, 134 * s)
+    f.cubicTo(88 * s, 116 * s, 98 * s, 104 * s, 108 * s, 96 * s)
+    f.cubicTo(108 * s, 108 * s, 116 * s, 114 * s, 120 * s, 114 * s)
+    f.cubicTo(114 * s, 96 * s, 118 * s, 78 * s, 128 * s, 62 * s)
+    f.closeSubpath()
+    return f
+
+
 def draw_icon(size: int) -> QImage:
-    """Cuadrado redondeado verde con un globo de chat blanco y una "M"."""
+    """Cuadrado redondeado negro con brasas, globo de chat de fuego y una llama negra adentro."""
     img = QImage(size, size, QImage.Format_ARGB32)
     img.fill(Qt.transparent)
     p = QPainter(img)
     p.setRenderHint(QPainter.Antialiasing)
     s = size / 256.0
 
-    # Fondo
+    # Fondo negro con resplandor de brasas abajo
     margin = 8 * s if size >= 32 else 0.5
     rect = QRectF(margin, margin, size - 2 * margin, size - 2 * margin)
+    bg = QPainterPath()
+    bg.addRoundedRect(rect, 56 * s, 56 * s)
     grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-    grad.setColorAt(0, QColor(ACCENT_TOP))
-    grad.setColorAt(1, QColor(ACCENT_BOTTOM))
+    grad.setColorAt(0, QColor(BG_TOP))
+    grad.setColorAt(1, QColor(BG_BOTTOM))
     p.setPen(Qt.NoPen)
     p.setBrush(grad)
-    p.drawRoundedRect(rect, 56 * s, 56 * s)
+    p.drawPath(bg)
+    p.save()
+    p.setClipPath(bg)
+    glow = QRadialGradient(QPointF(128 * s, 256 * s), 190 * s)
+    glow.setColorAt(0, QColor(255, 90, 10, 150))
+    glow.setColorAt(0.55, QColor(200, 40, 5, 50))
+    glow.setColorAt(1, QColor(0, 0, 0, 0))
+    p.setBrush(glow)
+    p.drawRect(rect)
+    p.restore()
+    if size >= 32:
+        p.setPen(QPen(QColor(255, 110, 20, 90), max(1.0, 2 * s)))
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(bg)
+        p.setPen(Qt.NoPen)
 
-    # Globo de chat (círculo + colita abajo a la izquierda)
+    # Globo de chat (círculo + colita abajo a la izquierda) con degradado de fuego
     bubble = QPainterPath()
     cx, cy, r = 128 * s, 120 * s, 78 * s
     bubble.addEllipse(QPointF(cx, cy), r, r)
@@ -53,17 +87,27 @@ def draw_icon(size: int) -> QImage:
     tail.lineTo(108 * s, 190 * s)
     tail.closeSubpath()
     bubble = bubble.united(tail)
-    p.setBrush(QColor("#ffffff"))
+    fire = QLinearGradient(QPointF(0, 40 * s), QPointF(0, 208 * s))
+    fire.setColorAt(0, QColor(FIRE_TOP))
+    fire.setColorAt(0.45, QColor(FIRE_MID))
+    fire.setColorAt(1, QColor(FIRE_BOTTOM))
+    p.setBrush(fire)
     p.drawPath(bubble)
 
-    # "M" (en tamaños chicos no se lee: queda solo el globo)
+    # Llama negra (espacio negativo) con una llamita naranja en el centro
+    flame = flame_path(s)
+    p.setBrush(QColor("#0a0605"))
+    p.drawPath(flame)
     if size >= 24:
-        f = QFont("Segoe UI")
-        f.setWeight(QFont.Black)
-        f.setPixelSize(max(1, round(96 * s)))
-        p.setFont(f)
-        p.setPen(QColor(ACCENT_BOTTOM))
-        p.drawText(QRectF(cx - r, cy - r, 2 * r, 2 * r), Qt.AlignCenter, "M")
+        inner = QTransform()
+        inner.translate(128 * s, 174 * s)
+        inner.scale(0.5, 0.5)
+        inner.translate(-128 * s, -174 * s)
+        ig = QLinearGradient(QPointF(0, 120 * s), QPointF(0, 176 * s))
+        ig.setColorAt(0, QColor(FIRE_TOP))
+        ig.setColorAt(1, QColor(FIRE_MID))
+        p.setBrush(ig)
+        p.drawPath(inner.map(flame))
     p.end()
     return img
 
@@ -104,7 +148,7 @@ CHECK_SVG = f"""<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" v
 
 
 def main() -> int:
-    _app = QGuiApplication(sys.argv[:1])   # QFont necesita una aplicación Qt
+    _app = QGuiApplication(sys.argv[:1])   # QImage/QPainter necesitan una aplicación Qt
     os.makedirs(ASSETS, exist_ok=True)
     images = {size: draw_icon(size) for size in SIZES}
     write_ico(os.path.join(ASSETS, "advancedwhatsapp.ico"), images)
