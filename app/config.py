@@ -79,7 +79,7 @@ def load_app_config():
                 pass
 
     # Asegurar secciones básicas
-    for section in ["IA", "GEMINI", "GROQ", "OPENAI", "GENERAL"]:
+    for section in ["IA", "GEMINI", "GROQ", "OPENAI", "ANTHROPIC", "GENERAL"]:
         if not config.has_section(section):
             config.add_section(section)
 

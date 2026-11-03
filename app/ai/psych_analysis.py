@@ -24,14 +24,14 @@ from typing import List, Dict, Optional, Tuple
 from app.ai.ai_service import AIService
 from app.config import ANALYSIS_DIR, load_app_config
 
-PROVIDERS = ["Gemini", "Groq", "OpenAI"]
+PROVIDERS = ["Gemini", "Groq", "OpenAI", "Claude"]
 FOCUSES = {"normal": "Normal (psicológico)", "comerciante": "Comerciante (ventas)", "interno": "Análisis interno (yo)"}
 LENGTHS = {"short": "Corto", "full": "Detallado"}
 MESSAGE_COUNTS = [12, 30, 50, 100, 200]
 DEFAULT_MESSAGES = 50
 SELF_JID = "_yo"
 # Tope de caracteres del material enviado al LLM (Groq tiene límites de tokens por minuto bajos)
-CHAR_BUDGET = {"Gemini": 150_000, "OpenAI": 80_000, "Groq": 18_000}
+CHAR_BUDGET = {"Gemini": 150_000, "OpenAI": 80_000, "Claude": 150_000, "Groq": 18_000}
 NOTES_IN_PROMPT = 4000
 AI_TIMEOUT = 120
 _SEP = "-" * 40
@@ -305,19 +305,24 @@ def build_export(focus: str, name: str, analysis: str, qa: List[Tuple[str, str]]
 
 # ─── LLM ──────────────────────────────────────────────────────────────────────
 
+_CONFIG_SECTION = {"Claude": "ANTHROPIC"}
+
+
 def default_provider_model() -> Tuple[str, str]:
     """Proveedor y modelo activos en la configuración de Advanced WhatsApp."""
     cfg = load_app_config()
     prov = cfg.get("IA", "provider", fallback="Gemini").strip()
+    prov = "Claude" if "anthropic" in prov.lower() else prov
     prov = next((p for p in PROVIDERS if p.lower() in prov.lower()), "Gemini")
-    model = cfg.get("IA", "model", fallback="").strip() or cfg.get(prov.upper(), "model", fallback="")
+    model = (cfg.get("IA", "model", fallback="").strip()
+             or cfg.get(_CONFIG_SECTION.get(prov, prov.upper()), "model", fallback=""))
     return prov, model
 
 
 def list_models(provider: str) -> List[str]:
     svc = AIService()
     return {"Gemini": svc.get_gemini_models, "Groq": svc.get_groq_models,
-            "OpenAI": svc.get_openai_models}[provider]()
+            "OpenAI": svc.get_openai_models, "Claude": svc.get_anthropic_models}[provider]()
 
 
 def ask_llm(prompt: str, provider: Optional[str] = None, model: Optional[str] = None) -> str:
@@ -328,6 +333,8 @@ def ask_llm(prompt: str, provider: Optional[str] = None, model: Optional[str] = 
         return svc.get_groq_response(prompt, model=model, timeout=AI_TIMEOUT)
     if provider == "OpenAI":
         return svc.get_openai_response(prompt, model=model, timeout=AI_TIMEOUT)
+    if provider == "Claude":
+        return svc.get_anthropic_response(prompt, model=model, timeout=AI_TIMEOUT)
     return svc.get_gemini_response(prompt, model_name=model)
 
 

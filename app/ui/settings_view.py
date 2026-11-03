@@ -1,7 +1,7 @@
 """
 Advanced WhatsApp - Panel de Configuración (SettingsPanel)
 ================================================
-Gestión integral de Inteligencia Artificial (Google Gemini, Groq, OpenAI),
+Gestión integral de Inteligencia Artificial (Google Gemini, Groq, OpenAI, Claude),
 estado de la sesión de WhatsApp y parámetros del sistema.
 """
 
@@ -26,8 +26,8 @@ from app.gateway_manager import GatewayManager
 
 
 class PopulateModelsThread(QThread):
-    """Hilo asíncrono para descubrir modelos disponibles en Groq, Gemini y OpenAI."""
-    done = Signal(list, list, list)
+    """Hilo asíncrono para descubrir modelos disponibles en Groq, Gemini, OpenAI y Claude."""
+    done = Signal(list, list, list, list)
 
     def __init__(self, ai_svc: AIService, keys: dict):
         super().__init__()
@@ -39,10 +39,11 @@ class PopulateModelsThread(QThread):
             gemini = self.ai_svc.get_gemini_models(custom_key=self.keys.get("gemini"))
             groq = self.ai_svc.get_groq_models(custom_key=self.keys.get("groq"))
             openai = self.ai_svc.get_openai_models(custom_key=self.keys.get("openai"))
-            self.done.emit(groq or [], gemini or [], openai or [])
+            claude = self.ai_svc.get_anthropic_models(custom_key=self.keys.get("anthropic"))
+            self.done.emit(groq or [], gemini or [], openai or [], claude or [])
         except Exception as e:
             print(f"[SettingsPanel] Error descubriendo modelos: {e}")
-            self.done.emit([], [], [])
+            self.done.emit([], [], [], [])
 
 
 class TestConnectionThread(QThread):
@@ -91,6 +92,7 @@ class SettingsPanel(QWidget):
         self._cached_groq_models = []
         self._cached_gemini_models = []
         self._cached_openai_models = []
+        self._cached_claude_models = []
 
         self._init_ui()
         self.load_settings()
@@ -178,7 +180,7 @@ class SettingsPanel(QWidget):
         grid.setVerticalSpacing(8)
         grid.addWidget(QLabel("Proveedor:"), 0, 0)
         self.cmb_provider = QComboBox()
-        self.cmb_provider.addItems(["Gemini", "Groq", "OpenAI"])
+        self.cmb_provider.addItems(["Gemini", "Groq", "OpenAI", "Claude"])
         self.cmb_provider.currentTextChanged.connect(self._on_provider_changed)
         grid.addWidget(self.cmb_provider, 0, 1)
         grid.addWidget(QLabel("Modelo:"), 0, 2)
@@ -205,6 +207,7 @@ class SettingsPanel(QWidget):
             ("Gemini", "gemini", "AIzaSy...", "Google Gemini: recomendado, multimodal y con cuotas amplias."),
             ("Groq", "groq", "gsk_...", "Groq Cloud: muy rápido (Llama, Qwen y otros modelos abiertos)."),
             ("OpenAI", "openai", "sk-proj-...", "OpenAI: familia GPT (gpt-4o-mini, gpt-4o, o3-mini…)."),
+            ("Claude", "anthropic", "sk-ant-...", "Anthropic Claude: Sonnet, Opus y Haiku (console.anthropic.com)."),
         ]
         for row, (label, key, placeholder, tip) in enumerate(providers):
             lbl = QLabel(f"{label}:")
@@ -523,6 +526,7 @@ class SettingsPanel(QWidget):
         self.edit_gemini_key.setText(self.config.get("GEMINI", "api_key", fallback=""))
         self.edit_groq_key.setText(self.config.get("GROQ", "api_key", fallback=""))
         self.edit_openai_key.setText(self.config.get("OPENAI", "api_key", fallback=""))
+        self.edit_anthropic_key.setText(self.config.get("ANTHROPIC", "api_key", fallback=""))
 
         # Proveedor y Modelo
         saved_provider = self.config.get("IA", "provider", fallback="Gemini")
@@ -538,6 +542,7 @@ class SettingsPanel(QWidget):
         self.config.set("GEMINI", "api_key", self.edit_gemini_key.text().strip())
         self.config.set("GROQ", "api_key", self.edit_groq_key.text().strip())
         self.config.set("OPENAI", "api_key", self.edit_openai_key.text().strip())
+        self.config.set("ANTHROPIC", "api_key", self.edit_anthropic_key.text().strip())
 
         chosen_provider = self.cmb_provider.currentText().strip() or "Gemini"
         chosen_model = self.cmb_model.currentText().strip() or "gemini-2.5-flash"
@@ -551,6 +556,8 @@ class SettingsPanel(QWidget):
             self.config.set("GROQ", "model", chosen_model)
         elif chosen_provider.lower() == "openai":
             self.config.set("OPENAI", "model", chosen_model)
+        elif chosen_provider.lower() == "claude":
+            self.config.set("ANTHROPIC", "model", chosen_model)
 
         if save_app_config(self.config):
             self.ai_service.reload_config(self.config)
@@ -566,20 +573,22 @@ class SettingsPanel(QWidget):
         keys = {
             "gemini": self.edit_gemini_key.text().strip(),
             "groq": self.edit_groq_key.text().strip(),
-            "openai": self.edit_openai_key.text().strip()
+            "openai": self.edit_openai_key.text().strip(),
+            "anthropic": self.edit_anthropic_key.text().strip()
         }
 
         self.thread_models = PopulateModelsThread(self.ai_service, keys)
         self.thread_models.done.connect(self._on_models_loaded)
         self.thread_models.start()
 
-    def _on_models_loaded(self, groq_models, gemini_models, openai_models):
+    def _on_models_loaded(self, groq_models, gemini_models, openai_models, claude_models):
         self.btn_refresh_models.setEnabled(True)
         self.btn_refresh_models.setText("Descubrir modelos")
 
         self._cached_groq_models = groq_models or ["qwen/qwen3.8-27b", "openai/gpt-oss-120b", "llama-3.3-70b-versatile"]
         self._cached_gemini_models = gemini_models or ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.5-flash-lite"]
         self._cached_openai_models = openai_models or ["gpt-4o-mini", "gpt-4o", "gpt-5.6-luna"]
+        self._cached_claude_models = claude_models or ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"]
 
         current_target = self.cmb_model.currentText() or getattr(self, "_saved_model", "gemini-2.5-flash")
         self._on_provider_changed(self.cmb_provider.currentText(), preferred_model=current_target)
@@ -592,12 +601,17 @@ class SettingsPanel(QWidget):
         self.cmb_model.clear()
 
         prov_lower = provider.lower()
+        if "claude" in prov_lower and not target_val.startswith("claude"):
+            target_val = ""   # el modelo de otro proveedor no se mezcla en la lista de Claude
         if "gemini" in prov_lower:
             models = self._cached_gemini_models or ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
             default_choice = "gemini-2.5-flash"
         elif "openai" in prov_lower:
             models = self._cached_openai_models or ["gpt-4o-mini", "gpt-4o"]
             default_choice = "gpt-4o-mini"
+        elif "claude" in prov_lower:
+            models = self._cached_claude_models or ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"]
+            default_choice = "claude-sonnet-5-5"
         else:
             models = self._cached_groq_models or ["qwen/qwen3.8-27b", "openai/gpt-oss-120b"]
             default_choice = "qwen/qwen3.8-27b"
@@ -619,6 +633,10 @@ class SettingsPanel(QWidget):
         elif provider.lower() == "groq":
             key = self.edit_groq_key.text().strip()
             model = self.cmb_model.currentText().strip() if self.cmb_provider.currentText() == "Groq" else "qwen/qwen3.8-27b"
+        elif provider.lower() == "claude":
+            key = self.edit_anthropic_key.text().strip()
+            model = (self.cmb_model.currentText().strip() if self.cmb_provider.currentText() == "Claude"
+                     else "claude-sonnet-5-5")
         else:
             key = self.edit_openai_key.text().strip()
             model = self.cmb_model.currentText().strip() if self.cmb_provider.currentText() == "OpenAI" else "gpt-4o-mini"

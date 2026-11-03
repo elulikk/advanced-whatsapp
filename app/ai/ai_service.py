@@ -1,15 +1,20 @@
 """
 Advanced WhatsApp - Servicio de Inteligencia Artificial (AIService)
 =========================================================
-Conexión con APIs de LLM: Google Gemini, Groq Cloud y OpenAI.
+Conexión con APIs de LLM: Google Gemini, Groq Cloud, OpenAI y Anthropic (Claude).
 Arquitectura sincronizada y compatible con MAGNETO.
 """
 
+import os
 import time
 import requests
 from typing import List, Dict, Optional, Any
 
 from app.config import load_app_config
+
+ANTHROPIC_API = "https://api.anthropic.com/v1"
+ANTHROPIC_VERSION = "2023-06-01"
+ANTHROPIC_FALLBACK_MODELS = ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5", "claude-fable-5-1"]
 
 
 class AIService:
@@ -232,6 +237,32 @@ class AIService:
             print(f"[AIService] Error obteniendo modelos de OpenAI: {e}")
             return fallback_openai
 
+    def _anthropic_key(self, custom_key: Optional[str] = None) -> str:
+        """Clave de Anthropic: la pasada, la de config.ini ([ANTHROPIC] api_key) o la variable ANTHROPIC_API_KEY."""
+        return (custom_key or self.config.get("ANTHROPIC", "api_key", fallback="")
+                or os.environ.get("ANTHROPIC_API_KEY", "")).strip()
+
+    @staticmethod
+    def _anthropic_headers(key: str) -> Dict[str, str]:
+        return {"x-api-key": key, "anthropic-version": ANTHROPIC_VERSION, "content-type": "application/json"}
+
+    def get_anthropic_models(self, custom_key: Optional[str] = None) -> List[str]:
+        """Obtiene la lista de modelos Claude disponibles para la clave (o la lista conocida si no hay clave)."""
+        key = self._anthropic_key(custom_key)
+        if not key:
+            return list(ANTHROPIC_FALLBACK_MODELS)
+        try:
+            res = requests.get(f"{ANTHROPIC_API}/models", headers=self._anthropic_headers(key),
+                               params={"limit": 100}, timeout=10)
+            res.raise_for_status()
+            ids = [m["id"] for m in res.json().get("data", []) if m.get("id", "").startswith("claude")]
+            ordered = ([m for m in ANTHROPIC_FALLBACK_MODELS if m in ids]
+                       + [m for m in ids if m not in ANTHROPIC_FALLBACK_MODELS])
+            return ordered or list(ANTHROPIC_FALLBACK_MODELS)
+        except Exception as e:
+            print(f"[AIService] Error obteniendo modelos de Anthropic: {e}")
+            return list(ANTHROPIC_FALLBACK_MODELS)
+
     # ─── PETICIONES DIRECTAS POR PROVEEDOR ─────────────────────────────────────
 
     def get_gemini_response(self, prompt: str, model_name: Optional[str] = None, api_key: Optional[str] = None) -> str:
@@ -308,6 +339,36 @@ class AIService:
         except Exception as e:
             return self._format_error("OpenAI", e, model)
 
+    def get_anthropic_response(self, prompt: str, model: Optional[str] = None, api_key: Optional[str] = None,
+                               timeout: int = 60, max_tokens: int = 4096) -> str:
+        """Ejecuta una petición de generación con Anthropic (Claude) por la API de Messages."""
+        if not model:
+            model = self.config.get("ANTHROPIC", "model", fallback="claude-sonnet-5-5")
+
+        key = self._anthropic_key(api_key)
+        if not key:
+            return "Error: No se ha configurado la API Key de Anthropic."
+
+        data = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+
+        try:
+            res = requests.post(f"{ANTHROPIC_API}/messages", headers=self._anthropic_headers(key), json=data,
+                                timeout=timeout)
+            if not res.ok:
+                try:
+                    detail = res.json().get("error", {}).get("message", "")
+                except ValueError:
+                    detail = ""
+                raise RuntimeError(f"{res.status_code} {detail or res.reason}")
+            blocks = res.json().get("content", [])
+            return "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        except Exception as e:
+            return self._format_error("Anthropic", e, model)
+
     # ─── VERIFICACIÓN Y PRUEBAS DE CONEXIÓN (API HEALTH CHECK) ────────────────
 
     def test_connection(
@@ -336,6 +397,10 @@ class AIService:
             target_model = model_name or self.config.get("OPENAI", "model", fallback="gpt-4o-mini")
             response = self.get_openai_response(test_prompt, model=target_model, api_key=api_key)
             provider_title = "OpenAI"
+        elif "anthropic" in provider_norm or "claude" in provider_norm:
+            target_model = model_name or self.config.get("ANTHROPIC", "model", fallback="claude-sonnet-5-5")
+            response = self.get_anthropic_response(test_prompt, model=target_model, api_key=api_key)
+            provider_title = "Anthropic (Claude)"
         else:
             return {
                 "success": False,
@@ -401,6 +466,20 @@ class AIService:
 
         active_provider = (provider or self.config.get("IA", "provider", fallback="Gemini")).strip().lower()
         active_model = model_name or self.config.get("IA", "model", fallback="")
+
+        # 0. Si el proveedor activo es Anthropic (Claude)
+        if "anthropic" in active_provider or "claude" in active_provider:
+            res = self.get_anthropic_response(prompt, model=active_model)
+            if res and not self.is_error_response(res):
+                return res
+            if self._ensure_gemini():
+                res_gemini = self.get_gemini_response(prompt, model_name="gemini-2.5-flash")
+                if res_gemini and not self.is_error_response(res_gemini):
+                    return res_gemini
+            res_openai = self.get_openai_response(prompt)
+            if res_openai and not self.is_error_response(res_openai):
+                return res_openai
+            return res
 
         # 1. Si el proveedor activo es Groq
         if "groq" in active_provider:
