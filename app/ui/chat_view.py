@@ -1370,10 +1370,11 @@ class ChatViewPanel(QWidget):
             self._request_summary(msg)
 
     def _request_summary(self, msg: dict):
-        """Pide el resumen (o lo rehace) con el proveedor y modelo elegidos en el redactor."""
+        """Pide el resumen (o lo rehace) con Claude Haiku 5.5; sin clave de Anthropic, con el proveedor y
+        modelo elegidos en el redactor."""
         self._summary_hidden.discard(msg["id"])
-        prov = self.cmb_polish_provider.currentText()
-        model = self.cmb_polish_model.currentText().strip()
+        prov, model = message_summary.summary_ai(self.cmb_polish_provider.currentText(),
+                                                 self.cmb_polish_model.currentText().strip())
         if message_summary.request_summary(msg, self._display_name(), prov, model):
             self._refresh_keep_scroll()
 

@@ -132,3 +132,12 @@ def test_old_mixed_notes_file_is_split():
     assert "ANALISIS_VIEJO" in pa.load_history(jid)
     assert "ANALISIS_VIEJO" not in pa.build_prompt("Ana: " + "hola " * 40, "normal", "short", "Ana", 1,
                                                     notes=pa.load_notes(jid))
+
+
+def test_summary_uses_haiku_when_anthropic_key_exists(monkeypatch):
+    from app.ai import message_summary as ms
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(ms.AIService, "_anthropic_key", lambda self, k=None: "")
+    assert ms.summary_ai("Gemini", "flash") == ("Gemini", "flash")
+    monkeypatch.setattr(ms.AIService, "_anthropic_key", lambda self, k=None: "clave")
+    assert ms.summary_ai("Gemini", "flash") == ("Claude", "claude-haiku-5-5")

@@ -80,6 +80,17 @@ def parse_summary(raw: str) -> List[Tuple[str, str]]:
     return [(title, found[key]) for key, title in SECTIONS if key in found]
 
 
+SUMMARY_PROVIDER, SUMMARY_MODEL = "Claude", "claude-haiku-5-5"
+
+
+def summary_ai(fallback_provider: str, fallback_model: str) -> Tuple[str, str]:
+    """(proveedor, modelo) del botón de resumir: Claude Haiku 5.5 si hay clave de Anthropic (config.ini o variable
+    ANTHROPIC_API_KEY); si no, el proveedor y modelo elegidos en la barra del redactor."""
+    if AIService()._anthropic_key():
+        return SUMMARY_PROVIDER, SUMMARY_MODEL
+    return fallback_provider, fallback_model
+
+
 def summarize(msg: Dict, previous: List[Dict], contact_name: str, provider: str, model: str) -> str:
     """Devuelve el resumen en bruto (formato RESUMEN/INTERPRETACIÓN/ESPERA) o un texto de error
     (ver AIService.is_error_response). Bloqueante: usar en un hilo."""
