@@ -8,21 +8,21 @@ import os as _os
 import sys as _sys
 
 C = {
-    "rail":        "#0a0807",   # barra de navegación
-    "panel":       "#100d0c",   # lista de chats, paneles laterales
-    "surface":     "#171312",   # cabeceras, compositor
-    "raised":      "#1f1917",   # campos de texto, botones
-    "hover":       "#271f1b",
-    "selected":    "#33251d",   # selección con un dejo de brasa
-    "border":      "#2b221e",
-    "border_soft": "#1f1815",
-    "border_hi":   "#6b3f26",   # borde al pasar el mouse (brasa)
-    "chat_bg":     "#080605",
-    "bubble_in":   "#1e1816",
+    "rail":        "#120f0d",   # barra de navegación
+    "panel":       "#181412",   # lista de chats, paneles laterales
+    "surface":     "#201b19",   # cabeceras, compositor
+    "raised":      "#29221f",   # campos de texto, botones
+    "hover":       "#322a26",
+    "selected":    "#3d2d24",   # selección con un dejo de brasa
+    "border":      "#372d28",
+    "border_soft": "#2a221e",
+    "border_hi":   "#7a4a2e",   # borde al pasar el mouse (brasa)
+    "chat_bg":     "#0f0c0b",
+    "bubble_in":   "#28211e",
     "bubble_out":  "#0c4437",
     "text":        "#e6e0dc",
     "text_2":      "#9a8e87",
-    "text_3":      "#6a5d56",
+    "text_3":      "#77695f",
     "accent":      "#1fa37f",   # el verde de WhatsApp se mantiene
     "accent_hi":   "#25b88f",
     "accent_dim":  "#16332b",

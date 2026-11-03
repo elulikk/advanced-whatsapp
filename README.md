@@ -94,9 +94,9 @@ Advanced WhatsApp/
 │   ├── config.py             # Configuración de rutas y puertos
 │   ├── db.py                 # Capa de base de datos SQLite (chats, mensajes, contactos)
 │   ├── gateway_manager.py     # Administrador del proceso Node.js Baileys (instala dependencias solo)
-│   ├── ai/ai_service.py       # IA: Gemini, Groq y OpenAI con fallback automático
+│   ├── ai/ai_service.py       # IA: Gemini, Groq, OpenAI y Claude con fallback automático
 │   ├── ai/message_summary.py  # Modo resumen: resume e interpreta un mensaje (botón ✨)
-│   ├── ai/psych_analysis.py   # Análisis psicológico: Normal / Comerciante / Interno (yo), notas por chat
+│   ├── ai/psych_analysis.py   # Análisis psicológico: por tipo de relación / preguntas puntuales / interno (yo), notas por chat
 │   ├── webhook_server.py      # Servidor HTTP local de eventos y señales Qt
 │   ├── notifications.py       # Cuándo y cómo avisar (toasts, sonido, llamadas, parpadeo)
 │   ├── windows_integration.py # Toasts nativos, advancedwhatsapp://, menú Inicio, inicio con Windows, contador de barra

@@ -136,7 +136,7 @@ class ContactInfoPanel(QFrame):
         self._add_separator()
 
         # Notas
-        lbl_notes = QLabel("NOTAS SOBRE TU CLIENTE")
+        lbl_notes = QLabel("NOTAS SOBRE ESTE CONTACTO")
         lbl_notes.setObjectName("sectionLabel")
         self.body_layout.addWidget(lbl_notes)
         self.txt_notes = QTextEdit()

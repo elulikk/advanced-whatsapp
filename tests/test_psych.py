@@ -68,3 +68,41 @@ def test_prefs_merge_and_model_results():
     prefs = pa.load_prefs()
     assert prefs["length"] == "full" and prefs["models"] == {"Groq": "qwen", "Gemini": "flash"}
     assert pa.model_results("Groq")["qwen"]["ok"] is True and pa.model_results("OpenAI") == {}
+
+
+def test_relation_kind_and_searches_in_prompt():
+    mat = "Ana: " + "necesito plata urgente confía en mí " * 8
+    general = pa.build_prompt(mat, "normal", "short", "Ana", 1)
+    assert "AMIGO" not in general and "TRABAJO" not in general
+    for bad in ("vendedor", "cliente", "compra", "venta"):
+        assert bad not in general.lower()
+    amigo = pa.build_prompt(mat, "normal", "short", "Ana", 1, relation="Amigo")
+    assert "AMIGO" in amigo
+    custom = pa.build_prompt(mat, "normal", "short", "Ana", 1, relation="Vecino")
+    assert "Vecino" in custom
+    q = pa.build_prompt(mat, "normal", "short", "Ana", 1, relation="Trabajo",
+                        searches=["¿Me quiere estafar?", "¿Está enojado/a conmigo?"])
+    assert "1. ¿Me quiere estafar?" in q and "2. ¿Está enojado/a conmigo?" in q
+    assert "Sin evidencia suficiente" in q and "TRABAJO" in q
+
+
+def test_kinds_and_custom_searches_persist():
+    assert pa.load_kinds()[:2] == ["General", "Amigo"] and "Familia" in pa.load_kinds() and "Trabajo" in pa.load_kinds()
+    pa.remember_kind("Vecino")
+    pa.remember_kind("amigo")          # ya existe: no se duplica
+    assert pa.load_kinds()[-1] == "Vecino" and len(pa.load_kinds()) == len(pa.KIND_HINTS) + 1
+    assert [q for q, own in pa.load_searches() if not own] == pa.DEFAULT_SEARCHES
+    pa.add_search("¿Me debe plata?")
+    pa.add_search("¿Me debe plata?")
+    assert [q for q, own in pa.load_searches() if own] == ["¿Me debe plata?"]
+    pa.remove_search("¿Me debe plata?")
+    assert [q for q, own in pa.load_searches() if own] == []
+
+
+def test_save_analysis_records_relation_and_searches():
+    path = pa.save_analysis("111@s.whatsapp.net", "Ana", "Resultado", "normal", "short", "Claude", "m", 5,
+                            "Amigo", ["¿Me quiere estafar?"])
+    head = open(path, encoding="utf-8").read()
+    assert "Relación: Amigo" in head and "Búsquedas: ¿Me quiere estafar?" in head
+    assert pa.load_analysis("111@s.whatsapp.net", "normal")["text"] == "Resultado"
+    assert "Preguntas de la búsqueda" in pa.load_notes("111@s.whatsapp.net")

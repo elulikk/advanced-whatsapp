@@ -3,7 +3,7 @@ import threading
 from typing import Optional
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QLabel, QTextBrowser, QPushButton, QHBoxLayout, QComboBox, QTabWidget,
-    QWidget, QLineEdit, QPlainTextEdit, QMenu, QCheckBox
+    QWidget, QLineEdit, QPlainTextEdit, QMenu, QCheckBox, QGridLayout, QInputDialog
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QGuiApplication, QDesktopServices, QTextCursor, QColor, QPalette
@@ -12,20 +12,22 @@ from PySide6.QtCore import QUrl
 from app.ai.ai_service import AIService
 from app.ai import psych_analysis as pa
 from app.db import get_messages, get_chats_for_self_analysis
+from app.ui.theme import C
 
 # El tema global (app/ui/theme.py) define botones, combos, pestañas, campos y menús
 _BTN = _COMBO = _TABS = _INPUT = _MENU = ""
 _TEXT = (
-    "background-color: #171312; color: #e6e0dc; border: 1px solid #2b221e; border-radius: 8px;"
+    "background-color: #201b19; color: #e6e0dc; border: 1px solid #372d28; border-radius: 8px;"
     " padding: 8px 10px; font-size: 13px;"
 )
 _MODEL_OK, _MODEL_FAIL, _MODEL_NEW = "#25b88f", "#e5534b", "#dce3e6"
 
 
 class PsychAnalysisDialog(QDialog):
-    """Análisis psicológico con enfoque Normal / Comerciante (del contacto) o Interno (de mí en todos
-    los chats). Guarda notas acumuladas por sujeto, permite preguntas de seguimiento y exportar el
-    análisis para seguirlo en otro chatbot. Sin jid solo está disponible el análisis interno."""
+    """Análisis psicológico del contacto (según el tipo de relación y, si se quiere, con preguntas
+    puntuales como «¿me quiere estafar?») o interno (de mí en todos los chats). Nunca arranca solo.
+    Guarda notas acumuladas por sujeto, permite preguntas de seguimiento y exportar el análisis para
+    seguirlo en otro chatbot. Sin jid solo está disponible el análisis interno."""
     _done = Signal(str, str, object)          # tipo ('analysis' | 'answer'), texto, meta
     _models_ready = Signal(str, list)         # proveedor, modelos
 
@@ -39,7 +41,16 @@ class PsychAnalysisDialog(QDialog):
         self._busy = False
         self._notes_jid = ""         # sujeto cuyas notas están cargadas en el editor
         self.resize(720, 680)
-        self.setStyleSheet("QDialog QLabel { color: #8a979e; font-size: 12px; }")
+        self.setStyleSheet(
+            "QDialog QLabel { color: #8a979e; font-size: 12px; }"
+            f"QPushButton#chip {{ padding: 4px 12px; border-radius: 13px; background-color: {C['raised']};"
+            f" border: 1px solid {C['border']}; color: {C['text_2']}; font-size: 12px; text-align: left; }}"
+            f"QPushButton#chip:hover {{ border-color: {C['border_hi']}; color: {C['text']}; }}"
+            f"QPushButton#chip:checked {{ background-color: {C['ember_dim']}; border-color: {C['ember']};"
+            f" color: {C['ember_hi']}; }}"
+            f"QPushButton#chipAdd {{ padding: 4px 12px; border-radius: 13px; background: transparent;"
+            f" border: 1px dashed {C['border_hi']}; color: {C['text_2']}; font-size: 12px; }}"
+            f"QPushButton#chipAdd:hover {{ color: {C['ember_hi']}; border-color: {C['ember']}; }}")
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 14, 16, 14)
@@ -79,6 +90,33 @@ class PsychAnalysisDialog(QDialog):
         opts.addStretch(1)
         lay.addLayout(opts)
 
+        # Tipo de análisis (combo editable) y búsquedas opcionales
+        kind_row = QHBoxLayout()
+        kind_row.setSpacing(8)
+        self.lbl_kind = QLabel("Tipo de análisis:")
+        kind_row.addWidget(self.lbl_kind)
+        self.cmb_kind = QComboBox()
+        self.cmb_kind.setEditable(True)
+        self.cmb_kind.setMinimumWidth(200)
+        self.cmb_kind.addItems(pa.load_kinds())
+        self.cmb_kind.setToolTip("Qué relación tienes con esta persona (amigo, familia, trabajo…): orienta la lectura.\n"
+                                 "Puedes escribir otro tipo; queda guardado para la próxima.")
+        kind_row.addWidget(self.cmb_kind)
+        kind_row.addStretch(1)
+        lay.addLayout(kind_row)
+
+        self.search_box = QWidget()
+        sb = QVBoxLayout(self.search_box)
+        sb.setContentsMargins(0, 0, 0, 0)
+        sb.setSpacing(6)
+        sb.addWidget(QLabel("Qué buscar en la conversación (opcional; si no marcas nada, se hace el análisis general):"))
+        self.search_grid = QGridLayout()
+        self.search_grid.setSpacing(6)
+        sb.addLayout(self.search_grid)
+        lay.addWidget(self.search_box)
+        self._search_chips = []
+        self._rebuild_searches()
+
         ia = QHBoxLayout()
         ia.setSpacing(8)
         ia.addWidget(QLabel("IA:"))
@@ -90,7 +128,7 @@ class PsychAnalysisDialog(QDialog):
         self.cmb_model.setToolTip("Modelos disponibles del proveedor (se cargan automáticamente)")
         ia.addWidget(self.cmb_model, stretch=1)
         lay.addLayout(ia)
-        for c in (self.cmb_focus, self.cmb_length, self.cmb_count, self.cmb_provider):
+        for c in (self.cmb_focus, self.cmb_length, self.cmb_count, self.cmb_provider, self.cmb_kind):
             c.setStyleSheet(_COMBO)
         self.cmb_model.setStyleSheet(_COMBO.replace(" color: #e9edef;", ""))
 
@@ -179,19 +217,17 @@ class PsychAnalysisDialog(QDialog):
         self.cmb_length.setCurrentIndex(max(0, self.cmb_length.findData(self._prefs.get("length", "short"))))
         self.cmb_count.setCurrentIndex(max(0, self.cmb_count.findData(self._prefs.get("count", pa.DEFAULT_MESSAGES))))
         self.chk_context.setChecked(bool(self._prefs.get("with_context", True)))
+        self.cmb_kind.setCurrentText(self._prefs.get("kind") or pa.DEFAULT_KIND)
         self.cmb_provider.setCurrentText(prov)
         self._set_model(model)
         self._load_models_async(prov)
         self.cmb_provider.currentTextChanged.connect(self._on_provider_changed)
         self.cmb_model.currentTextChanged.connect(self._color_current_model)
 
-        last_chat_focus = self._prefs.get("focus_chat")
-        if last_chat_focus not in ("normal", "comerciante"):
-            last_chat_focus = "normal"
-        focus = focus or (last_chat_focus if self.chat_jid else "interno")
+        focus = focus or ("normal" if self.chat_jid else "interno")
         self.cmb_focus.setCurrentIndex(max(0, self.cmb_focus.findData(focus)))
         self.cmb_focus.currentIndexChanged.connect(self._on_focus_changed)
-        self._on_focus_changed(auto_run=True)
+        self._on_focus_changed()
 
     # ─── sujeto / enfoque ─────────────────────────────────────────────────────
 
@@ -204,13 +240,66 @@ class PsychAnalysisDialog(QDialog):
     def _subject_name(self) -> str:
         return "yo" if self._focus() == "interno" else self.chat_name
 
-    def _on_focus_changed(self, *_, auto_run: bool = False):
+    # ─── búsquedas rápidas ────────────────────────────────────────────────────
+
+    def _rebuild_searches(self):
+        """Dibuja los botones de búsqueda (predeterminados y propios), conservando los marcados."""
+        checked = {c.text() for c in self._search_chips if c.isChecked()}
+        while self.search_grid.count():
+            w = self.search_grid.takeAt(0).widget()
+            if w:
+                w.deleteLater()
+        self._search_chips = []
+        widgets = []
+        for text, own in pa.load_searches():
+            chip = QPushButton(text)
+            chip.setObjectName("chip")
+            chip.setCheckable(True)
+            chip.setChecked(text in checked)
+            chip.setCursor(Qt.PointingHandCursor)
+            chip.setToolTip("Marca una o varias para que la IA responda solo eso"
+                            + (" (clic derecho para quitarla)" if own else ""))
+            chip.toggled.connect(self._refresh_buttons)
+            if own:
+                chip.setContextMenuPolicy(Qt.CustomContextMenu)
+                chip.customContextMenuRequested.connect(lambda _pos, t=text: self._remove_search(t))
+            self._search_chips.append(chip)
+            widgets.append(chip)
+        add = QPushButton("＋ Otra pregunta…")
+        add.setObjectName("chipAdd")
+        add.setCursor(Qt.PointingHandCursor)
+        add.clicked.connect(self._add_search)
+        widgets.append(add)
+        for i, w in enumerate(widgets):
+            self.search_grid.addWidget(w, i // 3, i % 3)
+
+    def _selected_searches(self) -> list:
+        return [c.text() for c in self._search_chips if c.isChecked()]
+
+    def _add_search(self):
+        text, ok = QInputDialog.getText(self, "Nueva pregunta", "¿Qué quieres que busque la IA en la conversación?")
+        if ok and text.strip():
+            pa.add_search(text.strip())
+            self._rebuild_searches()
+            for c in self._search_chips:
+                if c.text() == text.strip():
+                    c.setChecked(True)
+
+    def _remove_search(self, text: str):
+        pa.remove_search(text)
+        self._rebuild_searches()
+        self._refresh_buttons()
+
+    def _on_focus_changed(self, *_):
         focus = self._focus()
         interno = focus == "interno"
         self.setWindowTitle("Análisis interno — yo" if interno else f"Análisis psicológico — {self.chat_name}")
         self.lbl_count.setVisible(not interno)
         self.cmb_count.setVisible(not interno)
         self.chk_context.setVisible(interno)
+        self.lbl_kind.setVisible(not interno)
+        self.cmb_kind.setVisible(not interno)
+        self.search_box.setVisible(not interno)
         self._analysis, self._qa, self._material, self._material_info = "", [], "", (0, 0)
         self._flush_notes_editor()
         self._load_notes_editor()
@@ -229,12 +318,12 @@ class PsychAnalysisDialog(QDialog):
                 "hacerle preguntas o copiarlo para seguir en otro chatbot.\n\n"
                 "Tus mensajes se envían al proveedor de IA elegido. Pulsa **🧠 Analizar** para empezar.")
             self.lbl_status.setText("")
-        elif auto_run:
-            self._start()
-            return
         else:
-            self.browser.setMarkdown(f"Todavía no hay un análisis «{pa.FOCUSES[focus]}» de {self.chat_name}. "
-                                     "Pulsa **🧠 Analizar**.")
+            self.browser.setMarkdown(
+                f"### {self.chat_name}\n\nElige el **tipo de análisis** (amigo, familia, trabajo… o escribe uno) "
+                "y, si quieres, marca **qué buscar** (por ejemplo «¿Me quiere estafar?»). Después pulsa "
+                "**Analizar**: no se hace nada hasta que lo pidas.\n\n"
+                "Los mensajes se envían al proveedor de IA elegido.")
             self.lbl_status.setText("")
         self._refresh_buttons()
 
@@ -302,11 +391,10 @@ class PsychAnalysisDialog(QDialog):
     def _remember_settings(self):
         prov, model = self.cmb_provider.currentText(), self.cmb_model.currentText().strip()
         prefs = {"length": self.cmb_length.currentData(), "count": self.cmb_count.currentData(),
-                 "provider": prov, "with_context": self.chk_context.isChecked()}
+                 "provider": prov, "with_context": self.chk_context.isChecked(),
+                 "kind": self.cmb_kind.currentText().strip() or pa.DEFAULT_KIND}
         if model:
             prefs["models"] = {prov: model}
-        if self._focus() in ("normal", "comerciante"):
-            prefs["focus_chat"] = self._focus()
         pa.save_prefs(**prefs)
         self._prefs = pa.load_prefs()
 
@@ -336,13 +424,14 @@ class PsychAnalysisDialog(QDialog):
     def _set_busy(self, busy: bool):
         self._busy = busy
         for w in (self.cmb_focus, self.cmb_length, self.cmb_count, self.cmb_provider, self.cmb_model,
-                  self.input_question, self.chk_context):
+                  self.input_question, self.chk_context, self.cmb_kind, self.search_box):
             w.setEnabled(not busy)
         self._refresh_buttons()
 
-    def _refresh_buttons(self):
+    def _refresh_buttons(self, *_):
         has = bool(self._analysis)
-        self.btn_run.setText("Rehacer" if has else "Analizar")
+        searching = self._focus() == "normal" and bool(self._selected_searches())
+        self.btn_run.setText("Buscar" if searching else ("Rehacer" if has else "Analizar"))
         self.btn_run.setEnabled(not self._busy)
         self.btn_copy.setEnabled(has and not self._busy)
         self.btn_ask.setEnabled(has and not self._busy)
@@ -360,12 +449,21 @@ class PsychAnalysisDialog(QDialog):
         count = self.cmb_count.currentData()
         jid, name = self._subject_jid(), self._subject_name()
         notes = self.notes_edit.toPlainText()
+        interno = focus == "interno"
+        relation = "" if interno else (self.cmb_kind.currentText().strip() or pa.DEFAULT_KIND)
+        searches = [] if interno else self._selected_searches()
+        if relation:
+            pa.remember_kind(relation)
+            if self.cmb_kind.findText(relation, Qt.MatchFixedString) < 0:
+                self.cmb_kind.addItem(relation)
         self._remember_settings()
         self._set_busy(True)
-        what = "tus conversaciones de todos los chats" if focus == "interno" else f"los últimos {count} mensajes"
-        self.lbl_status.setText(f"🧠 Analizando {what} con {prov} {model}…")
+        what = "tus conversaciones de todos los chats" if interno else f"los últimos {count} mensajes"
+        verb = "🔎 Buscando en" if searches else "🧠 Analizando"
+        self.lbl_status.setText(f"{verb} {what} con {prov} {model}…")
         self.browser.setPlainText("Consultando a la IA, esto puede tardar unos segundos…")
-        meta = {"focus": focus, "length": length, "prov": prov, "model": model, "jid": jid, "name": name}
+        meta = {"focus": focus, "length": length, "prov": prov, "model": model, "jid": jid, "name": name,
+                "relation": relation, "searches": searches}
         with_context = self._with_context
 
         def run():
@@ -376,7 +474,7 @@ class PsychAnalysisDialog(QDialog):
                     text = "Error: No hay mensajes de texto para analizar."
                 else:
                     prompt = pa.build_prompt(material, focus, length, name, n_msgs, n_chats, notes,
-                                             with_context)
+                                             with_context, relation, searches)
                     text = pa.ask_llm(prompt, prov, model)
                     meta["called_llm"] = True
             except Exception as e:  # nunca dejar el diálogo colgado
@@ -429,7 +527,8 @@ class PsychAnalysisDialog(QDialog):
             self._material, self._material_info = meta["material"], (meta["n_msgs"], meta["n_chats"])
             try:
                 path = pa.save_analysis(meta["jid"], meta["name"], text, meta["focus"], meta["length"],
-                                        meta["prov"], meta["model"], meta["n_msgs"])
+                                        meta["prov"], meta["model"], meta["n_msgs"],
+                                        meta.get("relation", ""), meta.get("searches"))
                 extra = f" ({meta['n_msgs']} mensajes tuyos de {meta['n_chats']} chats)" \
                     if meta["focus"] == "interno" else ""
                 self.lbl_status.setText(f"💾 Guardado en {path}{extra}\n"

@@ -1,13 +1,14 @@
 """
 Advanced WhatsApp - Análisis psicológico
 ==============================
-Tres enfoques:
-  - normal:      lectura psicológica del contacto (personalidad, puntos fuertes y débiles, etc.).
-  - comerciante: intenciones del contacto como cliente (qué busca, etapa de compra, qué le molestó,
-                 objeciones, palancas, cómo responderle). No describe su personalidad.
+Dos enfoques:
+  - normal:  lectura psicológica del contacto (personalidad, puntos fuertes y débiles, etc.), ajustada al
+             tipo de relación (amigo, familia, pareja, trabajo… o uno propio) y, si se quiere, centrada en
+             preguntas puntuales («¿me quiere estafar?», «¿está enojado?»…).
+  - interno: análisis de MÍ en todos los chats (lo que escriben los demás va solo como contexto).
 La profundidad del análisis de un chat se ajusta a cuánto escribió el sujeto (ver _depth_rule):
 si casi no escribió ("gracias"), la respuesta es de 1-3 líneas y sin inferencias.
-  - interno:     análisis de MÍ en todos los chats (lo que escriben los demás va solo como contexto).
+El análisis nunca arranca solo: lo pide el usuario.
 
 Cada sujeto (un chat, o "_yo" para el análisis interno) tiene su carpeta en ANALYSIS_DIR con:
   - notas.txt:            notas acumuladas (cada análisis y cada pregunta se agregan; editable a mano).
@@ -25,7 +26,28 @@ from app.ai.ai_service import AIService
 from app.config import ANALYSIS_DIR, load_app_config
 
 PROVIDERS = ["Gemini", "Groq", "OpenAI", "Claude"]
-FOCUSES = {"normal": "Normal (psicológico)", "comerciante": "Comerciante (ventas)", "interno": "Análisis interno (yo)"}
+FOCUSES = {"normal": "Contacto", "interno": "Análisis interno (yo)"}
+
+# Tipo de relación: orienta la lectura. El combo del diálogo es editable: se puede escribir cualquier otro.
+DEFAULT_KIND = "General"
+KIND_HINTS = {
+    "General": "",
+    "Amigo": "Es un AMIGO: mira la reciprocidad, la confianza, el apoyo mutuo y si la amistad se siente pareja o desbalanceada.",
+    "Familia": "Es un FAMILIAR: mira la dinámica familiar, los roles, los reproches o cargas históricas y cómo se cuidan o se presionan.",
+    "Pareja": "Es mi PAREJA (o alguien con quien hay un vínculo afectivo): mira el afecto, el compromiso, los conflictos y la comunicación emocional.",
+    "Trabajo": "Es alguien del TRABAJO: mira el trato profesional, la jerarquía, los acuerdos, los límites y si hay presión o ambigüedad.",
+}
+# Búsquedas rápidas (opcionales): preguntas puntuales sobre la conversación. Se pueden agregar propias.
+DEFAULT_SEARCHES = [
+    "¿Me quiere estafar?",
+    "¿Me está poniendo a prueba?",
+    "¿Está enojado/a conmigo?",
+    "¿Me está mintiendo?",
+    "¿Me está manipulando?",
+    "¿Está interesado/a en mí?",
+    "¿Qué quiere realmente de mí?",
+    "¿Cómo está de ánimo?",
+]
 LENGTHS = {"short": "Corto", "full": "Detallado"}
 MESSAGE_COUNTS = [12, 30, 50, 100, 200]
 DEFAULT_MESSAGES = 50
@@ -72,7 +94,7 @@ def _message_line(m: Dict, who: str) -> str:
 
 def format_conversation(messages: List[Dict], name: str, focus: str = "normal") -> str:
     """Transcript cronológico 'Yo / Contacto: texto' de un chat."""
-    me, other = ("Vendedor (yo)", f"Cliente ({name})") if focus == "comerciante" else ("Yo", name)
+    me, other = "Yo", name
     lines = (_message_line(m, me if m.get("from_me") else other) for m in messages)
     return "\n".join(l for l in lines if l)
 
@@ -125,25 +147,6 @@ _FORMATS = {
         "7. Recomendaciones para comunicarme mejor con esta persona\n"
         "8. Notas clave para recordar (viñetas cortas)"
     ),
-    ("comerciante", "short"): (
-        "Responde en español, MUY breve (máximo 100 palabras), en viñetas cortas, incluyendo SOLO las "
-        "que tengan evidencia en lo que escribió el cliente: qué quiere o busca, intención y etapa de "
-        "compra, si algo le molestó, dudas u objeciones, y el próximo paso concreto para responderle."
-    ),
-    ("comerciante", "full"): (
-        "Responde en español, con texto claro (sin tablas) y estas secciones:\n"
-        "1. Qué busca o qué quiere resolver\n"
-        "2. Intención y etapa de compra (curioseando, comparando, decidido, ya compró, postventa) "
-        "y nivel de interés (bajo/medio/alto), con el motivo\n"
-        "3. Qué le molestó o le generó fricción (demoras, precio, respuestas, trato, producto…), "
-        "citando lo que dijo\n"
-        "4. Dudas y objeciones sin resolver\n"
-        "5. Puntos débiles / palancas: lo que más le pesa para decidir (precio, urgencia, confianza, "
-        "calidad, comodidad…)\n"
-        "6. Señales de riesgo (se enfría, compara con otros, puede abandonar o quejarse)\n"
-        "7. Cómo responderle (tono) y próximo paso sugerido\n"
-        "Si una sección no tiene evidencia, escribe solo «Sin señales» en vez de rellenarla."
-    ),
     ("interno", "short"): (
         "Responde en español, hablándome de tú, breve (máximo 200 palabras), en viñetas: rasgos de "
         "personalidad, estilo de comunicación, puntos fuertes, puntos débiles y patrones a trabajar."
@@ -162,7 +165,8 @@ _FORMATS = {
 }
 
 
-def _intro(focus: str, name: str, n_messages: int, n_chats: int, with_context: bool = True) -> str:
+def _intro(focus: str, name: str, n_messages: int, n_chats: int, with_context: bool = True,
+           relation: str = "") -> str:
     if focus == "interno" and with_context:
         return (
             "Eres un psicólogo experto en análisis de personalidad y comunicación. A continuación tienes "
@@ -179,20 +183,21 @@ def _intro(focus: str, name: str, n_messages: int, n_chats: int, with_context: b
             "distintas, agrupados por chat; no ves lo que me respondieron). Haz un análisis psicológico "
             "de MÍ, el autor de todos estos mensajes."
         )
-    if focus == "comerciante":
-        return (
-            "Eres un psicólogo experto en comportamiento del consumidor y comunicación comercial. "
-            "A continuación tienes los últimos mensajes de una conversación de WhatsApp entre un vendedor "
-            "y un cliente. Analiza SOLO al cliente, basándote únicamente en lo que escribió/dijo. "
-            "El objetivo es detectar sus intenciones como cliente (qué quiere, qué tan cerca está de "
-            "comprar, qué le molestó, qué lo frena), NO describir cómo es como persona: no hables de su "
-            "personalidad, su vida ni sus emociones salvo que influyan directamente en la compra."
-        )
     return (
         "Eres un psicólogo experto en análisis de personalidad y comunicación interpersonal. "
         f"A continuación tienes los últimos mensajes de una conversación de WhatsApp entre yo y {name}. "
         f"Analiza SOLO a {name}, basándote en lo que escribió/dijo (mis mensajes son contexto)."
+        + _relation_line(relation)
     )
+
+
+def _relation_line(relation: str) -> str:
+    """Frase que le cuenta a la IA qué tipo de relación hay (vacía en el análisis general)."""
+    relation = (relation or "").strip()
+    if not relation or relation.lower() == DEFAULT_KIND.lower():
+        return ""
+    hint = next((h for k, h in KIND_HINTS.items() if k.lower() == relation.lower()), "")
+    return " " + (hint or f"El tipo de relación es: {relation}. Tenlo en cuenta al interpretar el trato y los silencios.")
 
 
 MINIMAL_WORDS = 25    # por debajo: la persona casi no escribió ("gracias", "ok", "precio?")
@@ -202,8 +207,8 @@ _MEDIA_TAG = re.compile(r"\[[^\]]*\]|\(transcripción\)")
 
 
 def subject_stats(material: str, focus: str, name: str) -> Tuple[int, int]:
-    """(mensajes, palabras) que escribió el sujeto (el cliente / el contacto) dentro del material."""
-    me, other = ("Vendedor (yo)", f"Cliente ({name})") if focus == "comerciante" else ("Yo", name)
+    """(mensajes, palabras) que escribió el sujeto (el contacto) dentro del material."""
+    me, other = "Yo", name
     n_msgs = n_words = 0
     current = None
     for line in material.splitlines():
@@ -221,13 +226,13 @@ def subject_stats(material: str, focus: str, name: str) -> Tuple[int, int]:
 
 def _depth_rule(focus: str, n_msgs: int, n_words: int) -> Tuple[str, str]:
     """Devuelve ('minimal' | 'moderate' | 'rich', instrucción) según cuánto escribió el sujeto."""
-    who = "el cliente" if focus == "comerciante" else "esta persona"
+    who = "esta persona"
     amount = f"{n_msgs} mensaje{'s' if n_msgs != 1 else ''}, ~{n_words} palabras"
     if n_words < MINIMAL_WORDS:
         return "minimal", (
             f"IMPORTANTE: {who} escribió muy poco ({amount}). Responde en español en 1 a 3 líneas: qué "
             "dijo o pidió y, solo si es evidente, qué quiere. NO deduzcas ni infieras nada más "
-            "(personalidad, emociones, objeciones, nivel de interés, motivaciones): si solo saludó, "
+            "(personalidad, emociones, intenciones, motivaciones): si solo saludó, "
             "agradeció o confirmó, dilo así y termina. No uses las notas previas para rellenar."
         )
     if n_words < MODERATE_WORDS:
@@ -242,11 +247,30 @@ def _depth_rule(focus: str, n_msgs: int, n_words: int) -> Tuple[str, str]:
     )
 
 
+def search_block(searches: List[str], name: str, n_words: int) -> str:
+    """Instrucción para responder solo preguntas puntuales sobre el contacto, con veredicto y evidencia."""
+    numbered = "\n".join(f"{i}. {q}" for i, q in enumerate(searches, 1))
+    parts = [
+        f"Responde SOLO estas preguntas sobre {name}, una por una y en español:\n{numbered}",
+        "Para cada una indica: Veredicto (Sí / Probable / Poco probable / No / Sin evidencia suficiente), "
+        "Confianza (baja / media / alta) y la evidencia concreta, citando brevemente lo que escribió. "
+        "No supongas mala intención por defecto ni inventes: si los mensajes no alcanzan, responde "
+        "«Sin evidencia suficiente». Cierra con una recomendación práctica de 1 o 2 líneas.",
+    ]
+    if n_words < MINIMAL_WORDS:
+        parts.append(f"{name} escribió muy poco: es esperable que casi todo sea «Sin evidencia suficiente».")
+    return "\n\n".join(parts)
+
+
 def build_prompt(material: str, focus: str, length: str, name: str, n_messages: int,
-                 n_chats: int = 1, notes: str = "", with_context: bool = True) -> str:
-    parts = [_intro(focus, name, n_messages, n_chats, with_context)]
+                 n_chats: int = 1, notes: str = "", with_context: bool = True,
+                 relation: str = "", searches: Optional[List[str]] = None) -> str:
+    parts = [_intro(focus, name, n_messages, n_chats, with_context, relation)]
+    searches = [q.strip() for q in (searches or []) if q and q.strip()]
     if focus == "interno":
         parts += [_FORMATS[(focus, length)], _DISCLAIMER]
+    elif searches:
+        parts += [search_block(searches, name, subject_stats(material, focus, name)[1]), _DISCLAIMER]
     else:
         level, rule = _depth_rule(focus, *subject_stats(material, focus, name))
         if level == "minimal":
@@ -288,7 +312,6 @@ def build_export(focus: str, name: str, analysis: str, qa: List[Tuple[str, str]]
     """Texto listo para pegar en otro chatbot y seguir el análisis allí."""
     subject = {
         "interno": "de mí mismo, hecho a partir de mis conversaciones de WhatsApp en todos mis chats",
-        "comerciante": f"de un cliente ({name}), hecho a partir de nuestra conversación de WhatsApp",
     }.get(focus, f"de una persona con la que hablo ({name}), hecho a partir de nuestra conversación de WhatsApp")
     parts = [
         f"Te comparto un análisis psicológico {subject}, generado por una IA. Quiero seguir "
@@ -387,18 +410,25 @@ def append_note(jid: str, title: str, body: str) -> None:
 
 
 def save_analysis(jid: str, name: str, text: str, focus: str, length: str, provider: str, model: str,
-                  n_messages: int) -> str:
+                  n_messages: int, relation: str = "", searches: Optional[List[str]] = None) -> str:
     """Guarda el último análisis del enfoque y lo agrega a las notas del sujeto."""
     path = analysis_path(jid, focus)
     fecha = datetime.now().strftime("%Y-%m-%d %H:%M")
     header = (
         f"Sujeto: {name}\nJID: {jid}\nFecha: {fecha}\nEnfoque: {focus}\nModo: {length}\n"
-        f"Proveedor: {provider}\nModelo: {model}\nMensajes analizados: {n_messages}\n{_SEP}\n"
+        f"Proveedor: {provider}\nModelo: {model}\nMensajes analizados: {n_messages}\n"
+        + (f"Relación: {relation}\n" if relation else "")
+        + (f"Búsquedas: {' | '.join(searches)}\n" if searches else "")
+        + f"{_SEP}\n"
     )
     with open(path, "w", encoding="utf-8") as f:
         f.write(header + text.strip() + "\n")
-    append_note(jid, f"{fecha} · {FOCUSES[focus]} · {LENGTHS.get(length, length)} · "
+    detail = "Búsquedas" if searches else LENGTHS.get(length, length)
+    kind = f" ({relation})" if relation and focus != "interno" else ""
+    append_note(jid, f"{fecha} · {FOCUSES[focus]}{kind} · {detail} · "
                      f"{provider} {model} · {n_messages} mensajes", text)
+    if searches:
+        append_note(jid, f"{fecha} · Preguntas de la búsqueda", "\n".join(f"- {q}" for q in searches))
     return path
 
 
@@ -473,3 +503,35 @@ def record_model_result(provider: str, model: str, ok: bool, error: str = "") ->
 
 def model_results(provider: str) -> Dict[str, Dict]:
     return load_prefs().get("model_results", {}).get(provider, {})
+
+
+# ─── Tipos de relación y búsquedas propias (se guardan en las preferencias) ───
+
+def load_kinds() -> List[str]:
+    """Tipos de relación para el combo: los predeterminados y los que el usuario escribió."""
+    custom = [k for k in load_prefs().get("kinds", []) if isinstance(k, str) and k.strip()]
+    return list(KIND_HINTS) + [k for k in custom if k not in KIND_HINTS]
+
+
+def remember_kind(kind: str) -> None:
+    """Guarda un tipo de relación escrito a mano para que aparezca la próxima vez."""
+    kind = (kind or "").strip()
+    if not kind or kind.lower() in (k.lower() for k in load_kinds()):
+        return
+    save_prefs(kinds=[k for k in load_kinds() if k not in KIND_HINTS] + [kind])
+
+
+def load_searches() -> List[Tuple[str, bool]]:
+    """(texto, es_propia) de cada búsqueda rápida: las predeterminadas y después las del usuario."""
+    custom = [q for q in load_prefs().get("searches", []) if isinstance(q, str) and q.strip()]
+    return [(q, False) for q in DEFAULT_SEARCHES] + [(q, True) for q in custom if q not in DEFAULT_SEARCHES]
+
+
+def add_search(text: str) -> None:
+    text = (text or "").strip()
+    if text and text not in (q for q, _ in load_searches()):
+        save_prefs(searches=[q for q, own in load_searches() if own] + [text])
+
+
+def remove_search(text: str) -> None:
+    save_prefs(searches=[q for q, own in load_searches() if own and q != text])

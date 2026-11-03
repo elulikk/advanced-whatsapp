@@ -487,8 +487,8 @@ class ChatViewPanel(QWidget):
         header_layout.addWidget(self.contact_chip, stretch=1)
 
         # Análisis psicológico del contacto con la IA configurada
-        self.btn_psych = tool_button("analysis", "Análisis psicológico del contacto (normal o comerciante) "
-                                     "o interno (tuyo) con la IA", text="Análisis")
+        self.btn_psych = tool_button("analysis", "Análisis psicológico del contacto (por tipo de relación y con preguntas "
+                                     "puntuales) con la IA", text="Análisis")
         self.btn_psych.clicked.connect(self._open_psych_analysis)
         header_layout.addWidget(self.btn_psych)
         header_layout.addSpacing(4)
