@@ -1,1 +1,1 @@
-# MAGSAPP Package
+# Advanced WhatsApp Package

@@ -1,5 +1,5 @@
 """
-MAGSAPP - Transcripción de notas de voz
+Advanced WhatsApp - Transcripción de notas de voz
 =======================================
 Usa Whisper vía API (Groq primero, OpenAI como respaldo) con las keys ya configuradas en la app.
 """

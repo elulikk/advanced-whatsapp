@@ -1,5 +1,5 @@
 """
-MAGSAPP - Visor de estados de los contactos
+Advanced WhatsApp - Visor de estados de los contactos
 ===========================================
 Como en la app oficial: barras de progreso arriba (una por estado), avanza solo, clic a la derecha/izquierda
 (o flechas) para pasar, barra espaciadora o mantener apretado para pausar, Esc para cerrar. Al terminar los
@@ -47,7 +47,7 @@ class _Fetcher(QObject):
         def run():
             res = GatewayManager.get_instance().contact_status_media(item_id)
             self.done.emit(item_id, res)
-        threading.Thread(target=run, daemon=True, name="magsapp-status-media").start()
+        threading.Thread(target=run, daemon=True, name="advancedwhatsapp-status-media").start()
 
 
 class ProgressBars(QWidget):

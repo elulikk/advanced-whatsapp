@@ -1,9 +1,9 @@
 """
-MAGSAPP - Integración con Windows
+Advanced WhatsApp - Integración con Windows
 =================================
-- Identidad propia (AppUserModelID): nombre e icono de MAGSAPP en las notificaciones, la barra de tareas y el
+- Identidad propia (AppUserModelID): nombre e icono de Advanced WhatsApp en las notificaciones, la barra de tareas y el
   menú Inicio, en lugar de "Python".
-- Protocolo magsapp:// : al tocar una notificación Windows abre "magsapp://open?chat=..."; la segunda instancia
+- Protocolo advancedwhatsapp:// : al tocar una notificación Windows abre "advancedwhatsapp://open?chat=..."; la segunda instancia
   le pasa el pedido a la que ya está abierta y se cierra.
 - Notificaciones nativas (toasts) con foto del contacto, botones y agrupadas por chat. Se muestran con un
   proceso de PowerShell que queda abierto (sin dependencias extra); si falla, se usa el globo de la bandeja.
@@ -27,18 +27,18 @@ from urllib.parse import quote
 
 from app.config import BASE_DIR, DATA_DIR, FROZEN, TEST_COPY, WEBHOOK_PORT
 
-APP_ID = "MagTecnologia.MAGSAPP.1"
-APP_DISPLAY_NAME = "MAGSAPP"
-PROTOCOL = "magsapp"
-ICON_ICO = os.path.join(BASE_DIR, "assets", "magsapp.ico")
-ICON_PNG = os.path.join(BASE_DIR, "assets", "magsapp.png")
+APP_ID = "MagTecnologia.AdvancedWhatsapp.1"
+APP_DISPLAY_NAME = "Advanced WhatsApp"
+PROTOCOL = "advancedwhatsapp"
+ICON_ICO = os.path.join(BASE_DIR, "assets", "advancedwhatsapp.ico")
+ICON_PNG = os.path.join(BASE_DIR, "assets", "advancedwhatsapp.png")
 MAIN_SCRIPT = os.path.join(BASE_DIR, "main.py")
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 IS_WINDOWS = sys.platform == "win32"
 
 
 def _log(msg: str) -> None:
-    print(f"[MAGSAPP Windows] {msg}")
+    print(f"[Advanced WhatsApp Windows] {msg}")
 
 
 # ── Cómo relanzar la app ─────────────────────────────────────────────────────
@@ -55,7 +55,7 @@ def pythonw_executable() -> str:
 
 
 def launch_target():
-    """(ejecutable, argumentos) para abrir MAGSAPP: MAGSAPP.exe en la versión portable, pythonw main.py si no."""
+    """(ejecutable, argumentos) para abrir Advanced WhatsApp: AdvancedWhatsapp.exe en la versión portable, pythonw main.py si no."""
     if FROZEN:
         return sys.executable, ""
     return pythonw_executable(), f'"{MAIN_SCRIPT}"'
@@ -76,7 +76,7 @@ def _reg_set(path: str, values: dict) -> None:
 
 
 def register_app_identity() -> None:
-    """Nombre e icono que Windows muestra en las notificaciones de MAGSAPP."""
+    """Nombre e icono que Windows muestra en las notificaciones de Advanced WhatsApp."""
     if not IS_WINDOWS:
         return
     try:
@@ -90,16 +90,16 @@ def register_app_identity() -> None:
 
 
 def register_protocol() -> None:
-    """magsapp:// abre (o activa) MAGSAPP: lo usan los botones de las notificaciones."""
+    """advancedwhatsapp:// abre (o activa) Advanced WhatsApp: lo usan los botones de las notificaciones."""
     if not IS_WINDOWS:
         return
     try:
         base = rf"Software\Classes\{PROTOCOL}"
-        _reg_set(base, {"": "URL:MAGSAPP", "URL Protocol": ""})
+        _reg_set(base, {"": "URL:Advanced WhatsApp", "URL Protocol": ""})
         _reg_set(base + r"\DefaultIcon", {"": f'"{ICON_ICO}",0'})
         _reg_set(base + r"\shell\open\command", {"": launch_command("%1")})
     except Exception as e:
-        _log(f"No se pudo registrar el protocolo magsapp://: {e}")
+        _log(f"No se pudo registrar el protocolo advancedwhatsapp://: {e}")
 
 
 def _known_folder(folder_id: str) -> Optional[str]:
@@ -121,7 +121,7 @@ FOLDERID_PROGRAMS = "{A77F5D77-2E2B-44C3-A6A2-ABA601054A51}"   # menú Inicio > 
 
 
 def _ensure_shortcut(folder: Optional[str]) -> bool:
-    """Crea (o actualiza si la carpeta de la app cambió) MAGSAPP.lnk en `folder`, con icono e identidad propios."""
+    """Crea (o actualiza si la carpeta de la app cambió) AdvancedWhatsapp.lnk en `folder`, con icono e identidad propios."""
     if not IS_WINDOWS or not folder:
         return False
     try:
@@ -155,7 +155,7 @@ def _ensure_shortcut(folder: Optional[str]) -> bool:
         link.SetPath(target)
         link.SetArguments(args)
         link.SetWorkingDirectory(BASE_DIR)
-        link.SetDescription("MAGSAPP - WhatsApp para escritorio")
+        link.SetDescription("Advanced WhatsApp - WhatsApp para escritorio")
         if os.path.exists(ICON_ICO):
             link.SetIconLocation(ICON_ICO, 0)
         store = link.QueryInterface(propsys.IID_IPropertyStore)
@@ -170,7 +170,7 @@ def _ensure_shortcut(folder: Optional[str]) -> bool:
 
 
 def ensure_start_menu_shortcut() -> bool:
-    """Acceso directo en el menú Inicio con la identidad de MAGSAPP (buscar "MAGSAPP", anclar, notificaciones)."""
+    """Acceso directo en el menú Inicio con la identidad de Advanced WhatsApp (buscar "Advanced WhatsApp", anclar, notificaciones)."""
     programs = _known_folder(FOLDERID_PROGRAMS) or os.path.join(
         os.environ.get("APPDATA", ""), "Microsoft", "Windows", "Start Menu", "Programs")
     return _ensure_shortcut(programs)
@@ -222,7 +222,7 @@ def is_autostart_enabled() -> bool:
 
 
 def set_autostart(enabled: bool) -> bool:
-    """Arranca MAGSAPP al iniciar sesión, minimizado en la bandeja (para no perder notificaciones)."""
+    """Arranca Advanced WhatsApp al iniciar sesión, minimizado en la bandeja (para no perder notificaciones)."""
     if not IS_WINDOWS:
         return False
     try:
@@ -253,14 +253,14 @@ _mutex_handle = None
 
 
 def acquire_single_instance() -> bool:
-    """True si esta es la única MAGSAPP abierta (mutex con nombre de Windows, se libera solo al salir)."""
+    """True si esta es la única Advanced WhatsApp abierta (mutex con nombre de Windows, se libera solo al salir)."""
     global _mutex_handle
     if not IS_WINDOWS:
         return True
     try:
         kernel32 = ctypes.windll.kernel32
         kernel32.CreateMutexW.restype = wintypes.HANDLE
-        name = "Local\\MAGSAPP_SingleInstance" + (f"_{WEBHOOK_PORT}" if TEST_COPY else "")
+        name = "Local\\ADVANCEDWHATSAPP_SingleInstance" + (f"_{WEBHOOK_PORT}" if TEST_COPY else "")
         _mutex_handle = kernel32.CreateMutexW(None, False, name)
         return kernel32.GetLastError() != 183   # ERROR_ALREADY_EXISTS
     except Exception:
@@ -268,7 +268,7 @@ def acquire_single_instance() -> bool:
 
 
 def forward_to_running_instance(uri: str, timeout: float = 25.0) -> bool:
-    """Le pasa el pedido (magsapp://...) a la instancia abierta por el webhook local. Espera si recién arranca."""
+    """Le pasa el pedido (advancedwhatsapp://...) a la instancia abierta por el webhook local. Espera si recién arranca."""
     import urllib.request
     from app.config import WEBHOOK_PORT, TOKEN_HEADER, get_gateway_token
     try:
@@ -298,7 +298,7 @@ _TOAST_HOST = r"""
 $ErrorActionPreference = 'Stop'
 $null = [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
 $null = [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]
-$aumid = $env:MAGSAPP_AUMID
+$aumid = $env:ADVANCEDWHATSAPP_AUMID
 $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($aumid)
 $history = [Windows.UI.Notifications.ToastNotificationManager]::History
 [Console]::Out.WriteLine('ready ' + $notifier.Setting)
@@ -366,7 +366,7 @@ class Toaster:
         self._failures = 0
         self.ready = False
         self.last_error: Optional[str] = None
-        self.disabled_by_user = False   # el usuario apagó las notificaciones de MAGSAPP en Windows
+        self.disabled_by_user = False   # el usuario apagó las notificaciones de Advanced WhatsApp en Windows
 
     @property
     def available(self) -> bool:
@@ -380,7 +380,7 @@ class Toaster:
         try:
             encoded = base64.b64encode(_TOAST_HOST.encode("utf-16-le")).decode("ascii")
             env = os.environ.copy()
-            env["MAGSAPP_AUMID"] = self.aumid
+            env["ADVANCEDWHATSAPP_AUMID"] = self.aumid
             self._proc = subprocess.Popen(
                 ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                  "-EncodedCommand", encoded],
@@ -388,7 +388,7 @@ class Toaster:
                 creationflags=subprocess.CREATE_NO_WINDOW, env=env, text=True, encoding="ascii",
                 errors="replace", bufsize=1)
             threading.Thread(target=self._reader, args=(self._proc,), daemon=True,
-                             name="magsapp-toast-reader").start()
+                             name="advancedwhatsapp-toast-reader").start()
             return True
         except Exception as e:
             self._failures += 1
@@ -405,7 +405,7 @@ class Toaster:
                     # Setting: Enabled / DisabledForApplication / DisabledForUser / DisabledByGroupPolicy
                     self.disabled_by_user = "Disabled" in line
                     if self.disabled_by_user:
-                        _log(f"Windows tiene desactivadas las notificaciones de MAGSAPP ({line})")
+                        _log(f"Windows tiene desactivadas las notificaciones de Advanced WhatsApp ({line})")
                 elif line.startswith("err"):
                     self.last_error = line[4:]
                     _log(f"Notificación: {self.last_error}")
@@ -533,7 +533,7 @@ def thumbnail_from_media_raw(media_raw: Optional[str], msg_id: str) -> Optional[
         if not thumb:
             return None
         raw = base64.b64decode(thumb)
-        folder = os.path.join(tempfile.gettempdir(), "magsapp_toasts")
+        folder = os.path.join(tempfile.gettempdir(), "advancedwhatsapp_toasts")
         os.makedirs(folder, exist_ok=True)
         path = os.path.join(folder, f"{_short_id(msg_id)}.jpg")
         with open(path, "wb") as f:

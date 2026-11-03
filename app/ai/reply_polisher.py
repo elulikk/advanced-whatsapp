@@ -1,5 +1,5 @@
 """
-MAGSAPP - Filtro de salida (redactor de respuestas)
+Advanced WhatsApp - Filtro de salida (redactor de respuestas)
 ===================================================
 Toma el borrador que escribí y lo REFORMULA según el objetivo elegido (ordenar y explicar, suavizar,
 más directo, más breve…), usando como contexto los últimos mensajes del chat. Devuelve el texto

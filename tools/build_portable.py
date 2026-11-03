@@ -1,9 +1,9 @@
 """
-MAGSAPP - Arma la versión portable para compartir
+Advanced WhatsApp - Arma la versión portable para compartir
 =================================================
-Genera dist/MAGSAPP/ (MAGSAPP.exe + _internal) y dist/MAGSAPP-<versión>.zip. La carpeta trae todo:
+Genera dist/AdvancedWhatsapp/ (AdvancedWhatsapp.exe + _internal) y dist/AdvancedWhatsapp-<versión>.zip. La carpeta trae todo:
 Python y librerías (PyInstaller), Node.js con el gateway ya instalado y FFmpeg. Quien la recibe
-la descomprime, abre MAGSAPP.exe y listo; no necesita instalar nada.
+la descomprime, abre AdvancedWhatsapp.exe y listo; no necesita instalar nada.
 
 Requisitos en la PC que arma la versión (no en la de quien la usa): Python, Node.js/npm y FFmpeg
 (winget install Gyan.FFmpeg). PyInstaller y las librerías se instalan solos en build/venv, un entorno
@@ -11,7 +11,7 @@ aparte, para que en la carpeta no se cuele nada más que tenga instalado esta PC
 
 Uso:
     python tools/build_portable.py            (la versión sale de APP_VERSION en app/config.py)
-    python tools/build_portable.py --instalador   (además arma dist/MAGSAPP-Setup-<versión>.exe con Inno Setup)
+    python tools/build_portable.py --instalador   (además arma dist/AdvancedWhatsapp-Setup-<versión>.exe con Inno Setup)
 """
 
 import glob
@@ -25,29 +25,29 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUILD = os.path.join(ROOT, "build")
 STAGING = os.path.join(BUILD, "staging")
 DIST = os.path.join(ROOT, "dist")
-APP_DIR = os.path.join(DIST, "MAGSAPP")
+APP_DIR = os.path.join(DIST, "AdvancedWhatsapp")
 
-# Módulos que nunca usa MAGSAPP y que PyInstaller podría arrastrar
+# Módulos que nunca usa Advanced WhatsApp y que PyInstaller podría arrastrar
 EXCLUDES = ["tkinter", "pytest", "_pytest", "matplotlib", "numpy.tests", "IPython",
             "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtQuick", "PySide6.QtQml",
             "PySide6.Qt3DCore", "PySide6.QtCharts", "PySide6.QtDataVisualization", "PySide6.QtPdf"]
 
-LEEME = """MAGSAPP {version}
+LEEME = """Advanced WhatsApp {version}
 ================
 
 1. Descomprimí esta carpeta donde quieras (por ejemplo en Documentos).
-   No abras MAGSAPP desde adentro del .zip: primero "Extraer todo".
+   No abras Advanced WhatsApp desde adentro del .zip: primero "Extraer todo".
 
-2. Abrí MAGSAPP.exe. La primera vez crea el icono en el escritorio y en el menú Inicio.
+2. Abrí AdvancedWhatsapp.exe. La primera vez crea el icono en el escritorio y en el menú Inicio.
    Si Windows muestra "Windows protegió su PC": tocá "Más información" y después
    "Ejecutar de todas formas" (pasa porque la app no está firmada; es solo la primera vez).
 
 3. Vinculá tu WhatsApp: en el celular, Ajustes > Dispositivos vinculados >
-   Vincular un dispositivo, y escaneá el código QR que muestra MAGSAPP.
+   Vincular un dispositivo, y escaneá el código QR que muestra Advanced WhatsApp.
 
 Actualizar a una versión nueva:
-   cerrá MAGSAPP (icono junto al reloj > Salir) y reemplazá esta carpeta por la nueva.
-   Tus chats y la sesión de WhatsApp no se pierden: se guardan en tu usuario (carpeta .magsapp).
+   cerrá Advanced WhatsApp (icono junto al reloj > Salir) y reemplazá esta carpeta por la nueva.
+   Tus chats y la sesión de WhatsApp no se pierden: se guardan en tu usuario (carpeta .advancedwhatsapp).
 """
 
 
@@ -157,10 +157,10 @@ def build_python() -> str:
 
 
 def pyinstaller(py: str):
-    step("PyInstaller: MAGSAPP.exe")
+    step("PyInstaller: AdvancedWhatsapp.exe")
     sep = os.pathsep
     args = [py, "-m", "PyInstaller", "--noconfirm", "--windowed",
-            "--name", "MAGSAPP", "--icon", os.path.join(ROOT, "assets", "magsapp.ico"),
+            "--name", "AdvancedWhatsapp", "--icon", os.path.join(ROOT, "assets", "advancedwhatsapp.ico"),
             "--distpath", DIST, "--workpath", os.path.join(BUILD, "work"), "--specpath", BUILD,
             "--add-data", f"{os.path.join(ROOT, 'assets')}{sep}assets",
             "--add-data", f"{os.path.join(STAGING, 'gateway')}{sep}gateway",
@@ -172,7 +172,7 @@ def pyinstaller(py: str):
 
 
 def prune():
-    """Saca lo que PyInstaller copia pero MAGSAPP nunca usa."""
+    """Saca lo que PyInstaller copia pero Advanced WhatsApp nunca usa."""
     # Descripciones de todas las APIs de Google (~110 MB): Gemini descarga la suya de internet al usarla
     shutil.rmtree(os.path.join(APP_DIR, "_internal", "googleapiclient", "discovery_cache", "documents"),
                   ignore_errors=True)
@@ -182,8 +182,8 @@ def package(version: str) -> str:
     step("Zip para compartir")
     with open(os.path.join(APP_DIR, "LEEME.txt"), "w", encoding="utf-8-sig", newline="\r\n") as f:
         f.write(LEEME.format(version=version))
-    base = os.path.join(DIST, f"MAGSAPP-{version}")
-    zip_path = shutil.make_archive(base, "zip", root_dir=DIST, base_dir="MAGSAPP")
+    base = os.path.join(DIST, f"AdvancedWhatsapp-{version}")
+    zip_path = shutil.make_archive(base, "zip", root_dir=DIST, base_dir="AdvancedWhatsapp")
     return zip_path
 
 
@@ -197,7 +197,7 @@ def installer(version: str) -> str:
         sys.exit("No se encontró Inno Setup. Instalalo con: winget install JRSoftware.InnoSetup")
     run([iscc, "/Qp", f"/DAppVersion={version}", f"/DSourceDir={APP_DIR}", f"/DOutputDir={DIST}",
          os.path.join(ROOT, "tools", "instalador.iss")])
-    return os.path.join(DIST, f"MAGSAPP-Setup-{version}.exe")
+    return os.path.join(DIST, f"AdvancedWhatsapp-Setup-{version}.exe")
 
 
 def size_mb(path: str) -> float:
@@ -210,7 +210,7 @@ def main():
     import time
     t0 = time.monotonic()
     version = app_version()
-    print(f"MAGSAPP {version}")
+    print(f"Advanced WhatsApp {version}")
     # Lo armado antes en build/ se reutiliza (venv, node_modules, caché de PyInstaller).
     # Para empezar de cero: borrar la carpeta build/.
     shutil.rmtree(APP_DIR, ignore_errors=True)

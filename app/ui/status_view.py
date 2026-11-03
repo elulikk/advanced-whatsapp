@@ -1,9 +1,9 @@
 """
-MAGSAPP - Panel de Estados
+Advanced WhatsApp - Panel de Estados
 ==========================
 Columna izquierda: "Mi estado" y los estados de los contactos (últimas 24 h), con el anillo verde de los que
 no viste; al tocar uno se abre el visor. A la derecha: mis estados activos y el programador (textos, fotos o
-videos con fecha y hora que el gateway publica solo mientras MAGSAPP siga abierto o en la bandeja).
+videos con fecha y hora que el gateway publica solo mientras Advanced WhatsApp siga abierto o en la bandeja).
 """
 
 import base64
@@ -593,7 +593,7 @@ class ViewersDialog(QDialog):
         if not viewers:
             lst.addItem("Todavía nadie lo vio.")
         layout.addWidget(lst, stretch=1)
-        hint = QLabel("Solo se cuentan las vistas recibidas mientras MAGSAPP estaba conectado.")
+        hint = QLabel("Solo se cuentan las vistas recibidas mientras Advanced WhatsApp estaba conectado.")
         hint.setObjectName("hint")
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -831,8 +831,8 @@ class StatusPanel(QWidget):
         rl.addWidget(board_header)
 
         self.lbl_notice = QLabel(
-            "Los estados se publican desde esta PC: tiene que estar encendida, con internet y MAGSAPP abierto "
-            "o en la bandeja. Mientras haya estados pendientes, MAGSAPP evita que Windows se suspenda."
+            "Los estados se publican desde esta PC: tiene que estar encendida, con internet y Advanced WhatsApp abierto "
+            "o en la bandeja. Mientras haya estados pendientes, Advanced WhatsApp evita que Windows se suspenda."
         )
         self.lbl_notice.setObjectName("hint")
         self.lbl_notice.setWordWrap(True)
@@ -906,7 +906,7 @@ class StatusPanel(QWidget):
         if not self._contacts:
             section("RECIENTES")
             lbl = QLabel("Cuando tus contactos publiquen estados, aparecen acá.\n"
-                         "Se ven los que llegan mientras MAGSAPP está abierto.")
+                         "Se ven los que llegan mientras Advanced WhatsApp está abierto.")
             lbl.setObjectName("subtle")
             lbl.setWordWrap(True)
             lbl.setContentsMargins(16, 2, 16, 2)

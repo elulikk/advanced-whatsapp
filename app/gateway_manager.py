@@ -44,7 +44,7 @@ def find_node_executable() -> Optional[str]:
         r"C:\Program Files\nodejs\node.exe",
         r"C:\Program Files (x86)\nodejs\node.exe",
         os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "node", "node.exe"),
-        os.path.join(os.environ.get("LOCALAPPDATA", ""), "MAGSAPP-Tools", "node", "node.exe"),  # INSTALAR_MAGSAPP.ps1
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "AdvancedWhatsapp-Tools", "node", "node.exe"),  # INSTALAR_ADVANCEDWHATSAPP.ps1
     ]
     for p in common_paths:
         if os.path.isfile(p):
@@ -109,7 +109,7 @@ class GatewayManager:
                     creationflags=flags, timeout=600
                 )
             if r.returncode != 0:
-                return "Falló 'npm install' (ver ~/.magsapp/npm_install.log)."
+                return "Falló 'npm install' (ver ~/.advancedwhatsapp/npm_install.log)."
         except Exception as e:
             return f"Falló 'npm install': {e}"
         return None
@@ -130,12 +130,12 @@ class GatewayManager:
             res = self._start_locked()
         self.last_error = None if res.get("success") else res.get("error")
         if not res.get("success"):
-            print(f"[MAGSAPP Gateway] No se pudo iniciar: {res.get('error')}")
+            print(f"[Advanced WhatsApp Gateway] No se pudo iniciar: {res.get('error')}")
         return res
 
     def _shutdown_foreign(self, status: Dict[str, Any]) -> None:
         """Apaga un gateway que quedó abierto de otra versión (o de una sesión que se cerró mal)."""
-        print(f"[MAGSAPP Gateway] Reiniciando gateway viejo (build {status.get('build') or '?'} -> {self.build})")
+        print(f"[Advanced WhatsApp Gateway] Reiniciando gateway viejo (build {status.get('build') or '?'} -> {self.build})")
         try:
             _http.post(f"{GATEWAY_URL}/shutdown", timeout=3)
         except Exception:
@@ -177,9 +177,9 @@ class GatewayManager:
         env["PYTHON_CONNECTION_URL"] = CONNECTION_WEBHOOK_URL
         env["AUTH_DIR"] = AUTH_DIR
         env["MEDIA_DIR"] = MEDIA_DIR
-        env["MAGSAPP_TOKEN"] = get_gateway_token()
-        env["MAGSAPP_BUILD"] = self.build
-        env["MAGSAPP_PARENT_PID"] = str(os.getpid())
+        env["ADVANCEDWHATSAPP_TOKEN"] = get_gateway_token()
+        env["ADVANCEDWHATSAPP_BUILD"] = self.build
+        env["ADVANCEDWHATSAPP_PARENT_PID"] = str(os.getpid())
 
         flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         log_path = os.path.join(DATA_DIR, "gateway.log")
@@ -242,7 +242,7 @@ class GatewayManager:
                 # El proceso terminó, o dos chequeos seguidos sin respuesta: se reinicia
                 if died or failures >= 2:
                     code = self.process.poll() if self.process else None
-                    print(f"[MAGSAPP Gateway] El gateway no responde (código {code}); reiniciando…")
+                    print(f"[Advanced WhatsApp Gateway] El gateway no responde (código {code}); reiniciando…")
                     if self.process is not None and not died:
                         try:
                             self.process.kill()
@@ -253,7 +253,7 @@ class GatewayManager:
                     self.start()
                     failures = 0
 
-        self._watchdog = threading.Thread(target=_loop, daemon=True, name="magsapp-gateway-watchdog")
+        self._watchdog = threading.Thread(target=_loop, daemon=True, name="advancedwhatsapp-gateway-watchdog")
         self._watchdog.start()
 
     def stop(self):
@@ -418,7 +418,7 @@ class GatewayManager:
             for start in range(0, len(ids), 100):
                 self._post_simple("read", {"to": chat_jid, "messages": ids[start:start + 100]})
 
-        threading.Thread(target=_run, daemon=True, name="magsapp-read-receipts").start()
+        threading.Thread(target=_run, daemon=True, name="advancedwhatsapp-read-receipts").start()
 
     def pin_message(self, to: str, message_id: str, pinned: bool, from_me: bool = False,
                     participant: Optional[str] = None) -> Dict[str, Any]:
@@ -547,7 +547,7 @@ class GatewayManager:
     def set_presence(self, available: bool) -> None:
         """'En línea' solo mientras la ventana está en primer plano (en segundo plano, sin bloquear la UI)."""
         threading.Thread(target=self._json_call, args=("POST", "presence", {"available": bool(available)}),
-                         kwargs={"timeout": 5}, daemon=True, name="magsapp-presence").start()
+                         kwargs={"timeout": 5}, daemon=True, name="advancedwhatsapp-presence").start()
 
     def chat_presence(self, to: str, state: Optional[str] = None, subscribe: bool = False) -> None:
         """'Escribiendo…' hacia un contacto y/o suscripción a su 'en línea'."""
@@ -557,4 +557,4 @@ class GatewayManager:
         if state:
             payload["state"] = state
         threading.Thread(target=self._json_call, args=("POST", "chat-presence", payload),
-                         kwargs={"timeout": 5}, daemon=True, name="magsapp-chat-presence").start()
+                         kwargs={"timeout": 5}, daemon=True, name="advancedwhatsapp-chat-presence").start()

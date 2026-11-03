@@ -419,7 +419,7 @@ class ChatViewPanel(QWidget):
         icon_lbl.setPixmap(icon_pixmap("chats", C["text_3"], 56))
         empty_layout.addWidget(icon_lbl, alignment=Qt.AlignCenter)
 
-        title_lbl = QLabel("MAGSAPP")
+        title_lbl = QLabel("Advanced WhatsApp")
         title_lbl.setStyleSheet(f"font-size: 20px; font-weight: 300; color: {C['text']}; letter-spacing: 1px;")
         empty_layout.addWidget(title_lbl, alignment=Qt.AlignCenter)
 
@@ -1169,8 +1169,8 @@ class ChatViewPanel(QWidget):
         elif url_str.startswith("http://") or url_str.startswith("https://"):
             import webbrowser
             webbrowser.open(url_str)
-        elif url.scheme() == "magsapp":
-            # magsapp://<acción>/<message_id>
+        elif url.scheme() == "advancedwhatsapp":
+            # advancedwhatsapp://<acción>/<message_id>
             action = url.host()
             if action == "select":
                 self._toggle_selected(url.path().lstrip("/"))
@@ -1227,8 +1227,8 @@ class ChatViewPanel(QWidget):
         for i, c in enumerate(contacts):
             label = f'{html.escape(c.get("name") or "")}: ' if len(contacts) > 1 else ""
             parts.append(
-                f'<br>{label}<a href="magsapp://contactmsg/{msg.get("id")}?i={i}" style="color: {C["link"]};">Mensaje</a>'
-                f' · <a href="magsapp://contactsave/{msg.get("id")}?i={i}" style="color: {C["link"]};">Guardar contacto</a>')
+                f'<br>{label}<a href="advancedwhatsapp://contactmsg/{msg.get("id")}?i={i}" style="color: {C["link"]};">Mensaje</a>'
+                f' · <a href="advancedwhatsapp://contactsave/{msg.get("id")}?i={i}" style="color: {C["link"]};">Guardar contacto</a>')
         return "".join(parts)
 
     def _on_shared_contact_action(self, action: str, msg: dict, query: str):
@@ -1300,7 +1300,7 @@ class ChatViewPanel(QWidget):
 
     @staticmethod
     def _react_link(msg_id: str) -> str:
-        return (f'<a href="magsapp://react/{msg_id}" style="text-decoration: none;" title="Reaccionar">'
+        return (f'<a href="advancedwhatsapp://react/{msg_id}" style="text-decoration: none;" title="Reaccionar">'
                 f'<img src="icon:react" width="15" height="15" style="vertical-align: middle;"/></a>&nbsp;&nbsp;')
 
     @staticmethod
@@ -1310,10 +1310,10 @@ class ChatViewPanel(QWidget):
         mt = msg.get("media_type") or "text"
         out = ""
         if mt != "revoked":
-            out += (f'<a href="magsapp://reply/{mid}" style="text-decoration: none;" title="Responder">'
+            out += (f'<a href="advancedwhatsapp://reply/{mid}" style="text-decoration: none;" title="Responder">'
                     f'<img src="icon:reply" width="15" height="15" style="vertical-align: middle;"/></a>&nbsp;&nbsp;')
         if mt in FORWARDABLE_TYPES:
-            out += (f'<a href="magsapp://forward/{mid}" style="text-decoration: none;" title="Reenviar">'
+            out += (f'<a href="advancedwhatsapp://forward/{mid}" style="text-decoration: none;" title="Reenviar">'
                     f'<img src="icon:forward" width="15" height="15" style="vertical-align: middle;"/></a>&nbsp;&nbsp;')
         return out
 
@@ -1325,7 +1325,7 @@ class ChatViewPanel(QWidget):
         shown = bool(msg.get("summary")) and not hidden
         tip = "Ocultar el resumen" if shown else ("Ver el resumen" if msg.get("summary") else
                                                  "Modo resumen: resumir e interpretar este mensaje con IA")
-        return (f'<a href="magsapp://summarize/{msg["id"]}" style="text-decoration: none;" title="{tip}">'
+        return (f'<a href="advancedwhatsapp://summarize/{msg["id"]}" style="text-decoration: none;" title="{tip}">'
                 f'<img src="icon:{"summary_on" if shown else "summary"}" width="14" height="14" '
                 f'style="vertical-align: middle;"/></a>&nbsp;&nbsp;')
 
@@ -1340,7 +1340,7 @@ class ChatViewPanel(QWidget):
         if err and mid not in self._summary_hidden:
             return (f'<div style="color: #e58a84; font-size: 11px; margin-top: 3px;">'
                     f'No se pudo resumir: {html.escape(err)[:160]} · '
-                    f'<a href="magsapp://resummarize/{mid}" style="{link}">Reintentar</a></div>')
+                    f'<a href="advancedwhatsapp://resummarize/{mid}" style="{link}">Reintentar</a></div>')
         summary = msg.get("summary")
         if not summary or mid in self._summary_hidden:
             return ""
@@ -1349,8 +1349,8 @@ class ChatViewPanel(QWidget):
             rows.append(f'<span style="color: {C["accent_hi"]}; font-size: 10px; font-weight: 600;">'
                         f'{html.escape(title.upper())}</span><br>'
                         f'<span style="color: {C["text"]};">{html.escape(text).replace(chr(10), "<br>")}</span>')
-        rows.append(f'<span style="font-size: 10px;"><a href="magsapp://resummarize/{mid}" style="{link}">Rehacer</a>'
-                    f' · <a href="magsapp://summarize/{mid}" style="{link}">Ocultar</a></span>')
+        rows.append(f'<span style="font-size: 10px;"><a href="advancedwhatsapp://resummarize/{mid}" style="{link}">Rehacer</a>'
+                    f' · <a href="advancedwhatsapp://summarize/{mid}" style="{link}">Ocultar</a></span>')
         return '<div style="margin-top: 4px;"></div>' + self._panel_html('<br>'.join(rows), accent=C["accent"])
 
     def _toggle_summary(self, msg: dict):
@@ -1408,7 +1408,7 @@ class ChatViewPanel(QWidget):
         return (
             f'<table align="{align}" border="0" cellpadding="0" cellspacing="0" '
             f'style="background-color: {bg}; margin-top: 2px;"><tr><td style="padding: 1px 8px;">'
-            f'<a href="magsapp://react/{msg_id}" style="text-decoration: none; color: {C["text"]}; '
+            f'<a href="advancedwhatsapp://react/{msg_id}" style="text-decoration: none; color: {C["text"]}; '
             f'font-size: 15px;">{label}{count_txt}</a></td></tr></table>'
         )
 
@@ -1433,7 +1433,7 @@ class ChatViewPanel(QWidget):
             return f'<i style="color: {muted};">{label} · cargando…</i>'
         if get_error("download", msg_id) or not msg.get("media_raw"):
             return f'<i style="color: {muted};">{label} · no disponible (WhatsApp ya no lo tiene)</i>'
-        link = f'<a href="magsapp://open/{msg_id}" style="color: {C["link"]};">Descargar</a>'
+        link = f'<a href="advancedwhatsapp://open/{msg_id}" style="color: {C["link"]};">Descargar</a>'
         if not label:
             return link
         return f'<i style="color: {muted};">{label}</i> · {link}'
@@ -1536,13 +1536,13 @@ class ChatViewPanel(QWidget):
 
             # Los archivos solo se descargan cuando el usuario hace clic (Descargar / Abrir / reproducir)
             has_file = bool(media_path and os.path.exists(media_path))
-            open_link = f'<a href="magsapp://open/{msg.get("id")}" style="color: {C["link"]};">Abrir</a>'
+            open_link = f'<a href="advancedwhatsapp://open/{msg.get("id")}" style="color: {C["link"]};">Abrir</a>'
 
             media_html = ""
             transcript_html = ""
             if media_type == "image" and has_file:
                 img_url = "file:///" + os.path.abspath(media_path).replace("\\", "/")
-                media_html = (f'<a href="magsapp://open/{msg.get("id")}"><img src="{img_url}" border="0" '
+                media_html = (f'<a href="advancedwhatsapp://open/{msg.get("id")}"><img src="{img_url}" border="0" '
                               f'style="max-width: 300px; max-height: 240px;"/></a>')
             elif media_type == "image":
                 media_html = panel(self._media_placeholder(msg, "📷 Foto"))
@@ -1557,7 +1557,7 @@ class ChatViewPanel(QWidget):
                     voice_player().request_peaks(mid, media_path)
                     voice_images[mid] = self._voice_image(mid)
                     media_html = (
-                        f'<a href="magsapp://play/{mid}" style="text-decoration: none;">'
+                        f'<a href="advancedwhatsapp://play/{mid}" style="text-decoration: none;">'
                         f'<img src="{resource_url(mid).toString()}" width="{IMG_W}" height="{IMG_H}" border="0"/></a>'
                     )
                 else:
@@ -1576,9 +1576,9 @@ class ChatViewPanel(QWidget):
                     err_txt = html.escape(get_error("transcribe", msg.get("id")))[:160]
                     transcript_html = (f'<div style="color: #e58a84; font-size: 11px; margin-bottom: 3px;">'
                                        f'No se pudo transcribir: {err_txt} · '
-                                       f'<a href="magsapp://transcribe/{msg.get("id")}" style="color: {C["link"]};">Reintentar</a></div>')
+                                       f'<a href="advancedwhatsapp://transcribe/{msg.get("id")}" style="color: {C["link"]};">Reintentar</a></div>')
                 elif has_file or msg.get("media_raw"):
-                    transcript_html = (f'<div style="margin-bottom: 3px;"><a href="magsapp://transcribe/{msg.get("id")}" '
+                    transcript_html = (f'<div style="margin-bottom: 3px;"><a href="advancedwhatsapp://transcribe/{msg.get("id")}" '
                                        f'style="color: {C["link"]}; font-size: 11px;">Transcribir</a></div>')
             elif media_type == "video":
                 action_html = f" · {open_link}" if has_file else " · " + self._media_placeholder(msg, "")
@@ -1694,7 +1694,7 @@ class ChatViewPanel(QWidget):
     def _voice_rel_x(self, pos):
         """X relativa dentro de la imagen de una nota de voz bajo `pos`, o None si no hay nota ahí."""
         href = self.txt_messages.anchorAt(pos)
-        if not href or not href.startswith("magsapp://play/"):
+        if not href or not href.startswith("advancedwhatsapp://play/"):
             return None
         cx = self.txt_messages.cursorRect(self.txt_messages.cursorForPosition(pos)).x()
         left = cx if cx <= pos.x() <= cx + IMG_W else cx - IMG_W
@@ -1855,7 +1855,7 @@ class ChatViewPanel(QWidget):
         if not self._select_mode:
             return ""
         mark = "sel_on" if mid in self._selected else "sel_off"
-        return (f'<td width="32" valign="middle"><a href="magsapp://select/{mid}" style="text-decoration: none;">'
+        return (f'<td width="32" valign="middle"><a href="advancedwhatsapp://select/{mid}" style="text-decoration: none;">'
                 f'<img src="icon:{mark}" width="20" height="20"/></a></td>')
 
     def _message_at(self, vpos):
@@ -2023,7 +2023,7 @@ class ChatViewPanel(QWidget):
                 problem = str(res.get("error", "Desconocido"))
         if problem:
             QMessageBox.information(
-                self, "Mensaje fijado solo en MAGSAPP" if pin else "Mensaje desfijado solo en MAGSAPP",
+                self, "Mensaje fijado solo en Advanced WhatsApp" if pin else "Mensaje desfijado solo en Advanced WhatsApp",
                 f"El cambio se guardó aquí pero no se pudo enviar a WhatsApp:\n{problem}")
 
     def _update_pin_bar(self):

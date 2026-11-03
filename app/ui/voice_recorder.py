@@ -1,5 +1,5 @@
 """
-MAGSAPP - Grabación de notas de voz
+Advanced WhatsApp - Grabación de notas de voz
 ===================================
 Graba el micrófono con Qt (PCM 16 bits, 48 kHz, mono) y lo convierte con FFmpeg a OGG/Opus,
 el formato que WhatsApp exige para las notas de voz (el FFmpeg que trae Qt no codifica Opus).
@@ -50,7 +50,7 @@ def find_ffmpeg() -> Optional[str]:
     local = os.environ.get("LOCALAPPDATA", "")
     candidates = [os.path.join(local, "Microsoft", "WinGet", "Links", "ffmpeg.exe")]
     candidates += glob.glob(os.path.join(local, "Microsoft", "WinGet", "Packages", "*FFmpeg*", "*", "bin", "ffmpeg.exe"))
-    candidates += [os.path.join(local, "MAGSAPP-Tools", "ffmpeg", "bin", "ffmpeg.exe"),  # INSTALAR_MAGSAPP.ps1
+    candidates += [os.path.join(local, "AdvancedWhatsapp-Tools", "ffmpeg", "bin", "ffmpeg.exe"),  # INSTALAR_ADVANCEDWHATSAPP.ps1
                    r"C:\ffmpeg\bin\ffmpeg.exe",
                    os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "ffmpeg", "bin", "ffmpeg.exe")]
     return next((c for c in candidates if os.path.isfile(c)), None)
@@ -61,7 +61,7 @@ def encode_ogg_opus(pcm: bytes, dest: str) -> Optional[str]:
     ffmpeg = find_ffmpeg()
     if not ffmpeg:
         return ("Para enviar notas de voz hace falta FFmpeg.\n"
-                "Instálalo con:  winget install Gyan.FFmpeg\ny vuelve a abrir MAGSAPP.")
+                "Instálalo con:  winget install Gyan.FFmpeg\ny vuelve a abrir Advanced WhatsApp.")
     flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
     src = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
            "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", "1", "-i", "pipe:0"]

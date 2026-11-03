@@ -22,7 +22,7 @@ class WebhookSignals(QObject):
     presence_changed = Signal(dict)     # {chat_jid, presence: available|unavailable|composing|recording|paused}
     call_event = Signal(dict)           # {call_id, chat_jid, name, status: offer|timeout|reject|accept|terminate}
     contact_status = Signal(dict)       # estado nuevo (o borrado) de un contacto
-    app_activate = Signal(str)          # otra instancia (o una notificación) pide abrir/mostrar algo: magsapp://...
+    app_activate = Signal(str)          # otra instancia (o una notificación) pide abrir/mostrar algo: advancedwhatsapp://...
     read_elsewhere = Signal(list)       # [chat_jid]: chats que leíste (o marcaste no leídos) en el celular
 
 
@@ -127,7 +127,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 return
 
         elif self.path == "/api/app/activate":
-            signals.app_activate.emit(str(data.get("uri") or "magsapp://show"))
+            signals.app_activate.emit(str(data.get("uri") or "advancedwhatsapp://show"))
             self._ok()
             return
 
@@ -269,7 +269,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
 def _log_error(where: str, exc: Exception) -> None:
     import traceback
-    print(f"[MAGSAPP WebhookServer] Error en {where}: {exc}\n{traceback.format_exc()}")
+    print(f"[Advanced WhatsApp WebhookServer] Error en {where}: {exc}\n{traceback.format_exc()}")
 
 
 class WebhookServer:
@@ -296,14 +296,14 @@ class WebhookServer:
             try:
                 self.server = _Server(("127.0.0.1", WEBHOOK_PORT), WebhookHandler)
                 self.thread = threading.Thread(target=self.server.serve_forever, daemon=True,
-                                               name="magsapp-webhook")
+                                               name="advancedwhatsapp-webhook")
                 self.thread.start()
                 return
             except Exception as e:
                 last = e
                 self.server = None
                 time.sleep(0.5)
-        print(f"[MAGSAPP WebhookServer] Error iniciando en el puerto {WEBHOOK_PORT}: {last}")
+        print(f"[Advanced WhatsApp WebhookServer] Error iniciando en el puerto {WEBHOOK_PORT}: {last}")
 
     def stop(self):
         if self.server:

@@ -26,7 +26,7 @@ from app.ui.effects import WindowPolisher
 
 
 class MainWindow(QMainWindow):
-    """Ventana Principal de MAGSAPP - WhatsApp Desktop Oficial."""
+    """Ventana Principal de Advanced WhatsApp - WhatsApp Desktop Oficial."""
 
     def __init__(self, start_hidden: bool = False):
         super().__init__()
@@ -46,7 +46,7 @@ class MainWindow(QMainWindow):
         self._unread_total = 0
         self._qr_open = False
         self._told_about_tray = False
-        self._settings = QSettings("MagTecnologia", "MAGSAPP")
+        self._settings = QSettings("MagTecnologia", "AdvancedWhatsapp")
 
         # Timers para evitar sobrecarga de la UI por ráfagas de red
         self._history_sync_timer = QTimer(self)
@@ -82,7 +82,7 @@ class MainWindow(QMainWindow):
         self.notifications = NotificationCenter(
             is_viewing=self._is_viewing_chat, is_foreground=self._is_foreground,
             alert_widget=self, tray_provider=lambda: self._tray, parent=self)
-        self.notifications.open_chat_requested.connect(lambda jid: self.handle_uri(f"magsapp://open?chat={jid}"))
+        self.notifications.open_chat_requested.connect(lambda jid: self.handle_uri(f"advancedwhatsapp://open?chat={jid}"))
         self._badge = TaskbarBadge()
 
         self._connect_signals()
@@ -97,7 +97,7 @@ class MainWindow(QMainWindow):
 
         # Iniciar servidores en segundo plano; el gateway queda vigilado (si se cae, se relanza solo)
         self.webhook_server.start()
-        threading.Thread(target=self._start_gateway, daemon=True, name="magsapp-gateway-start").start()
+        threading.Thread(target=self._start_gateway, daemon=True, name="advancedwhatsapp-gateway-start").start()
 
         # La comprobación de vinculación la hace main.py dentro de la pantalla de carga
 
@@ -237,7 +237,7 @@ class MainWindow(QMainWindow):
         self.chat_view_panel.ai_state_changed.connect(self.chat_list_panel.set_ai_state)
         self.chat_view_panel.contact_updated.connect(lambda data: self.chat_list_panel.reload_chats(select_jid=data.get("jid")))
         self.status_panel.unseen_changed.connect(self.nav_rail.set_status_badge)
-        self.status_panel.open_chat_requested.connect(lambda jid: self.handle_uri(f"magsapp://open?chat={jid}"))
+        self.status_panel.open_chat_requested.connect(lambda jid: self.handle_uri(f"advancedwhatsapp://open?chat={jid}"))
 
         # Conexiones del servidor webhook
         signals.message_received.connect(self._on_incoming_message)
@@ -300,10 +300,10 @@ class MainWindow(QMainWindow):
             self._presence_sent = want
             self.gateway.set_presence(want)
 
-    # ── Notificaciones / magsapp:// ──
+    # ── Notificaciones / advancedwhatsapp:// ──
 
     def handle_uri(self, uri: str):
-        """Pedidos que llegan de las notificaciones o de otra instancia: magsapp://open?chat=..., reply, read, show."""
+        """Pedidos que llegan de las notificaciones o de otra instancia: advancedwhatsapp://open?chat=..., reply, read, show."""
         try:
             parsed = urlparse(uri or "")
             action = (parsed.netloc or parsed.path.strip("/") or "show").lower()
@@ -346,15 +346,15 @@ class MainWindow(QMainWindow):
     def _test_notification(self):
         """Botón de Configuración: muestra una notificación de ejemplo."""
         ok = self.notifications.toaster.show_message(
-            "magsapp-prueba", "MAGSAPP", "Así se ven las notificaciones de mensajes nuevos.",
+            "advancedwhatsapp-prueba", "Advanced WhatsApp", "Así se ven las notificaciones de mensajes nuevos.",
             attribution="Prueba", sound=get_pref("notify_sound"), with_actions=False)
         if not ok:
-            self.notifications.notify_simple("MAGSAPP", "Así se ven las notificaciones de mensajes nuevos.")
+            self.notifications.notify_simple("Advanced WhatsApp", "Así se ven las notificaciones de mensajes nuevos.")
         if self.notifications.toaster.disabled_by_user:
             QMessageBox.information(
                 self, "Notificaciones",
-                "Windows tiene desactivadas las notificaciones de MAGSAPP.\n\n"
-                "Activalas en Configuración de Windows › Sistema › Notificaciones › MAGSAPP.")
+                "Windows tiene desactivadas las notificaciones de Advanced WhatsApp.\n\n"
+                "Activalas en Configuración de Windows › Sistema › Notificaciones › Advanced WhatsApp.")
 
     def _on_call_event(self, data: dict):
         if data.get("status") in ("timeout", "terminate"):
@@ -477,8 +477,8 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(1500, self._open_qr_dialog)
             else:
                 self.notifications.notify_simple(
-                    "Se cerró la sesión de WhatsApp en MAGSAPP",
-                    "Tocá acá para volver a vincular con el código QR.", uri="magsapp://link", tag="link", sound=True)
+                    "Se cerró la sesión de WhatsApp en Advanced WhatsApp",
+                    "Tocá acá para volver a vincular con el código QR.", uri="advancedwhatsapp://link", tag="link", sound=True)
 
     # ── Contador de no leídos: título, barra de tareas y bandeja ──
 
@@ -539,7 +539,7 @@ class MainWindow(QMainWindow):
         self._tray = QSystemTrayIcon(self._base_icon if not self._base_icon.isNull() else self.windowIcon(), self)
         self._tray.setToolTip(APP_NAME)
         menu = QMenu(self)
-        menu.addAction("Abrir MAGSAPP", self.show_from_background)
+        menu.addAction("Abrir Advanced WhatsApp", self.show_from_background)
         menu.addAction("Estados", lambda: (self.show_from_background(), self.nav_rail.set_tab("status")))
         menu.addSeparator()
         self._act_notify = menu.addAction("Notificaciones activadas")
@@ -584,7 +584,7 @@ class MainWindow(QMainWindow):
         if pending:
             msg = f"Sigue funcionando en segundo plano para publicar {pending} estado(s)."
         elif not self._told_about_tray and not self._settings.value("tray/told", False):
-            msg = "MAGSAPP sigue abierto en la bandeja y te va a avisar de los mensajes nuevos."
+            msg = "Advanced WhatsApp sigue abierto en la bandeja y te va a avisar de los mensajes nuevos."
             self._settings.setValue("tray/told", True)
         else:
             msg = ""
@@ -619,7 +619,7 @@ class MainWindow(QMainWindow):
                 box.setIcon(QMessageBox.Question)
                 box.setWindowTitle(APP_NAME)
                 box.setText(f"Tenés {pending} estado(s) programado(s).")
-                box.setInformativeText("Si cerrás MAGSAPP no se van a publicar. Podés dejarlo funcionando en la bandeja.")
+                box.setInformativeText("Si cerrás Advanced WhatsApp no se van a publicar. Podés dejarlo funcionando en la bandeja.")
                 btn_tray = box.addButton("Dejar en la bandeja", QMessageBox.AcceptRole)
                 btn_quit = box.addButton("Cerrar igual", QMessageBox.DestructiveRole)
                 box.addButton("Cancelar", QMessageBox.RejectRole)
@@ -649,7 +649,7 @@ class MainWindow(QMainWindow):
             self.webhook_server.stop()
             self.gateway.stop()
         except Exception as e:
-            print(f"[MAGSAPP] Error al cerrar: {e}")
+            print(f"[Advanced WhatsApp] Error al cerrar: {e}")
 
     def on_session_ending(self, *_):
         """Windows se apaga o cierra sesión: salir de verdad (la bandeja no debe frenar el apagado)."""

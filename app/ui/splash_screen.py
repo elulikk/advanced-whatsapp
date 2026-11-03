@@ -38,7 +38,7 @@ class SplashScreen(QWidget):
         icon_lbl.setPixmap(pixmap("chats", C["accent"], 40))
         lay.addWidget(icon_lbl, alignment=Qt.AlignCenter)
 
-        title_lbl = QLabel("MAGSAPP")
+        title_lbl = QLabel("Advanced WhatsApp")
         title_lbl.setStyleSheet(f"font-family: 'Segoe UI'; font-size: 18px; font-weight: 600; "
                                 f"letter-spacing: 1px; color: {C['text']};")
         lay.addWidget(title_lbl, alignment=Qt.AlignCenter)

@@ -1,1 +1,1 @@
-# MAGSAPP UI Module
+# Advanced WhatsApp UI Module

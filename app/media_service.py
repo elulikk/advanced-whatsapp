@@ -1,5 +1,5 @@
 """
-MAGSAPP - Descarga y transcripción de multimedia en segundo plano
+Advanced WhatsApp - Descarga y transcripción de multimedia en segundo plano
 =================================================================
 Los archivos del historial no se bajan al sincronizar (son demasiados). Se piden cuando el chat
 se abre, y las notas de voz se transcriben a demanda. Todo corre en un hilo, sin bloquear la UI.
@@ -37,7 +37,7 @@ def _ensure_worker():
     global _worker
     with _lock:
         if _worker is None or not _worker.is_alive():
-            _worker = threading.Thread(target=_run, name="magsapp-media", daemon=True)
+            _worker = threading.Thread(target=_run, name="advancedwhatsapp-media", daemon=True)
             _worker.start()
 
 
@@ -153,7 +153,7 @@ def _run():
                     _errors.pop((kind, msg_id), None)
                 media_signals.transcript_ready.emit(msg_id)
         except Exception as e:
-            print(f"[MAGSAPP Media] {kind} {msg_id} falló: {e}")
+            print(f"[Advanced WhatsApp Media] {kind} {msg_id} falló: {e}")
             with _lock:
                 _errors[(kind, msg_id)] = str(e)
             media_signals.job_failed.emit(msg_id)

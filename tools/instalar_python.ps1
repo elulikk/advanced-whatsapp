@@ -1,13 +1,13 @@
 # Plan B cuando winget no puede instalar Python.
 # No usa ningun instalador (.exe/.msi): baja el paquete oficial de Python de NuGet,
-# que es un .zip, y lo descomprime en %LOCALAPPDATA%\MAGSAPP-Tools\python. Sin admin.
+# que es un .zip, y lo descomprime en %LOCALAPPDATA%\AdvancedWhatsapp-Tools\python. Sin admin.
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ProgressPreference = 'SilentlyContinue'
 
-$dest = Join-Path $env:LOCALAPPDATA 'MAGSAPP-Tools\python'
-$zip  = Join-Path $env:TEMP 'magsapp-python.zip'
-$tmp  = Join-Path $env:TEMP 'magsapp-python-extract'
+$dest = Join-Path $env:LOCALAPPDATA 'AdvancedWhatsapp-Tools\python'
+$zip  = Join-Path $env:TEMP 'advancedwhatsapp-python.zip'
+$tmp  = Join-Path $env:TEMP 'advancedwhatsapp-python-extract'
 
 try {
     $all = (Invoke-RestMethod 'https://api.nuget.org/v3-flatcontainer/python/index.json').versions

@@ -1,5 +1,5 @@
 """
-MAGSAPP - Servicio de Inteligencia Artificial (AIService)
+Advanced WhatsApp - Servicio de Inteligencia Artificial (AIService)
 =========================================================
 Conexión con APIs de LLM: Google Gemini, Groq Cloud y OpenAI.
 Arquitectura sincronizada y compatible con MAGNETO.
@@ -14,7 +14,7 @@ from app.config import load_app_config
 
 class AIService:
     """
-    Servicio unificado de IA para MAGSAPP.
+    Servicio unificado de IA para Advanced WhatsApp.
     Maneja la conexión con las APIs de Google Gemini, Groq Cloud y OpenAI,
     descubrimiento dinámico de modelos, fallback automático y pruebas de conexión.
     """

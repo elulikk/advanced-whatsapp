@@ -161,7 +161,7 @@ class _LineIconEngine(QIconEngine):
         return _LineIconEngine(self._name, dict(self._colors))
 
     def key(self):
-        return "magsapp-line"
+        return "advancedwhatsapp-line"
 
     def isNull(self):
         return False

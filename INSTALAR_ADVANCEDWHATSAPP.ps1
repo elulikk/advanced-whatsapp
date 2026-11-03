@@ -1,20 +1,20 @@
 # =========================================================
-#  MAGSAPP - Instalador completo (un solo archivo)
+#  Advanced WhatsApp - Instalador completo (un solo archivo)
 #
 #  Copiar este archivo a la PC nueva, clic derecho > "Ejecutar con PowerShell".
-#  Hace todo: Git, descarga de MAGSAPP, Python, Node.js, FFmpeg,
+#  Hace todo: Git, descarga de Advanced WhatsApp, Python, Node.js, FFmpeg,
 #  librerias, gateway de WhatsApp y accesos directos.
 #
 #  No usa winget ni instaladores (.exe/.msi): lo que falta lo baja en .zip
-#  y lo descomprime en %LOCALAPPDATA%\MAGSAPP-Tools. No necesita admin.
-#  Se puede volver a ejecutar: si MAGSAPP ya esta, lo actualiza.
+#  y lo descomprime en %LOCALAPPDATA%\AdvancedWhatsapp-Tools. No necesita admin.
+#  Se puede volver a ejecutar: si Advanced WhatsApp ya esta, lo actualiza.
 #
-#  Opciones:  -Destino "D:\MAGSAPP"   carpeta donde queda MAGSAPP
+#  Opciones:  -Destino "D:\Advanced WhatsApp"   carpeta donde queda Advanced WhatsApp
 #             -SinPreguntas           no pregunta nada al final
 # =========================================================
 param(
-    [string]$Destino = 'C:\MAGSAPP',
-    [string]$Repo = 'https://github.com/elulikk/magsapp.git',
+    [string]$Destino = 'C:\Advanced WhatsApp',
+    [string]$Repo = 'https://github.com/elulikk/advanced-whatsapp.git',
     [switch]$SinPreguntas
 )
 
@@ -22,7 +22,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$Tools = Join-Path $env:LOCALAPPDATA 'MAGSAPP-Tools'
+$Tools = Join-Path $env:LOCALAPPDATA 'AdvancedWhatsapp-Tools'
 
 function Info($m)  { Write-Host "[INFO] $m" }
 function Ok($m)    { Write-Host "[OK] $m" -ForegroundColor Green }
@@ -32,7 +32,7 @@ function Paso($m)  { Write-Host ""; Write-Host "=== $m" -ForegroundColor Cyan }
 # Baja un .zip y lo deja descomprimido en $Dest. Si el zip trae una sola
 # carpeta adentro (o se indica $Inner), usa el contenido de esa carpeta.
 function Install-Zip([string]$Url, [string]$Dest, [string]$Inner = '') {
-    $zip = Join-Path $env:TEMP ('magsapp-' + [guid]::NewGuid().ToString('N') + '.zip')
+    $zip = Join-Path $env:TEMP ('advancedwhatsapp-' + [guid]::NewGuid().ToString('N') + '.zip')
     $tmp = "$zip-x"
     try {
         Invoke-WebRequest $Url -UseBasicParsing -OutFile $zip
@@ -87,21 +87,21 @@ function Get-Git {
 }
 
 function Get-Code([string]$Git) {
-    Paso '[2/7] Codigo de MAGSAPP'
+    Paso '[2/7] Codigo de Advanced WhatsApp'
     if (Test-Path (Join-Path $Destino '.git')) {
-        Info "MAGSAPP ya esta en $Destino. Actualizando..."
+        Info "Advanced WhatsApp ya esta en $Destino. Actualizando..."
         & $Git -C $Destino pull --ff-only
         if ($LASTEXITCODE -ne 0) { Warn 'No se pudo actualizar (hay cambios locales?). Sigo con la version que ya esta.' }
     } else {
         if ((Test-Path $Destino) -and @(Get-ChildItem $Destino -Force).Count -gt 0) {
             throw "La carpeta $Destino ya existe y no esta vacia. Borrala o elegi otra con -Destino."
         }
-        Info "Descargando MAGSAPP en $Destino..."
+        Info "Descargando Advanced WhatsApp en $Destino..."
         Info 'Si se abre una ventana de GitHub, inicia sesion con la cuenta que tiene acceso al repositorio.'
         & $Git clone $Repo $Destino
-        if ($LASTEXITCODE -ne 0) { throw 'No se pudo descargar MAGSAPP de GitHub (revisa internet y el inicio de sesion).' }
+        if ($LASTEXITCODE -ne 0) { throw 'No se pudo descargar Advanced WhatsApp de GitHub (revisa internet y el inicio de sesion).' }
     }
-    Ok "MAGSAPP en $Destino"
+    Ok "Advanced WhatsApp en $Destino"
 }
 
 function Test-Python([string]$Exe) {
@@ -179,7 +179,7 @@ function Get-FFmpeg {
             Add-ToPath "$Tools\ffmpeg\bin"
         } catch {
             Warn "No se pudo bajar FFmpeg: $($_.Exception.Message)"
-            Warn 'MAGSAPP funciona igual, pero sin enviar notas de voz.'
+            Warn 'Advanced WhatsApp funciona igual, pero sin enviar notas de voz.'
             return
         }
     }
@@ -202,7 +202,7 @@ function Finish-Setup([string]$Py) {
 
 function Main {
     Write-Host '===================================================='
-    Write-Host '  MAGSAPP - Instalacion completa'
+    Write-Host '  Advanced WhatsApp - Instalacion completa'
     Write-Host '===================================================='
     try {
         $git = Get-Git
@@ -224,13 +224,13 @@ function Main {
     Write-Host ''
     Write-Host '====================================================' -ForegroundColor Green
     Write-Host '  INSTALACION COMPLETA' -ForegroundColor Green
-    Write-Host '  Abri MAGSAPP desde el icono del escritorio o'
-    Write-Host '  buscando "MAGSAPP" en el menu Inicio. La primera'
+    Write-Host '  Abri Advanced WhatsApp desde el icono del escritorio o'
+    Write-Host '  buscando "Advanced WhatsApp" en el menu Inicio. La primera'
     Write-Host '  vez vas a escanear un codigo QR con WhatsApp del'
     Write-Host '  celular: Dispositivos vinculados.'
     Write-Host '====================================================' -ForegroundColor Green
     if (-not $SinPreguntas) {
-        $r = Read-Host 'Abrir MAGSAPP ahora? (S/N)'
+        $r = Read-Host 'Abrir Advanced WhatsApp ahora? (S/N)'
         if ($r -match '^[sS]') {
             $pyw = Join-Path (Split-Path $py) 'pythonw.exe'
             if (-not (Test-Path $pyw)) { $pyw = $py }
@@ -240,5 +240,5 @@ function Main {
     exit 0
 }
 
-# Al cargarlo con ". .\INSTALAR_MAGSAPP.ps1" solo define las funciones (para probar pasos sueltos)
+# Al cargarlo con ". .\INSTALAR_ADVANCEDWHATSAPP.ps1" solo define las funciones (para probar pasos sueltos)
 if ($MyInvocation.InvocationName -ne '.') { Main }

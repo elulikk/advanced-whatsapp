@@ -1,5 +1,5 @@
 """
-MAGSAPP - Centro de notificaciones
+Advanced WhatsApp - Centro de notificaciones
 ==================================
 Decide cuándo y cómo avisar de un mensaje nuevo, como WhatsApp Desktop:
 - Ventana en segundo plano (minimizada, en la bandeja o detrás de otra) → notificación de Windows con la foto
@@ -22,7 +22,7 @@ from app.config import get_pref
 from app.db import get_chat, is_chat_muted, find_chat_avatar, _preview_for, get_message
 from app.windows_integration import Toaster, thumbnail_from_media_raw, ICON_PNG
 
-# Mensajes enviados antes de abrir MAGSAPP: no se anuncian (ya se ven como "no leídos" en la lista)
+# Mensajes enviados antes de abrir Advanced WhatsApp: no se anuncian (ya se ven como "no leídos" en la lista)
 BACKLOG_GRACE = 30
 MAX_AGE = 12 * 3600
 
@@ -80,7 +80,7 @@ class NotificationCenter(QObject):
         try:
             self._on_message(data)
         except Exception as e:
-            print(f"[MAGSAPP Notificaciones] Error: {e}")
+            print(f"[Advanced WhatsApp Notificaciones] Error: {e}")
 
     def _on_message(self, data: dict):
         if not data.get("is_new") or data.get("from_me") or not get_pref("notify_enabled"):
@@ -177,7 +177,7 @@ class NotificationCenter(QObject):
             elif status in ("accept", "reject", "timeout", "terminate"):
                 self.toaster.remove_call(call_id)
         except Exception as e:
-            print(f"[MAGSAPP Notificaciones] Error en llamada: {e}")
+            print(f"[Advanced WhatsApp Notificaciones] Error en llamada: {e}")
 
     def notify_simple(self, title: str, body: str, uri: str = "", tag: str = "general", sound: bool = False):
         if not self.toaster.show_simple(title, body, uri=uri, tag=tag, sound=sound):

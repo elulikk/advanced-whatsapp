@@ -1,5 +1,5 @@
 """
-MAGSAPP - Panel de Configuración (SettingsPanel)
+Advanced WhatsApp - Panel de Configuración (SettingsPanel)
 ================================================
 Gestión integral de Inteligencia Artificial (Google Gemini, Groq, OpenAI),
 estado de la sesión de WhatsApp y parámetros del sistema.
@@ -76,7 +76,7 @@ class TestConnectionThread(QThread):
 
 
 class SettingsPanel(QWidget):
-    """Panel de Configuración de MAGSAPP con IA y WhatsApp."""
+    """Panel de Configuración de Advanced WhatsApp con IA y WhatsApp."""
     qr_requested = Signal()
     config_saved = Signal()
     font_scale_changed = Signal(int)
@@ -312,7 +312,7 @@ class SettingsPanel(QWidget):
         l1 = QVBoxLayout(g1)
         l1.setSpacing(6)
         check(l1, "notify_enabled", "Mostrar notificaciones de mensajes nuevos",
-              "Aparecen en Windows cuando MAGSAPP está minimizado, en la bandeja o detrás de otra ventana. "
+              "Aparecen en Windows cuando Advanced WhatsApp está minimizado, en la bandeja o detrás de otra ventana. "
               "Tocá la notificación para abrir el chat; también podés responder o marcarlo como leído desde ahí.")
         check(l1, "notify_preview", "Mostrar el texto del mensaje en la notificación")
         check(l1, "notify_sound", "Reproducir sonido",
@@ -336,7 +336,7 @@ class SettingsPanel(QWidget):
         g2 = QGroupBox("Windows")
         l2 = QVBoxLayout(g2)
         l2.setSpacing(6)
-        self.chk_autostart = QCheckBox("Abrir MAGSAPP al iniciar Windows (minimizado en la bandeja)")
+        self.chk_autostart = QCheckBox("Abrir Advanced WhatsApp al iniciar Windows (minimizado en la bandeja)")
         self.chk_autostart.toggled.connect(self._on_autostart_toggled)
         l2.addWidget(self.chk_autostart)
         check(l2, "close_to_tray", "Al cerrar la ventana, seguir en segundo plano en la bandeja",
@@ -350,7 +350,7 @@ class SettingsPanel(QWidget):
         check(l3, "status_receipts", "Al ver un estado, avisar al contacto que lo viste",
               "Igual que en el celular. Si lo desactivás, los estados se marcan como vistos solo en esta PC.")
         check(l3, "typing_indicator", "Mostrar \"escribiendo…\" a la otra persona mientras escribo")
-        l3.addWidget(self._hint("MAGSAPP figura \"en línea\" solo mientras la ventana está al frente, como WhatsApp "
+        l3.addWidget(self._hint("Advanced WhatsApp figura \"en línea\" solo mientras la ventana está al frente, como WhatsApp "
                                 "Desktop; en segundo plano tu celular sigue recibiendo sus notificaciones."))
         layout.addWidget(g3)
         layout.addStretch()
@@ -443,7 +443,7 @@ class SettingsPanel(QWidget):
             ("Ctrl+1 / Ctrl+2", "Chats / Estados"), ("Ctrl+,", "Configuración"),
             ("Ctrl+N", "Nuevo chat"), ("Ctrl+K", "Buscar chat"),
             ("Ctrl+F", "Buscar dentro del chat"), ("Esc", "Cancelar respuesta / selección / búsqueda"),
-            ("Enter / Shift+Enter", "Enviar / salto de línea"), ("Ctrl+Q", "Salir de MAGSAPP"),
+            ("Enter / Shift+Enter", "Enviar / salto de línea"), ("Ctrl+Q", "Salir de Advanced WhatsApp"),
             ("← / → · Espacio", "Visor de estados: anterior / siguiente · pausa"),
         ]
         for i, (k, d) in enumerate(shortcuts):
@@ -477,7 +477,7 @@ class SettingsPanel(QWidget):
     def _create_about_tab(self) -> QWidget:
         tab, layout = self._page()
 
-        lbl_app = QLabel(f"MAGSAPP <span style='color: {C['text_2']}; font-weight: 400;'>· versión {APP_VERSION}</span>")
+        lbl_app = QLabel(f"Advanced WhatsApp <span style='color: {C['text_2']}; font-weight: 400;'>· versión {APP_VERSION}</span>")
         lbl_app.setStyleSheet("font-size: 15px; font-weight: 600;")
         layout.addWidget(lbl_app)
         layout.addWidget(self._hint("Cliente de WhatsApp de escritorio · Mag Tecnología"))

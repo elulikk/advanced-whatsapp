@@ -1,7 +1,7 @@
 import os
 import sys
 
-# Versión portable (MAGSAPP.exe hecho con PyInstaller): los archivos de la app están en sys._MEIPASS
+# Versión portable (AdvancedWhatsapp.exe hecho con PyInstaller): los archivos de la app están en sys._MEIPASS
 # (carpeta _internal) y Node.js y FFmpeg vienen incluidos en _internal/runtime.
 FROZEN = bool(getattr(sys, "frozen", False))
 BASE_DIR = getattr(sys, "_MEIPASS", None) if FROZEN else None
@@ -11,11 +11,11 @@ GATEWAY_DIR = os.path.join(BASE_DIR, "gateway")
 
 # Directorio de datos locales en el perfil de usuario para evitar bloqueos de Google Drive
 USER_HOME = os.path.expanduser("~")
-DATA_DIR = os.path.join(USER_HOME, ".magsapp")
+DATA_DIR = os.path.join(USER_HOME, ".advancedwhatsapp")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # Rutas de base de datos y sesión
-DB_PATH = os.path.join(DATA_DIR, "magsapp.db")
+DB_PATH = os.path.join(DATA_DIR, "advancedwhatsapp.db")
 MEDIA_DIR = os.path.join(DATA_DIR, "media")
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
@@ -23,17 +23,17 @@ AUTH_DIR = os.path.join(DATA_DIR, "auth_info_baileys")
 os.makedirs(AUTH_DIR, exist_ok=True)
 
 # Puertos de comunicación interna (elegidos para no colisionar con MAGNETO 5005/5006)
-# (MAGSAPP_GATEWAY_PORT / MAGSAPP_WEBHOOK_PORT permiten correr una copia de prueba al lado de la real)
-GATEWAY_PORT = int(os.environ.get("MAGSAPP_GATEWAY_PORT") or 5016)
+# (ADVANCEDWHATSAPP_GATEWAY_PORT / ADVANCEDWHATSAPP_WEBHOOK_PORT permiten correr una copia de prueba al lado de la real)
+GATEWAY_PORT = int(os.environ.get("ADVANCEDWHATSAPP_GATEWAY_PORT") or 5016)
 GATEWAY_URL = f"http://127.0.0.1:{GATEWAY_PORT}"
 
-WEBHOOK_PORT = int(os.environ.get("MAGSAPP_WEBHOOK_PORT") or 5015)
+WEBHOOK_PORT = int(os.environ.get("ADVANCEDWHATSAPP_WEBHOOK_PORT") or 5015)
 # La copia de prueba no compite con la real por la instancia única ni toca accesos directos ni registro
 TEST_COPY = WEBHOOK_PORT != 5015
 WEBHOOK_URL = f"http://127.0.0.1:{WEBHOOK_PORT}/api/whatsapp/incoming"
 CONNECTION_WEBHOOK_URL = f"http://127.0.0.1:{WEBHOOK_PORT}/api/whatsapp/connection"
 
-TOKEN_HEADER = "X-Magsapp-Token"
+TOKEN_HEADER = "X-AdvancedWhatsapp-Token"
 TOKEN_PATH = os.path.join(DATA_DIR, "gateway.token")
 
 
@@ -53,7 +53,7 @@ def get_gateway_token() -> str:
     return tok
 
 
-APP_NAME = "MAGSAPP - WhatsApp Desktop"
+APP_NAME = "Advanced WhatsApp - Desktop"
 APP_VERSION = "1.0.0"
 
 CONFIG_PATH = os.path.join(DATA_DIR, "config.ini")
@@ -62,13 +62,13 @@ MAGNETO_CONFIG_PATH = os.path.abspath(os.path.join(BASE_DIR, "..", "MAGNETO", "c
 
 def load_app_config():
     """
-    Carga la configuración de MAGSAPP desde ~/.magsapp/config.ini.
+    Carga la configuración de Advanced WhatsApp desde ~/.advancedwhatsapp/config.ini.
     Si alguna sección o API Key falta, intenta heredarla de MAGNETO/config.ini.
     """
     import configparser
     config = configparser.ConfigParser(interpolation=None)
 
-    # 1. Intentar cargar configuración propia de MAGSAPP
+    # 1. Intentar cargar configuración propia de Advanced WhatsApp
     if os.path.exists(CONFIG_PATH):
         try:
             config.read(CONFIG_PATH, encoding="utf-8")
@@ -121,7 +121,7 @@ def load_app_config():
                 mod = magneto_cfg.get("ERIK", "model", fallback="gemini-2.5-flash")
                 config.set("IA", "model", mod)
         except Exception as e:
-            print(f"[MAGSAPP Config] Error leyendo fallback de MAGNETO: {e}")
+            print(f"[Advanced WhatsApp Config] Error leyendo fallback de MAGNETO: {e}")
 
     # Valores por defecto seguros si aún no existen
     if not config.has_option("IA", "enabled"):
@@ -135,13 +135,13 @@ def load_app_config():
 
 
 def save_app_config(config) -> bool:
-    """Guarda la configuración en el archivo local de ~/.magsapp/config.ini."""
+    """Guarda la configuración en el archivo local de ~/.advancedwhatsapp/config.ini."""
     try:
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             config.write(f)
         return True
     except Exception as e:
-        print(f"[MAGSAPP Config] Error guardando config.ini: {e}")
+        print(f"[Advanced WhatsApp Config] Error guardando config.ini: {e}")
         return False
 
 FONT_SCALE_MIN = 70
@@ -198,7 +198,7 @@ PREF_DEFAULTS = {
     "notify_sound": True,        # sonido de la notificación (y aviso suave con la ventana abierta)
     "notify_preview": True,      # mostrar el texto del mensaje en la notificación
     "notify_calls": True,        # aviso de llamada entrante
-    "close_to_tray": True,       # la X deja MAGSAPP en la bandeja (sigue avisando)
+    "close_to_tray": True,       # la X deja Advanced WhatsApp en la bandeja (sigue avisando)
     "status_receipts": True,     # al ver un estado, el contacto ve que lo viste
     "typing_indicator": True,    # mandar "escribiendo…" mientras escribo
     "tags_palette_open": True,   # panel de tags abierto debajo de los filtros de la lista de chats

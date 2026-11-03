@@ -1,5 +1,5 @@
 """
-MAGSAPP - Análisis psicológico
+Advanced WhatsApp - Análisis psicológico
 ==============================
 Tres enfoques:
   - normal:      lectura psicológica del contacto (personalidad, puntos fuertes y débiles, etc.).
@@ -306,7 +306,7 @@ def build_export(focus: str, name: str, analysis: str, qa: List[Tuple[str, str]]
 # ─── LLM ──────────────────────────────────────────────────────────────────────
 
 def default_provider_model() -> Tuple[str, str]:
-    """Proveedor y modelo activos en la configuración de MAGSAPP."""
+    """Proveedor y modelo activos en la configuración de Advanced WhatsApp."""
     cfg = load_app_config()
     prov = cfg.get("IA", "provider", fallback="Gemini").strip()
     prov = next((p for p in PROVIDERS if p.lower() in prov.lower()), "Gemini")

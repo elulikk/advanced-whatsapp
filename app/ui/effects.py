@@ -141,8 +141,8 @@ class WindowPolisher(QObject):
 
     def eventFilter(self, obj, event):
         if event.type() == QEvent.Show and isinstance(obj, QWidget) and obj.isWindow():
-            if not obj.property("_magsapp_polished"):
-                obj.setProperty("_magsapp_polished", True)
+            if not obj.property("_advancedwhatsapp_polished"):
+                obj.setProperty("_advancedwhatsapp_polished", True)
                 self._polish(obj)
         return False
 

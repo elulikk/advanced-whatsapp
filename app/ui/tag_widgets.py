@@ -15,7 +15,7 @@ from app.ui.theme import C, R_LG
 from app.ui.icons import icon, tool_button
 from app.ui.effects import HoverFade, mix, overlay
 
-TAG_MIME = "application/x-magsapp-tag"
+TAG_MIME = "application/x-advancedwhatsapp-tag"
 
 PRESET_COLORS = ["#2f7bf5", "#53bdeb", "#1fa37f", "#7bc96f", "#f5d76e", "#d9a33a", "#f08a4b", "#e5534b",
                  "#d6457a", "#a36be0", "#8a979e", "#ffffff", "#0b1114"]

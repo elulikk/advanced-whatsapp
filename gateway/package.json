@@ -1,7 +1,7 @@
 {
-  "name": "magsapp-gateway",
+  "name": "advancedwhatsapp-gateway",
   "version": "1.0.0",
-  "description": "WhatsApp Desktop Gateway for MAGSAPP using Baileys",
+  "description": "WhatsApp Desktop Gateway for Advanced WhatsApp using Baileys",
   "main": "server.js",
   "type": "module",
   "scripts": {

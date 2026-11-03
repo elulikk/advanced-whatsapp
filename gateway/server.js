@@ -30,14 +30,14 @@ const PYTHON_STATUS_URL = process.env.PYTHON_STATUS_URL || `${PYTHON_API}/status
 const PYTHON_AVATAR_URL = process.env.PYTHON_AVATAR_URL || `${PYTHON_API}/avatar`;
 const PYTHON_REACTION_URL = process.env.PYTHON_REACTION_URL || `${PYTHON_API}/reaction`;
 
-const USER_DATA_DIR = path.join(os.homedir(), '.magsapp');
+const USER_DATA_DIR = path.join(os.homedir(), '.advancedwhatsapp');
 const AUTH_DIR = process.env.AUTH_DIR || path.join(USER_DATA_DIR, 'auth_info_baileys');
 const MEDIA_DIR = process.env.MEDIA_DIR || path.join(USER_DATA_DIR, 'media');
 const AVATARS_DIR = path.join(MEDIA_DIR, 'avatars');
-const TOKEN = process.env.MAGSAPP_TOKEN || '';
+const TOKEN = process.env.ADVANCEDWHATSAPP_TOKEN || '';
 // Huella del server.js que corre: la app reinicia el gateway si quedó uno viejo de otra versión
-const BUILD_ID = process.env.MAGSAPP_BUILD || '';
-const AUTH_HEADERS = { 'Content-Type': 'application/json', 'X-Magsapp-Token': TOKEN };
+const BUILD_ID = process.env.ADVANCEDWHATSAPP_BUILD || '';
+const AUTH_HEADERS = { 'Content-Type': 'application/json', 'X-AdvancedWhatsapp-Token': TOKEN };
 const LOG_FILE = path.join(USER_DATA_DIR, 'gateway.log');
 
 if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
@@ -85,7 +85,7 @@ const app = express();
 // Autenticación por token: evita que otros procesos o páginas web controlen el gateway
 app.use((req, res, next) => {
     if (req.path === '/status') return next();
-    const got = Buffer.from(String(req.get('X-Magsapp-Token') || ''));
+    const got = Buffer.from(String(req.get('X-AdvancedWhatsapp-Token') || ''));
     const want = Buffer.from(TOKEN);
     if (!TOKEN || got.length !== want.length || !crypto.timingSafeEqual(got, want)) {
         return res.status(401).json({ error: 'No autorizado' });
@@ -175,7 +175,7 @@ function saveContactsStore() {
 
 loadStores();
 
-// name = nombre de la agenda (o puesto a mano en MAGSAPP); pushName = nombre de perfil de WhatsApp.
+// name = nombre de la agenda (o puesto a mano en Advanced WhatsApp); pushName = nombre de perfil de WhatsApp.
 // La agenda manda: el pushName solo da nombre a contactos que no tienen uno guardado. Antes cada mensaje
 // entrante pisaba la agenda con el perfil y dos contactos distintos ("Martin" y "Martin 1") quedaban iguales.
 // Devuelve la entrada del contacto si cambió su nombre visible; si no, null.
@@ -893,7 +893,7 @@ async function initWhatsApp() {
             logger,
             printQRInTerminal: false,
             auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
-            browser: ['MAGSAPP Desktop', 'Chrome', '1.0.0'],
+            browser: ['Advanced WhatsApp Desktop', 'Chrome', '1.0.0'],
             syncFullHistory: true,
             shouldSyncHistoryMessage: () => true,
             markOnlineOnConnect: false,
@@ -1324,7 +1324,7 @@ async function initWhatsApp() {
 }
 
 // ─── ESTADOS PROGRAMADOS ─────────────────────────────────────────────────────
-// La cola vive en el gateway (no en la ventana) para que los estados se publiquen aunque se cierre MAGSAPP.
+// La cola vive en el gateway (no en la ventana) para que los estados se publiquen aunque se cierre Advanced WhatsApp.
 // Un estado vencido mientras la PC estuvo apagada o sin conexión se publica tarde solo dentro del margen;
 // pasado ese margen queda como "vencido" para no subir un "buen día" a la noche.
 const SCHEDULE_FILE = path.join(USER_DATA_DIR, 'estados_programados.json');
@@ -2156,14 +2156,14 @@ process.on('uncaughtException', (err) => console.error('[Gateway] Excepción sin
 
 // Si la app se cerró de golpe (cuelgue, apagado forzado), el gateway se apaga solo: así no queda un
 // proceso huérfano con código viejo ocupando el puerto en el próximo arranque.
-const PARENT_PID = parseInt(process.env.MAGSAPP_PARENT_PID || '0', 10);
+const PARENT_PID = parseInt(process.env.ADVANCEDWHATSAPP_PARENT_PID || '0', 10);
 if (PARENT_PID > 0) {
     setInterval(() => {
         try {
             process.kill(PARENT_PID, 0);
         } catch (e) {
             if (e.code === 'ESRCH') {
-                console.log('[MAGSAPP Gateway] La app ya no está abierta: apagando el gateway.');
+                console.log('[Advanced WhatsApp Gateway] La app ya no está abierta: apagando el gateway.');
                 saveOutbox();
                 process.exit(0);
             }
@@ -2173,11 +2173,11 @@ if (PARENT_PID > 0) {
 
 // Iniciar servidor Express
 const server = app.listen(PORT, '127.0.0.1', () => {
-    console.log(`[MAGSAPP Gateway] Servidor HTTP escuchando en http://127.0.0.1:${PORT} (build ${BUILD_ID || '-'})`);
+    console.log(`[Advanced WhatsApp Gateway] Servidor HTTP escuchando en http://127.0.0.1:${PORT} (build ${BUILD_ID || '-'})`);
     initWhatsApp();
     setInterval(processStatusSchedule, 20000);
 });
 server.on('error', (err) => {
-    console.error(`[MAGSAPP Gateway] No se pudo abrir el puerto ${PORT}: ${err.message}`);
+    console.error(`[Advanced WhatsApp Gateway] No se pudo abrir el puerto ${PORT}: ${err.message}`);
     process.exit(1);
 });

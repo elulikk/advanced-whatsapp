@@ -12,12 +12,12 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 ARGS = sys.argv[1:]
-LAUNCH_URI = next((a for a in ARGS if a.lower().startswith("magsapp:")), None)
+LAUNCH_URI = next((a for a in ARGS if a.lower().startswith("advancedwhatsapp:")), None)
 BACKGROUND = "--background" in ARGS
 
 
 def _setup_logging():
-    """Con pythonw no hay consola: los print() y los errores no capturados van a ~/.magsapp/app.log."""
+    """Con pythonw no hay consola: los print() y los errores no capturados van a ~/.advancedwhatsapp/app.log."""
     from app.config import DATA_DIR
     log_path = os.path.join(DATA_DIR, "app.log")
     try:
@@ -33,13 +33,13 @@ def _setup_logging():
         sys.stdout = log
     if sys.stderr is None or not sys.stderr.isatty():
         sys.stderr = log
-    print(f"\n===== MAGSAPP iniciado {time.strftime('%Y-%m-%d %H:%M:%S')} (pid {os.getpid()}) =====")
+    print(f"\n===== Advanced WhatsApp iniciado {time.strftime('%Y-%m-%d %H:%M:%S')} (pid {os.getpid()}) =====")
 
     import traceback
     import threading
 
     def _hook(exc_type, exc, tb):
-        print("[MAGSAPP] Error no capturado:\n" + "".join(traceback.format_exception(exc_type, exc, tb)))
+        print("[Advanced WhatsApp] Error no capturado:\n" + "".join(traceback.format_exception(exc_type, exc, tb)))
     sys.excepthook = _hook
     threading.excepthook = lambda a: _hook(a.exc_type, a.exc_value, a.exc_traceback)
     try:
@@ -49,7 +49,7 @@ def _setup_logging():
         pass
 
 
-# Una sola MAGSAPP: si ya hay una abierta, se le pasa el pedido (mostrar / abrir un chat) y esta se cierra.
+# Una sola Advanced WhatsApp: si ya hay una abierta, se le pasa el pedido (mostrar / abrir un chat) y esta se cierra.
 # Se hace antes de cargar Qt para que el clic en una notificación responda rápido.
 from app.windows_integration import acquire_single_instance, forward_to_running_instance, APP_ID
 from app.config import DATA_DIR
@@ -69,7 +69,7 @@ def _log_relaunch(text: str):
 if not acquire_single_instance():
     if not (BACKGROUND and not LAUNCH_URI):   # el inicio automático no debe traer al frente la ventana
         t0 = time.monotonic()
-        ok = forward_to_running_instance(LAUNCH_URI or "magsapp://show")
+        ok = forward_to_running_instance(LAUNCH_URI or "advancedwhatsapp://show")
         _log_relaunch(f"{'ok' if ok else 'SIN RESPUESTA'} en {time.monotonic() - t0:.1f}s ({LAUNCH_URI or 'show'})")
         if not ok and not LAUNCH_URI:
             try:
@@ -81,9 +81,9 @@ if not acquire_single_instance():
                 import ctypes
                 # MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST: con pythonw el aviso quedaba escondido detrás
                 ctypes.windll.user32.MessageBoxW(
-                    None, "MAGSAPP ya está abierto pero no responde.\n\nCerralo desde el Administrador de tareas "
+                    None, "Advanced WhatsApp ya está abierto pero no responde.\n\nCerralo desde el Administrador de tareas "
                     f"(pestaña Detalles, proceso pythonw.exe con PID {running}; ojo que otras apps de Python "
-                    "también se llaman pythonw.exe) y volvé a abrirlo.", "MAGSAPP", 0x30 | 0x10000 | 0x40000)
+                    "también se llaman pythonw.exe) y volvé a abrirlo.", "Advanced WhatsApp", 0x30 | 0x10000 | 0x40000)
             except Exception:
                 pass
     sys.exit(0)
@@ -194,18 +194,18 @@ def main():
 
     _set_windows_app_id()
     app = QApplication(sys.argv)
-    app.setApplicationName("MAGSAPP")
+    app.setApplicationName("Advanced WhatsApp")
     app.setOrganizationName("MagTecnologia")
     app.setQuitOnLastWindowClosed(False)   # la ventana puede quedar oculta en la bandeja
     if os.path.exists(ICON_PATH):
         app.setWindowIcon(QIcon(ICON_PATH))
 
-    # Registro en Windows (identidad, magsapp://, menú Inicio) sin demorar el arranque
+    # Registro en Windows (identidad, advancedwhatsapp://, menú Inicio) sin demorar el arranque
     import threading
     from app import windows_integration
     threading.Thread(target=lambda: (windows_integration.integrate_with_windows(),
                                      windows_integration.refresh_autostart_command()),
-                     daemon=True, name="magsapp-win-integration").start()
+                     daemon=True, name="advancedwhatsapp-win-integration").start()
 
     # 1. Mostrar SplashScreen inmediatamente (salvo en el inicio con Windows)
     splash = _NoSplash() if BACKGROUND else SplashScreen()
@@ -238,8 +238,8 @@ def main():
     if needs_link:
         if BACKGROUND:
             window.notifications.notify_simple(
-                "MAGSAPP necesita que vuelvas a vincular WhatsApp",
-                "Tocá acá y escaneá el código QR con tu celular.", uri="magsapp://link", tag="link", sound=True)
+                "Advanced WhatsApp necesita que vuelvas a vincular WhatsApp",
+                "Tocá acá y escaneá el código QR con tu celular.", uri="advancedwhatsapp://link", tag="link", sound=True)
         else:
             # Solo si WhatsApp pide vincular de verdad (sesión cerrada o primera vez)
             QTimer.singleShot(200, window._open_qr_dialog)

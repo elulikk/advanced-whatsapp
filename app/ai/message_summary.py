@@ -1,5 +1,5 @@
 """
-MAGSAPP - Modo resumen
+Advanced WhatsApp - Modo resumen
 ======================
 Resume, simplifica e interpreta UN mensaje del chat: qué dice en pocas palabras, qué quiere decir
 de verdad (intención y tono) y qué espera de mí. Usa los mensajes anteriores como contexto para
@@ -147,5 +147,5 @@ def request_summary(msg: Dict, contact_name: str, provider: str, model: str) -> 
             _pending.discard(msg_id)
         summary_signals.summary_ready.emit(msg_id)
 
-    threading.Thread(target=work, name="magsapp-summary", daemon=True).start()
+    threading.Thread(target=work, name="advancedwhatsapp-summary", daemon=True).start()
     return True

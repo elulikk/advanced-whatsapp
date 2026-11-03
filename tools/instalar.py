@@ -1,10 +1,10 @@
 """
-MAGSAPP - Paso final de la instalación (lo llama INSTALAR_DEPENDENCIAS.bat)
+Advanced WhatsApp - Paso final de la instalación (lo llama INSTALAR_DEPENDENCIAS.bat)
 ==========================================================================
 1. Comprueba que las librerías de Python quedaron instaladas.
-2. Prepara el gateway de WhatsApp (copia a ~/.magsapp/gateway y corre npm install).
-3. Registra MAGSAPP en Windows (nombre e icono en notificaciones, protocolo magsapp://).
-4. Crea los accesos directos con el icono de MAGSAPP en el escritorio y en el menú Inicio.
+2. Prepara el gateway de WhatsApp (copia a ~/.advancedwhatsapp/gateway y corre npm install).
+3. Registra Advanced WhatsApp en Windows (nombre e icono en notificaciones, protocolo advancedwhatsapp://).
+4. Crea los accesos directos con el icono de Advanced WhatsApp en el escritorio y en el menú Inicio.
 
 Devuelve 0 si todo salió bien, 1 si falta algo imprescindible.
 """
@@ -48,7 +48,7 @@ def check_python_packages() -> bool:
         try:
             importlib.import_module(module)
         except Exception:
-            warn(f"No se pudo cargar {name}; el resto de MAGSAPP funciona igual.")
+            warn(f"No se pudo cargar {name}; el resto de Advanced WhatsApp funciona igual.")
     if good:
         ok("Librerías de Python listas.")
     return good
@@ -78,12 +78,12 @@ def integrate_with_windows() -> bool:
     wi.register_protocol()
     good = True
     if wi.ensure_desktop_shortcut():
-        ok("Acceso directo \"MAGSAPP\" creado en el escritorio.")
+        ok("Acceso directo \"Advanced WhatsApp\" creado en el escritorio.")
     else:
         error("No se pudo crear el acceso directo del escritorio.")
         good = False
     if wi.ensure_start_menu_shortcut():
-        ok("MAGSAPP agregado al menú Inicio (buscá \"MAGSAPP\").")
+        ok("Advanced WhatsApp agregado al menú Inicio (buscá \"Advanced WhatsApp\").")
     else:
         error("No se pudo crear el acceso del menú Inicio.")
         good = False

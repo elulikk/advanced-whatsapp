@@ -1,14 +1,14 @@
 @echo off
 chcp 65001 >nul
 setlocal
-TITLE MAGSAPP - Instalar dependencias
+TITLE Advanced WhatsApp - Instalar dependencias
 
 REM =========================================================
-REM  MAGSAPP - Instalador de dependencias
+REM  Advanced WhatsApp - Instalador de dependencias
 REM  Despues de "git clone", ejecutar este archivo una vez.
 REM  Instala Python, Node.js y FFmpeg si faltan (con winget),
 REM  las librerias de Python y del gateway, y crea los accesos
-REM  directos con el icono de MAGSAPP en el escritorio y en el
+REM  directos con el icono de Advanced WhatsApp en el escritorio y en el
 REM  menu Inicio. No necesita permisos de administrador.
 REM =========================================================
 
@@ -17,7 +17,7 @@ if "%MDIR:~-1%"=="\" set "MDIR=%MDIR:~0,-1%"
 cd /d "%MDIR%"
 
 echo ====================================================
-echo   MAGSAPP - Instalacion de dependencias
+echo   Advanced WhatsApp - Instalacion de dependencias
 echo ====================================================
 echo.
 
@@ -94,7 +94,7 @@ call :find_ffmpeg
 if "%HAS_FFMPEG%"=="1" goto ffmpeg_ok
 
 :ffmpeg_skip
-echo [WARN] FFmpeg no quedo instalado. MAGSAPP funciona igual, pero sin enviar notas de voz.
+echo [WARN] FFmpeg no quedo instalado. Advanced WhatsApp funciona igual, pero sin enviar notas de voz.
 echo        Se puede instalar despues con:  winget install Gyan.FFmpeg
 echo.
 goto pip
@@ -127,13 +127,13 @@ if errorlevel 1 goto fail
 echo.
 echo ====================================================
 echo   INSTALACION COMPLETA
-echo   Abri MAGSAPP desde el icono del escritorio
-echo   o buscando "MAGSAPP" en el menu Inicio.
+echo   Abri Advanced WhatsApp desde el icono del escritorio
+echo   o buscando "Advanced WhatsApp" en el menu Inicio.
 echo   La primera vez vas a escanear un codigo QR con
 echo   WhatsApp del celular: Dispositivos vinculados.
 echo ====================================================
 echo.
-choice /C SN /M "Abrir MAGSAPP ahora"
+choice /C SN /M "Abrir Advanced WhatsApp ahora"
 if errorlevel 2 goto end
 start "" "%PYTHONW_EXE%" "%MDIR%\main.py"
 goto end
@@ -172,7 +172,7 @@ for %%P in (
     "%LOCALAPPDATA%\Programs\Python\Python311\python.exe"
     "C:\Python311\python.exe"
     "%ProgramFiles%\Python311\python.exe"
-    "%LOCALAPPDATA%\MAGSAPP-Tools\python\python.exe"
+    "%LOCALAPPDATA%\AdvancedWhatsapp-Tools\python\python.exe"
 ) do (
     if not defined PYTHON_EXE if exist %%P call :try_python %%P
 )

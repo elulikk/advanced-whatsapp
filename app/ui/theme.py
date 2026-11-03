@@ -1,4 +1,4 @@
-# MAGSAPP - Tema oscuro de escritorio (paleta, medidas y hoja de estilos QSS global)
+# Advanced WhatsApp - Tema oscuro de escritorio (paleta, medidas y hoja de estilos QSS global)
 #
 # Criterio: aspecto de escritorio moderno y compacto. Controles de 32 px de alto con esquinas de 8 px,
 # botones de icono circulares, menús y tarjetas redondeadas, márgenes en pasos de 4 px y un único color

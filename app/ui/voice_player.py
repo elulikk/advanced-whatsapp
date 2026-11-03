@@ -1,5 +1,5 @@
 """
-MAGSAPP - Reproductor interno de notas de voz
+Advanced WhatsApp - Reproductor interno de notas de voz
 =============================================
 Reproduce los audios dentro de la app (sin abrir el reproductor del sistema) y dibuja la onda
 de cada nota como una imagen: botón play/pausa, espectro con el avance y el tiempo.
@@ -262,7 +262,7 @@ class VoicePlayer(QObject):
             self.state_changed.emit(mid)
 
     def _on_error(self, error, message=""):
-        print(f"[MAGSAPP Audio] error de reproducción: {message}")
+        print(f"[Advanced WhatsApp Audio] error de reproducción: {message}")
         if self.current_id:
             self.state_changed.emit(self.current_id)
 
@@ -312,7 +312,7 @@ class VoicePlayer(QObject):
         job, self._decoding = self._decoding, None
         self._release_decoder()
         if job:
-            print(f"[MAGSAPP Audio] no se pudo leer la onda de {job[1]}")
+            print(f"[Advanced WhatsApp Audio] no se pudo leer la onda de {job[1]}")
             self._cache[job[1]] = ([], 0)   # evita reintentar en cada repintado
         self._decode_next()
 

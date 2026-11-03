@@ -1,9 +1,9 @@
 """
-MAGSAPP - Genera los recursos gráficos de assets/
+Advanced WhatsApp - Genera los recursos gráficos de assets/
 ================================================
-- magsapp.ico : icono de la app en varios tamaños (16 a 256 px), para la ventana, la barra de tareas,
-                los accesos directos y el protocolo magsapp://.
-- magsapp.png : 256 px, lo usan las notificaciones de Windows.
+- advancedwhatsapp.ico : icono de la app en varios tamaños (16 a 256 px), para la ventana, la barra de tareas,
+                los accesos directos y el protocolo advancedwhatsapp://.
+- advancedwhatsapp.png : 256 px, lo usan las notificaciones de Windows.
 - arrow_down.svg / check.svg : flechita de los combos y tilde de las casillas (tema).
 
 Ya vienen en el repositorio; solo hace falta correrlo si se cambia el diseño:
@@ -107,8 +107,8 @@ def main() -> int:
     _app = QGuiApplication(sys.argv[:1])   # QFont necesita una aplicación Qt
     os.makedirs(ASSETS, exist_ok=True)
     images = {size: draw_icon(size) for size in SIZES}
-    write_ico(os.path.join(ASSETS, "magsapp.ico"), images)
-    images[256].save(os.path.join(ASSETS, "magsapp.png"), "PNG")
+    write_ico(os.path.join(ASSETS, "advancedwhatsapp.ico"), images)
+    images[256].save(os.path.join(ASSETS, "advancedwhatsapp.png"), "PNG")
     with open(os.path.join(ASSETS, "arrow_down.svg"), "w", encoding="utf-8") as f:
         f.write(ARROW_DOWN_SVG)
     with open(os.path.join(ASSETS, "check.svg"), "w", encoding="utf-8") as f:
