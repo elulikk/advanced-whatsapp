@@ -161,7 +161,7 @@ class PsychAnalysisDialog(QDialog):
         an_lay.addLayout(ask)
         self.tabs.addTab(tab_an, "Análisis")
 
-        # Pestaña Notas: notas.txt del sujeto, editable
+        # Pestaña Notas: notas.txt del sujeto, solo las del usuario (esto sí se envía a la IA como contexto)
         tab_notes = QWidget()
         nt_lay = QVBoxLayout(tab_notes)
         nt_lay.setContentsMargins(10, 10, 10, 10)
@@ -169,9 +169,9 @@ class PsychAnalysisDialog(QDialog):
         self.notes_edit = QPlainTextEdit()
         self.notes_edit.setStyleSheet(f"QPlainTextEdit {{ {_TEXT} }}")
         self.notes_edit.setPlaceholderText(
-            "Cada análisis y cada pregunta se agregan acá automáticamente (solo para que los consultes: no se "
-            "le vuelven a enviar a la IA, así «Rehacer» parte de cero). Tus propias notas escríbelas ARRIBA "
-            "DE TODO, antes del primer encabezado con fecha: esas sí se usan como contexto.")
+            "Tus propias notas sobre esta persona (por ejemplo: «es mi primo», «me debe plata»). Se le envían "
+            "a la IA como contexto en cada análisis. Los análisis anteriores NO van acá: están en la pestaña "
+            "Historial y no se reenvían.")
         nt_lay.addWidget(self.notes_edit, stretch=1)
         nt_row = QHBoxLayout()
         self.lbl_notes = QLabel("")
@@ -181,6 +181,19 @@ class PsychAnalysisDialog(QDialog):
         nt_row.addWidget(self.btn_save_notes)
         nt_lay.addLayout(nt_row)
         self.tabs.addTab(tab_notes, "Notas")
+
+        # Pestaña Historial: análisis y respuestas anteriores, solo lectura (nunca se reenvían a la IA)
+        tab_hist = QWidget()
+        hs_lay = QVBoxLayout(tab_hist)
+        hs_lay.setContentsMargins(10, 10, 10, 10)
+        hs_lay.setSpacing(8)
+        self.history_view = QPlainTextEdit()
+        self.history_view.setReadOnly(True)
+        self.history_view.setStyleSheet(f"QPlainTextEdit {{ {_TEXT} }}")
+        self.history_view.setPlaceholderText("Todavía no hay análisis guardados de este sujeto.")
+        hs_lay.addWidget(self.history_view, stretch=1)
+        hs_lay.addWidget(QLabel("Solo para consultar. Esto no se le envía a la IA al analizar ni al rehacer."))
+        self.tabs.addTab(tab_hist, "Historial")
 
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -541,9 +554,9 @@ class PsychAnalysisDialog(QDialog):
             self.input_question.clear()
             try:
                 pa.save_question(meta["jid"], meta["focus"], meta["question"], text)
-                self.lbl_status.setText("💬 Respuesta agregada a las notas.")
+                self.lbl_status.setText("💬 Respuesta agregada al historial.")
             except OSError as e:
-                self.lbl_status.setText(f"⚠️ No se pudo guardar la respuesta en las notas: {e}")
+                self.lbl_status.setText(f"⚠️ No se pudo guardar la respuesta en el historial: {e}")
         self._load_notes_editor()
         self._render(scroll_to_end=kind == "answer")
         self._refresh_buttons()
@@ -582,9 +595,11 @@ class PsychAnalysisDialog(QDialog):
         self.notes_edit.document().setModified(False)
         self.notes_edit.moveCursor(QTextCursor.End)
         self.lbl_notes.setText(pa.notes_path(jid))
+        self.history_view.setPlainText(pa.load_history(jid))
+        self.history_view.moveCursor(QTextCursor.End)
 
     def _flush_notes_editor(self):
-        """Guarda las ediciones a mano antes de que se agreguen notas nuevas al archivo."""
+        """Guarda las notas editadas a mano (al cambiar de sujeto o cerrar)."""
         if self._notes_jid and self.notes_edit.document().isModified():
             self._save_notes()
 

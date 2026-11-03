@@ -11,7 +11,10 @@ si casi no escribió ("gracias"), la respuesta es de 1-3 líneas y sin inferenci
 El análisis nunca arranca solo: lo pide el usuario.
 
 Cada sujeto (un chat, o "_yo" para el análisis interno) tiene su carpeta en ANALYSIS_DIR con:
-  - notas.txt:            notas acumuladas (cada análisis y cada pregunta se agregan; editable a mano).
+  - notas.txt:            SOLO las notas del usuario (editables a mano). Es lo único que se le envía a la IA
+                          como contexto.
+  - historial.txt:        registro de cada análisis y cada pregunta/respuesta, para consultarlos. Nunca se le
+                          vuelve a enviar a la IA: así un «Rehacer» parte de cero y no se refuerza a sí mismo.
   - ultimo_<enfoque>.txt: el último análisis de ese enfoque, para mostrarlo al reabrir.
 """
 
@@ -247,16 +250,6 @@ def _depth_rule(focus: str, n_msgs: int, n_words: int) -> Tuple[str, str]:
     )
 
 
-_AUTO_HEADER = re.compile(r"^===== \d{4}-\d{2}-\d{2} \d{2}:\d{2} · .*? =====[ \t]*$", re.M)
-
-
-def user_notes(raw: str) -> str:
-    """Solo lo que escribió el usuario: se descartan los análisis y respuestas que la app agregó a las notas
-    (sus encabezados empiezan con la fecha). Así un «Rehacer» no parte de conclusiones anteriores de la IA y
-    no se arma un efecto bola de nieve de autoconfirmación."""
-    return _AUTO_HEADER.split(raw or "")[0].strip()
-
-
 def search_block(searches: List[str], name: str, n_words: int) -> str:
     """Instrucción para responder solo preguntas puntuales sobre el contacto, con veredicto y evidencia."""
     numbered = "\n".join(f"{i}. {q}" for i, q in enumerate(searches, 1))
@@ -287,7 +280,7 @@ def build_prompt(material: str, focus: str, length: str, name: str, n_messages: 
             parts.append(rule)
         else:
             parts += [_FORMATS[(focus, "short" if level == "moderate" else length)], rule, _DISCLAIMER]
-    notes = user_notes(notes)
+    notes = notes.strip()
     if notes:
         parts.append(
             "=== MIS NOTAS (las escribí yo; son mi contexto, no conclusiones de un análisis anterior) ===\n"
@@ -379,9 +372,32 @@ def _safe(jid: str) -> str:
     return re.sub(r"[^\w.-]", "_", (jid or "desconocido").split("@")[0]) or "desconocido"
 
 
+# Encabezado que la app ponía a cada análisis o respuesta dentro de notas.txt (versiones anteriores)
+_AUTO_HEADER = re.compile(r"^===== \d{4}-\d{2}-\d{2} \d{2}:\d{2} · .*? =====[ \t]*$", re.M)
+
+
+def _split_legacy_notes(path: str) -> None:
+    """Versiones anteriores guardaban análisis y notas juntos en notas.txt: lo escrito por el usuario (antes del
+    primer encabezado con fecha) queda en notas.txt y el resto pasa a historial.txt."""
+    notes = os.path.join(path, "notas.txt")
+    try:
+        with open(notes, "r", encoding="utf-8") as f:
+            raw = f.read()
+    except OSError:
+        return
+    m = _AUTO_HEADER.search(raw)
+    if not m:
+        return
+    with open(os.path.join(path, "historial.txt"), "a", encoding="utf-8") as f:
+        f.write("\n" + raw[m.start():].rstrip() + "\n")
+    with open(notes, "w", encoding="utf-8") as f:
+        f.write(raw[:m.start()].rstrip() + ("\n" if raw[:m.start()].strip() else ""))
+
+
 def subject_dir(jid: str) -> str:
     path = os.path.join(ANALYSIS_DIR, _safe(jid))
     os.makedirs(path, exist_ok=True)
+    _split_legacy_notes(path)
     legacy = os.path.join(ANALYSIS_DIR, f"{_safe(jid)}.txt")
     if os.path.isfile(legacy):  # formato viejo: un .txt suelto por cliente (modo comerciante)
         target = os.path.join(path, "ultimo_comerciante.txt")
@@ -389,7 +405,7 @@ def subject_dir(jid: str) -> str:
             shutil.move(legacy, target)
             saved = _read_analysis(target)
             if saved:
-                append_note(jid, f"{saved['fecha']} · Comerciante (importado)", saved["text"])
+                append_history(jid, f"{saved['fecha']} · Comerciante (importado)", saved["text"])
         else:
             os.remove(legacy)
     return path
@@ -416,14 +432,27 @@ def save_notes(jid: str, text: str) -> None:
         f.write(text)
 
 
-def append_note(jid: str, title: str, body: str) -> None:
-    with open(notes_path(jid), "a", encoding="utf-8") as f:
+def history_path(jid: str) -> str:
+    return os.path.join(subject_dir(jid), "historial.txt")
+
+
+def load_history(jid: str) -> str:
+    try:
+        with open(history_path(jid), "r", encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def append_history(jid: str, title: str, body: str) -> None:
+    """Agrega un análisis o una respuesta al historial (solo para consultar; no se envía a la IA)."""
+    with open(history_path(jid), "a", encoding="utf-8") as f:
         f.write(f"\n===== {title} =====\n{body.strip()}\n")
 
 
 def save_analysis(jid: str, name: str, text: str, focus: str, length: str, provider: str, model: str,
                   n_messages: int, relation: str = "", searches: Optional[List[str]] = None) -> str:
-    """Guarda el último análisis del enfoque y lo agrega a las notas del sujeto."""
+    """Guarda el último análisis del enfoque y lo agrega al historial del sujeto."""
     path = analysis_path(jid, focus)
     fecha = datetime.now().strftime("%Y-%m-%d %H:%M")
     header = (
@@ -437,16 +466,16 @@ def save_analysis(jid: str, name: str, text: str, focus: str, length: str, provi
         f.write(header + text.strip() + "\n")
     detail = "Búsquedas" if searches else LENGTHS.get(length, length)
     kind = f" ({relation})" if relation and focus != "interno" else ""
-    append_note(jid, f"{fecha} · {FOCUSES[focus]}{kind} · {detail} · "
+    append_history(jid, f"{fecha} · {FOCUSES[focus]}{kind} · {detail} · "
                      f"{provider} {model} · {n_messages} mensajes", text)
     if searches:
-        append_note(jid, f"{fecha} · Preguntas de la búsqueda", "\n".join(f"- {q}" for q in searches))
+        append_history(jid, f"{fecha} · Preguntas de la búsqueda", "\n".join(f"- {q}" for q in searches))
     return path
 
 
 def save_question(jid: str, focus: str, question: str, answer: str) -> None:
     fecha = datetime.now().strftime("%Y-%m-%d %H:%M")
-    append_note(jid, f"{fecha} · Pregunta ({FOCUSES[focus]})", f"P: {question}\n\nR: {answer}")
+    append_history(jid, f"{fecha} · Pregunta ({FOCUSES[focus]})", f"P: {question}\n\nR: {answer}")
 
 
 def _read_analysis(path: str) -> Optional[Dict[str, str]]:

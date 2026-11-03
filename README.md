@@ -203,8 +203,8 @@ python main.py
   (excepto `GET /status`). El token se genera una vez en `~/.magsapp/gateway.token`.
 - Los datos viven en `~/.magsapp/` (base de datos, sesión, media, logs). Las API keys de IA se guardan en
   texto plano en `~/.magsapp/config.ini`; si faltan, se heredan de `MAGNETO/config.ini`.
-- Los análisis psicológicos viven en `~/.magsapp/analisis/<chat>/` (`notas.txt` acumulativo y editable +
-  `ultimo_<enfoque>.txt`); el análisis interno (botón 🧠 del rail) en `~/.magsapp/analisis/_yo/`.
+- Los análisis psicológicos viven en `~/.magsapp/analisis/<chat>/` (`notas.txt` con tus notas, que sí se envían a la IA como contexto; `historial.txt` con los
+  análisis y respuestas, que nunca se reenvían; y `ultimo_<enfoque>.txt`); el análisis interno (botón 🧠 del rail) en `~/.magsapp/analisis/_yo/`.
 - En el primer arranque se ejecuta `npm install` automáticamente (requiere Node.js y npm en el PATH).
   El log queda en `~/.magsapp/npm_install.log`.
 
