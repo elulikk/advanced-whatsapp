@@ -416,7 +416,7 @@ class ChatViewPanel(QWidget):
         empty_layout.setSpacing(6)
 
         icon_lbl = QLabel()
-        icon_lbl.setPixmap(icon_pixmap("chats", C["text_3"], 56))
+        icon_lbl.setPixmap(icon_pixmap("chats", C["ember_dim"], 56))
         empty_layout.addWidget(icon_lbl, alignment=Qt.AlignCenter)
 
         title_lbl = QLabel("Advanced WhatsApp")

@@ -127,6 +127,9 @@ class _NoSplash:
     def show(self):
         pass
 
+    def wait_until_full(self, *_):
+        pass
+
     def close(self):
         pass
 
@@ -230,6 +233,7 @@ def main():
     # 5. Transición a MainWindow
     splash.set_status("¡Listo!", 100)
     app.processEvents()
+    splash.wait_until_full()
     if not BACKGROUND:
         time.sleep(0.3)
         window.restore_geometry_and_show()

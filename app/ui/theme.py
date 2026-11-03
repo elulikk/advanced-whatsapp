@@ -8,25 +8,28 @@ import os as _os
 import sys as _sys
 
 C = {
-    "rail":        "#0d1316",   # barra de navegación
-    "panel":       "#12191d",   # lista de chats, paneles laterales
-    "surface":     "#182126",   # cabeceras, compositor
-    "raised":      "#1f292f",   # campos de texto, botones
-    "hover":       "#232e35",
-    "selected":    "#2a3840",
-    "border":      "#253037",
-    "border_soft": "#1c252a",
-    "border_hi":   "#36454d",   # borde al pasar el mouse
-    "chat_bg":     "#0b1114",
-    "bubble_in":   "#1c262c",
-    "bubble_out":  "#0d4a3e",
-    "text":        "#dce3e6",
-    "text_2":      "#8a979e",
-    "text_3":      "#5d6a71",
-    "accent":      "#1fa37f",
+    "rail":        "#0a0807",   # barra de navegación
+    "panel":       "#100d0c",   # lista de chats, paneles laterales
+    "surface":     "#171312",   # cabeceras, compositor
+    "raised":      "#1f1917",   # campos de texto, botones
+    "hover":       "#271f1b",
+    "selected":    "#33251d",   # selección con un dejo de brasa
+    "border":      "#2b221e",
+    "border_soft": "#1f1815",
+    "border_hi":   "#6b3f26",   # borde al pasar el mouse (brasa)
+    "chat_bg":     "#080605",
+    "bubble_in":   "#1e1816",
+    "bubble_out":  "#0c4437",
+    "text":        "#e6e0dc",
+    "text_2":      "#9a8e87",
+    "text_3":      "#6a5d56",
+    "accent":      "#1fa37f",   # el verde de WhatsApp se mantiene
     "accent_hi":   "#25b88f",
-    "accent_dim":  "#15382f",
+    "accent_dim":  "#16332b",
     "on_accent":   "#0b1114",   # texto e iconos sobre el acento
+    "ember":       "#ff7a18",   # toque de fuego: detalles y marcas de la app
+    "ember_hi":    "#ffb02e",
+    "ember_dim":   "#3a1f10",
     "link":        "#53bdeb",
     "read":        "#53bdeb",
     "danger":      "#e5534b",

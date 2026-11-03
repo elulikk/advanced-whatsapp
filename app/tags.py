@@ -52,29 +52,21 @@ DEFAULT_TAG = {
 }
 
 # Tags que trae la app (se pueden editar o borrar; si se borran, no vuelven)
-_EMPLOYEE = {"shape": "circle", "expire_mode": "days", "expire_value": 10, "expire_business": 1}
 DEFAULT_TAGS = [
-    {"name": "Cliente problemático", "shape": "octagon", "color": "#e5534b", "text": "!",
-     "fx_header": "#e5534b", "fx_row": "#e5534b"},
-    {"name": "Colega de la casa", "shape": "house", "color": "#1fa37f", "text": "",
-     "fx_bg": "#1fa37f", "fx_bg_strength": 16},
-    {"name": "Venta", "shape": "circle", "color": "#1fa37f", "text": "$"},
-    {"name": "CELE", "color": "#4fb3e8", "text": "C", **_EMPLOYEE},
-    {"name": "ULI", "color": "#a36be0", "text": "U", **_EMPLOYEE},
-    {"name": "DANI", "color": "#f08a4b", "text": "D", **_EMPLOYEE},
-    {"name": "MARIAN", "color": "#d6457a", "text": "M", **_EMPLOYEE},
+    {"name": "Familia", "shape": "house", "color": "#ff8a3d", "text": "",
+     "fx_name": "#ffb27a"},
+    {"name": "Amigo", "shape": "star", "color": "#ffc233", "text": ""},
+    {"name": "Pareja", "shape": "heart", "color": "#e8325a", "text": "",
+     "fx_bg": "#e8325a", "fx_bg_strength": 10, "fx_name": "#ff8aa5"},
+    {"name": "Trabajo", "shape": "square", "color": "#3b9ae1", "text": "T"},
+    {"name": "Cliente", "shape": "circle", "color": "#25b88f", "text": "$"},
+    {"name": "Urgente", "shape": "alert", "color": "#ff5a1f", "text": "",
+     "expire_mode": "hours", "expire_value": 24, "fx_header": "#ff5a1f", "fx_row": "#ff5a1f"},
+    {"name": "Pendiente", "shape": "exclaim", "color": "#d9a33a", "text": "",
+     "expire_mode": "inactive", "expire_value": 7, "expire_business": 1},
 ]
-DEFAULTS_VERSION = 2
-
-# Tags de ejemplo de la primera versión: si siguen tal cual y sin usar, se reemplazan por los de arriba
-_OLD_STARTERS = {
-    "servicio técnico": {"shape": "circle", "color": "#2f7bf5", "text": "ST", "expire_mode": "inactive",
-                         "expire_value": 30, "fx_bg": "", "fx_text": "", "fx_header": ""},
-    "urgente": {"shape": "alert", "color": "#e5534b", "text": "", "expire_mode": "hours", "expire_value": 24,
-                "fx_bg": "#e5534b", "fx_text": "#f5d76e", "fx_header": "#e5534b"},
-    "venta": {"shape": "diamond", "color": "#1fa37f", "text": "$", "expire_mode": "inactive",
-              "expire_value": 30, "fx_bg": "", "fx_text": "", "fx_header": ""},
-}
+# Subir este número reinicia los tags: se borran todos (y sus asignaciones) y se instalan los de arriba
+DEFAULTS_VERSION = 3
 
 
 class _TagSignals(QObject):
@@ -140,25 +132,11 @@ def ensure_tables(conn) -> None:
 
 
 def _install_defaults(conn) -> None:
-    """Agrega los tags que trae la app. Los de ejemplo de la versión anterior que nadie tocó ni usó se sacan
-    (o se actualizan, si tienen el mismo nombre); los tags creados por el usuario quedan como están, después."""
-    rows = [dict(r) for r in conn.execute("SELECT * FROM tags ORDER BY sort_order, id").fetchall()]
-    used = {r[0] for r in conn.execute("SELECT DISTINCT tag_id FROM chat_tags").fetchall()}
-    by_name = {}
-    for r in rows:
-        old = _OLD_STARTERS.get((r["name"] or "").strip().casefold())
-        pristine = old is not None and all(r.get(k) == v for k, v in old.items())
-        if pristine and r["id"] not in used:
-            conn.execute("DELETE FROM tags WHERE id = ?", (r["id"],))
-            continue
-        by_name.setdefault((r["name"] or "").strip().casefold(), r)
-    order_ids = []
-    for t in DEFAULT_TAGS:
-        existing = by_name.pop(t["name"].casefold(), None)
-        order_ids.append(existing["id"] if existing else _insert(conn, t, 0))
-    rest = [r["id"] for r in rows if r["id"] in {x["id"] for x in by_name.values()}]
-    for i, tid in enumerate(order_ids + rest):
-        conn.execute("UPDATE tags SET sort_order = ? WHERE id = ?", (i, tid))
+    """Reinicia los tags: borra todos (con sus asignaciones) y deja los que trae la app."""
+    conn.execute("DELETE FROM chat_tags")
+    conn.execute("DELETE FROM tags")
+    for i, t in enumerate(DEFAULT_TAGS):
+        _insert(conn, t, i)
 
 
 def _invalidate():

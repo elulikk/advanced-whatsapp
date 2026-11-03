@@ -49,7 +49,7 @@ class NavButton(QAbstractButton):
             p.setBrush(QColor(C["selected"]))
             p.drawRoundedRect(tile, 10, 10)
             # Marca de pestaña activa pegada al borde del rail
-            p.setBrush(QColor(C["accent"]))
+            p.setBrush(QColor(C["ember"]))
             p.drawRoundedRect(QRectF(-2, (BTN_H - 18) / 2, 5, 18), 2.5, 2.5)
         elif h > 0.002:
             p.setBrush(overlay(0.07 * h))

@@ -31,38 +31,17 @@ def test_defaults_installed_once():
     assert tags.list_tags() == []
 
 
-def test_upgrade_from_v1_keeps_user_tags():
-    """Base de la versión anterior: ejemplos sin usar se van, los del usuario quedan (al final)."""
+def test_upgrade_resets_all_tags():
+    """Base de una versión anterior: se borran todos los tags y asignaciones, quedan los predeterminados."""
     with db.db_conn() as c:
-        c.execute("DELETE FROM tags")
-        c.execute("DELETE FROM tag_meta")
-        c.execute("INSERT INTO tag_meta VALUES ('seeded', '1')")
-        for i, t in enumerate(STARTERS_V1 + [{"name": "cliente romphuevos", "shape": "hexagon", "color": "#e5534b",
-                                              "text": "!"}]):
-            tags._insert(c, t, i)
-        mine = c.execute("SELECT id FROM tags WHERE name = 'cliente romphuevos'").fetchone()[0]
-        st = c.execute("SELECT id FROM tags WHERE name = 'Servicio técnico'").fetchone()[0]
+        c.execute("UPDATE tag_meta SET value = '2' WHERE key = 'defaults_version'")
+        mine = tags._insert(c, {"name": "cliente romphuevos", "shape": "hexagon", "color": "#e5534b"}, 99)
         c.execute("INSERT INTO chat_tags VALUES ('1@s.whatsapp.net', ?, 0)", (mine,))
-        c.execute("INSERT INTO chat_tags VALUES ('1@s.whatsapp.net', ?, 0)", (st,))
     tags._invalidate()
     db.init_db()
-    names = [t["name"] for t in tags.list_tags()]
-    # "Servicio técnico" estaba en uso: queda; "Urgente" y la "Venta" vieja se van
-    assert names == [t["name"] for t in tags.DEFAULT_TAGS] + ["Servicio técnico", "cliente romphuevos"]
-    assert tags.get_tag(mine)["shape"] == "hexagon"
-    venta = [t for t in tags.list_tags() if t["name"] == "Venta"][0]
-    assert venta["shape"] == "circle"
-
-
-STARTERS_V1 = [
-    {"name": "Servicio técnico", "shape": "circle", "color": "#2f7bf5", "text": "ST",
-     "expire_mode": "inactive", "expire_value": 30},
-    {"name": "Urgente", "shape": "alert", "color": "#e5534b", "text": "",
-     "expire_mode": "hours", "expire_value": 24, "fx_bg": "#e5534b", "fx_bg_strength": 16, "fx_text": "#f5d76e",
-     "fx_header": "#e5534b"},
-    {"name": "Venta", "shape": "diamond", "color": "#1fa37f", "text": "$",
-     "expire_mode": "inactive", "expire_value": 30},
-]
+    assert [t["name"] for t in tags.list_tags()] == [t["name"] for t in tags.DEFAULT_TAGS]
+    with db.db_conn() as c:
+        assert c.execute("SELECT COUNT(*) FROM chat_tags").fetchone()[0] == 0
 
 
 def test_business_days():
@@ -74,14 +53,22 @@ def test_business_days():
     assert datetime.fromtimestamp(tags.add_days(sat, 1, True)) == datetime(2026, 11, 2, 9, 0)
 
 
-def test_employee_tag_expires_after_10_business_days():
+def test_business_day_tag_expires():
     jid = _chat()
-    cele = [t for t in tags.list_tags() if t["name"] == "CELE"][0]
-    assert cele["expire_mode"] == "days" and cele["expire_value"] == 10 and cele["expire_business"]
-    tags.assign_tag(jid, cele["id"])
+    tid = tags.create_tag({"name": "Hábil", "expire_mode": "days", "expire_value": 10, "expire_business": 1})
+    tags.assign_tag(jid, tid)
     now = time.time()
     assert tags.purge_expired(now + 12 * 86400) == 0      # 10 hábiles son al menos 13 días corridos
     assert tags.purge_expired(now + 15 * 86400) == 1
+
+
+def test_urgent_default_expires_in_24_hours():
+    jid = _chat()
+    urgente = [t for t in tags.list_tags() if t["name"] == "Urgente"][0]
+    tags.assign_tag(jid, urgente["id"])
+    now = time.time()
+    assert tags.purge_expired(now + 23 * 3600) == 0
+    assert tags.purge_expired(now + 25 * 3600) == 1
 
 
 def test_row_effects_priority():

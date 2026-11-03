@@ -16,7 +16,7 @@ from app.db import get_messages, get_chats_for_self_analysis
 # El tema global (app/ui/theme.py) define botones, combos, pestañas, campos y menús
 _BTN = _COMBO = _TABS = _INPUT = _MENU = ""
 _TEXT = (
-    "background-color: #182126; color: #dce3e6; border: 1px solid #253037; border-radius: 8px;"
+    "background-color: #171312; color: #e6e0dc; border: 1px solid #2b221e; border-radius: 8px;"
     " padding: 8px 10px; font-size: 13px;"
 )
 _MODEL_OK, _MODEL_FAIL, _MODEL_NEW = "#25b88f", "#e5534b", "#dce3e6"
