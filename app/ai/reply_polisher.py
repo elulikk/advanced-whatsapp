@@ -124,6 +124,18 @@ _RULES = (
 )
 
 
+_PROFILE_RULES = (
+    "Es contexto PRIVADO sobre la otra persona. Úsalo para ajustar el tono y el enfoque (qué le cae bien o "
+    "mal, cómo conviene tratarla), pero NUNCA lo menciones ni insinúes que la analicé o que tengo notas. "
+    "Si contradice lo que dicen los mensajes recientes, mandan los mensajes."
+)
+
+
+def _profile_block(profile: str) -> str:
+    return f"=== LO QUE SÉ DE ESTA PERSONA (privado) ===\n{_PROFILE_RULES}\n\n{profile.strip()}\n=== FIN ===" \
+        if profile.strip() else ""
+
+
 def format_recent_context(messages: List[Dict], contact_name: str) -> str:
     """Últimos mensajes del chat como 'Yo: …' / 'Contacto: …' en orden cronológico."""
     lines = []
@@ -135,12 +147,15 @@ def format_recent_context(messages: List[Dict], contact_name: str) -> str:
     return "\n".join(lines)
 
 
-def build_polish_prompt(draft: str, context: str, mode: str = DEFAULT_MODE, extra: str = "") -> str:
+def build_polish_prompt(draft: str, context: str, mode: str = DEFAULT_MODE, extra: str = "",
+                        profile: str = "") -> str:
     instruction = MODES.get(mode, MODES[DEFAULT_MODE])[1]
     parts = [_RULES, f"=== OBJETIVO ===\n{instruction}"]
     if extra.strip():
         parts.append(f"=== INDICACIÓN PRIVADA (tiene prioridad; no revelar) ===\n{_PRIVATE_RULES}\n\n"
                      f"Indicación:\n{extra.strip()}\n=== FIN ===")
+    if profile.strip():
+        parts.append(_profile_block(profile))
     if context.strip():
         parts.append(f"=== ÚLTIMOS MENSAJES DEL CHAT (contexto) ===\n{context.strip()}\n=== FIN ===")
     parts.append(f"=== MI BORRADOR ===\n{draft.strip()}\n=== FIN ===")
@@ -168,7 +183,8 @@ _SUGGEST_RULES = (
 )
 
 
-def build_suggest_prompt(context: str, mode: str = DEFAULT_MODE, extra: str = "", notes: str = "") -> str:
+def build_suggest_prompt(context: str, mode: str = DEFAULT_MODE, extra: str = "", notes: str = "",
+                         profile: str = "") -> str:
     parts = [_SUGGEST_RULES]
     if mode in TONE_MODES:
         parts.append(f"=== TONO DESEADO ===\n{MODES[mode][1]}")
@@ -177,6 +193,8 @@ def build_suggest_prompt(context: str, mode: str = DEFAULT_MODE, extra: str = ""
                      f"{_PRIVATE_RULES}\n\nIndicación:\n{extra.strip()}\n=== FIN ===")
     if notes.strip():
         parts.append(f"=== MIS NOTAS (ideas que quiero incluir) ===\n{notes.strip()}\n=== FIN ===")
+    if profile.strip():
+        parts.append(_profile_block(profile))
     parts.append(f"=== ÚLTIMOS MENSAJES DEL CHAT ===\n{context.strip()}\n=== FIN ===")
     return "\n\n".join(parts)
 
@@ -193,22 +211,22 @@ def clean_reply(text: str) -> str:
 
 
 def polish(draft: str, messages: List[Dict], contact_name: str, provider: str, model: str,
-           mode: str = DEFAULT_MODE, extra: Optional[str] = "") -> str:
+           mode: str = DEFAULT_MODE, extra: Optional[str] = "", profile: str = "") -> str:
     """Devuelve el mensaje reformulado, o un texto de error (ver AIService.is_error_response).
     Bloqueante: usar en un hilo."""
-    prompt = build_polish_prompt(draft, format_recent_context(messages, contact_name), mode, extra or "")
+    prompt = build_polish_prompt(draft, format_recent_context(messages, contact_name), mode, extra or "", profile)
     return _ask(prompt, provider, model)
 
 
 def suggest(messages: List[Dict], contact_name: str, provider: str, model: str,
-            mode: str = DEFAULT_MODE, extra: Optional[str] = "", notes: str = "") -> str:
+            mode: str = DEFAULT_MODE, extra: Optional[str] = "", notes: str = "", profile: str = "") -> str:
     """Propone una respuesta cuando no hay borrador, a partir del contexto del chat. `mode` solo aporta
     el tono (si es uno de TONE_MODES), `extra` es lo que quiero decir y `notes` un borrador/ideas, si hay.
     Devuelve el mensaje o un texto de error. Bloqueante: usar en un hilo."""
     context = format_recent_context(messages, contact_name)
     if not context.strip():
         return "Error: no hay mensajes de texto en este chat para sugerir una respuesta."
-    return _ask(build_suggest_prompt(context, mode, extra or "", notes), provider, model)
+    return _ask(build_suggest_prompt(context, mode, extra or "", notes, profile), provider, model)
 
 
 def _ask(prompt: str, provider: str, model: str) -> str:

@@ -182,6 +182,17 @@ def set_polish_ai(provider: str, model: str) -> bool:
     return save_app_config(cfg)
 
 
+def get_polish_profile() -> bool:
+    """Si el redactor y «Sugerir respuesta» usan mis notas y el análisis del contacto como contexto."""
+    return load_app_config().getboolean("GENERAL", "polish_use_profile", fallback=True)
+
+
+def set_polish_profile(on: bool) -> bool:
+    cfg = load_app_config()
+    cfg.set("GENERAL", "polish_use_profile", "true" if on else "false")
+    return save_app_config(cfg)
+
+
 def get_polish_mode() -> str:
     return load_app_config().get("GENERAL", "polish_mode", fallback="").strip()
 

@@ -502,6 +502,22 @@ def load_analysis(jid: str, focus: str) -> Optional[Dict[str, str]]:
     return _read_analysis(analysis_path(jid, focus))
 
 
+def reply_profile(jid: str, notes_limit: int = 1500, analysis_limit: int = 2500) -> str:
+    """Lo que se sabe de un contacto para redactar respuestas: mis notas y el último análisis del contacto.
+    Nunca incluye el historial. Vacío si no hay nada (y no crea carpetas)."""
+    if not jid or not os.path.isdir(os.path.join(ANALYSIS_DIR, _safe(jid))):
+        return ""
+    parts = []
+    notes = load_notes(jid).strip()
+    if notes:
+        parts.append(f"Mis notas sobre esta persona:\n{notes[-notes_limit:]}")
+    saved = load_analysis(jid, "normal")
+    if saved and saved["text"].strip():
+        parts.append("Lectura psicológica (orientativa, hecha por una IA; puede estar equivocada):\n"
+                     f"{saved['text'].strip()[:analysis_limit]}")
+    return "\n\n".join(parts)
+
+
 # ─── Preferencias del diálogo y resultados por modelo ─────────────────────────
 
 def _prefs_path() -> str:

@@ -141,3 +141,19 @@ def test_summary_uses_haiku_when_anthropic_key_exists(monkeypatch):
     assert ms.summary_ai("Gemini", "flash") == ("Gemini", "flash")
     monkeypatch.setattr(ms.AIService, "_anthropic_key", lambda self, k=None: "clave")
     assert ms.summary_ai("Gemini", "flash") == ("Claude", "claude-haiku-5-5")
+
+
+def test_reply_profile_uses_notes_and_last_analysis_not_history():
+    from app.ai import reply_polisher as rp
+    jid = "333@s.whatsapp.net"
+    assert pa.reply_profile(jid) == "" and not os.path.exists(os.path.join(pa.ANALYSIS_DIR, "333"))
+    pa.save_notes(jid, "Es mi socio.\n")
+    pa.save_analysis(jid, "Ana", "Prefiere que le hablen directo.", "normal", "short", "Claude", "m", 5)
+    pa.save_analysis(jid, "Ana", "Se pone a la defensiva.", "normal", "short", "Claude", "m", 5)   # reemplaza al anterior
+    prof = pa.reply_profile(jid)
+    assert "Es mi socio." in prof and "Se pone a la defensiva." in prof and "Prefiere que le hablen" not in prof
+    s = rp.build_suggest_prompt("Ana: hola", "ordenar", "", "", prof)
+    d = rp.build_polish_prompt("borrador", "Ana: hola", "ordenar", "", prof)
+    for p in (s, d):
+        assert "Es mi socio." in p and "NUNCA lo menciones" in p
+    assert "LO QUE SÉ" not in rp.build_suggest_prompt("Ana: hola") and "LO QUE SÉ" not in rp.build_polish_prompt("b", "c")

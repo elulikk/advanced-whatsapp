@@ -6,7 +6,7 @@ import shutil
 from datetime import datetime
 import threading
 import time
-from PySide6.QtWidgets import (
+from PySide6.QtWidgets import (QCheckBox, 
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextBrowser,
     QTextEdit, QPushButton, QFrame, QFileDialog, QMessageBox, QMenu, QLineEdit, QDialog, QComboBox,
     QToolButton, QToolTip
@@ -32,7 +32,7 @@ from app.ui.message_menu import (
 from app.gateway_manager import GatewayManager
 from app.config import (
     get_chat_font_scale, set_chat_font_scale, clamp_font_scale, get_polish_ai, set_polish_ai, load_app_config,
-    get_polish_mode, set_polish_mode, MEDIA_DIR
+    get_polish_mode, set_polish_mode, get_polish_profile, set_polish_profile, MEDIA_DIR
 )
 from app.ai import psych_analysis as pa
 from app.ai import reply_polisher
@@ -745,6 +745,13 @@ class ChatViewPanel(QWidget):
         self.lbl_polish_status = QLabel("")
         self.lbl_polish_status.setWordWrap(True)
         run_row.addWidget(self.lbl_polish_status, stretch=1)
+        self.chk_polish_profile = QCheckBox("Usar análisis y notas")
+        self.chk_polish_profile.setToolTip(
+            "La IA también lee tus notas sobre este contacto y su último análisis psicológico para ajustar el "
+            "tono (nunca los menciona en el mensaje). El historial de análisis anteriores no se envía.")
+        self.chk_polish_profile.setChecked(get_polish_profile())
+        self.chk_polish_profile.toggled.connect(set_polish_profile)
+        run_row.addWidget(self.chk_polish_profile)
         self.btn_polish_suggest = QPushButton("Sugerir respuesta")
         self.btn_polish_suggest.setToolTip(
             f"¿No sabes qué responder? La IA propone una respuesta leyendo los últimos {CONTEXT_MESSAGES} "
@@ -2753,9 +2760,11 @@ class ChatViewPanel(QWidget):
             self.lbl_polish_status.setText("Escribe tu indicación en el campo «Indicación extra».")
             self.polish_extra.setFocus()
             return
+        profile = self._reply_profile()
         self._start_polish_job(
             "improve", f"✨ {MODES[mode][0]}",
-            lambda msgs, name, prov, model: reply_polisher.polish(draft, msgs, name, prov, model, mode, extra))
+            lambda msgs, name, prov, model: reply_polisher.polish(draft, msgs, name, prov, model, mode, extra,
+                                                                  profile))
 
     def _run_suggest(self):
         """Propone una respuesta desde cero; el borrador, si hay, se toma como ideas a incluir."""
@@ -2763,9 +2772,17 @@ class ChatViewPanel(QWidget):
             return
         mode, extra = self.cmb_polish_mode.currentData(), self.polish_extra.text().strip()
         notes = self.polish_input.toPlainText().strip()
+        profile = self._reply_profile()
         self._start_polish_job(
             "suggest", "💡 Sugiriendo una respuesta",
-            lambda msgs, name, prov, model: reply_polisher.suggest(msgs, name, prov, model, mode, extra, notes))
+            lambda msgs, name, prov, model: reply_polisher.suggest(msgs, name, prov, model, mode, extra, notes,
+                                                                   profile))
+
+    def _reply_profile(self) -> str:
+        """Notas y último análisis del contacto, si el usuario lo permite y existen."""
+        if not self.chk_polish_profile.isChecked():
+            return ""
+        return pa.reply_profile(self.current_chat.get("jid", ""))
 
     def _start_polish_job(self, kind: str, label: str, job):
         """Corre `job(mensajes, nombre, proveedor, modelo)` en un hilo y entrega el texto a _on_polish_done.
