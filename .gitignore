@@ -5,3 +5,10 @@ gateway/node_modules/
 build/
 dist/
 Microsoft/
+
+android/.gradle/
+android/build/
+android/app/build/
+android/app/.cxx/
+android/app/libnode/
+android/local.properties

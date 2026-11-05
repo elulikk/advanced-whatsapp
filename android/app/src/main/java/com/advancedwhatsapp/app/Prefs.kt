@@ -1,0 +1,51 @@
+package com.advancedwhatsapp.app
+
+import android.content.Context
+import android.content.SharedPreferences
+import java.security.SecureRandom
+
+/** Configuración de la app. Las claves de IA quedan en la carpeta privada de la app (sin copia de seguridad). */
+object Prefs {
+    private lateinit var p: SharedPreferences
+
+    fun init(c: Context) {
+        p = c.getSharedPreferences("config", Context.MODE_PRIVATE)
+    }
+
+    /** Token que comparten la app y el gateway: el puerto local lo puede tocar cualquier app del celular. */
+    val token: String
+        get() = p.getString("token", null) ?: run {
+            val bytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
+            bytes.joinToString("") { "%02x".format(it) }.also { p.edit().putString("token", it).commit() }
+        }
+
+    fun apiKey(provider: String): String = p.getString("key_$provider", "")?.trim().orEmpty()
+    fun setApiKey(provider: String, v: String) = p.edit().putString("key_$provider", v.trim()).apply()
+
+    fun model(provider: String): String = p.getString("model_$provider", "").orEmpty()
+    fun setModel(provider: String, v: String) = p.edit().putString("model_$provider", v).apply()
+
+    var provider: String
+        get() = p.getString("provider", "Gemini") ?: "Gemini"
+        set(v) = p.edit().putString("provider", v).apply()
+
+    var notifications: Boolean
+        get() = p.getBoolean("notifications", true)
+        set(v) = p.edit().putBoolean("notifications", v).apply()
+
+    var readReceipts: Boolean
+        get() = p.getBoolean("read_receipts", true)
+        set(v) = p.edit().putBoolean("read_receipts", v).apply()
+
+    /** Mantener despierto el procesador: los mensajes llegan al instante, a cambio de más batería. */
+    var keepCpuAwake: Boolean
+        get() = p.getBoolean("keep_cpu", true)
+        set(v) = p.edit().putBoolean("keep_cpu", v).apply()
+
+    var useProfileInReplies: Boolean
+        get() = p.getBoolean("use_profile", true)
+        set(v) = p.edit().putBoolean("use_profile", v).apply()
+
+    fun getString(k: String, d: String = ""): String = p.getString(k, d) ?: d
+    fun putString(k: String, v: String) = p.edit().putString(k, v).apply()
+}

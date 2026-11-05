@@ -30,7 +30,9 @@ const PYTHON_STATUS_URL = process.env.PYTHON_STATUS_URL || `${PYTHON_API}/status
 const PYTHON_AVATAR_URL = process.env.PYTHON_AVATAR_URL || `${PYTHON_API}/avatar`;
 const PYTHON_REACTION_URL = process.env.PYTHON_REACTION_URL || `${PYTHON_API}/reaction`;
 
-const USER_DATA_DIR = path.join(os.homedir(), '.magsapp');
+// En Android no hay carpeta personal utilizable: la app indica su carpeta privada
+const USER_DATA_DIR = process.env.ADVANCEDWHATSAPP_DATA_DIR || path.join(os.homedir(), '.magsapp');
+if (!fs.existsSync(USER_DATA_DIR)) fs.mkdirSync(USER_DATA_DIR, { recursive: true });
 const AUTH_DIR = process.env.AUTH_DIR || path.join(USER_DATA_DIR, 'auth_info_baileys');
 const MEDIA_DIR = process.env.MEDIA_DIR || path.join(USER_DATA_DIR, 'media');
 const AVATARS_DIR = path.join(MEDIA_DIR, 'avatars');
@@ -84,7 +86,8 @@ console.error = writeLog;
 const app = express();
 // Autenticación por token: evita que otros procesos o páginas web controlen el gateway
 app.use((req, res, next) => {
-    if (req.path === '/status') return next();
+    // En Android otras apps del celular alcanzan este puerto: ahí /status (trae el número) también pide token
+    if (req.path === '/status' && !process.env.ADVANCEDWHATSAPP_DATA_DIR) return next();
     const got = Buffer.from(String(req.get('X-AdvancedWhatsapp-Token') || ''));
     const want = Buffer.from(TOKEN);
     if (!TOKEN || got.length !== want.length || !crypto.timingSafeEqual(got, want)) {
@@ -834,6 +837,7 @@ function serializeMediaRaw(msg, mediaType) {
 // Un único temporizador: varias causas (cierre, logout, /disconnect) no deben abrir dos sockets a la vez.
 let reconnectTimer = null;
 let reconnectAttempts = 0;
+let pairingPending = false;     // hay un código de vinculación pedido y todavía sin confirmar
 let cachedWaVersion = null;
 // La app avisa si la ventana está en primer plano: solo entonces figuramos "en línea" (como WhatsApp Desktop).
 // Estar siempre "en línea" hacía que el celular dejara de recibir notificaciones.
@@ -1044,6 +1048,12 @@ async function initWhatsApp() {
                 currentQR = null;
                 currentQRDataUrl = null;
                 connectedPhone = null;
+                // Un código de vinculación deja credenciales a medio hacer: si el intento se corta, se empieza de cero
+                if (pairingPending && !loggedOut && statusCode !== DisconnectReason.restartRequired) {
+                    console.log('[Baileys] Se cortó la vinculación por código; se reinician las credenciales.');
+                    pairingPending = false;
+                    resetAuthState();
+                }
                 if (loggedOut) {
                     // Se desvinculó desde el celular (o expiró la sesión): credenciales nuevas y QR nuevo.
                     // Antes quedaba "desconectado" para siempre y había que reiniciar la app.
@@ -1067,6 +1077,7 @@ async function initWhatsApp() {
                 }
             } else if (connection === 'open') {
                 reconnectAttempts = 0;
+                pairingPending = false;
                 connectionStatus = 'connected';
                 currentQR = null;
                 currentQRDataUrl = null;
@@ -1898,6 +1909,36 @@ app.get('/qr', (req, res) => {
         qr_data_url: currentQRDataUrl,
         message: connectionStatus === 'connected' ? 'Ya está conectado.' : 'Esperando generación de QR...'
     });
+});
+
+// Vinculación con código de 8 dígitos, para cuando no se puede escanear el QR
+// (un celular no puede escanear su propia pantalla).
+app.post('/pairing-code', async (req, res) => {
+    try {
+        const phone = String(req.body?.phone || '').replace(/\D/g, '');
+        if (phone.length < 8) return res.status(400).json({ error: 'Número inválido: usá el código de país, sin + ni espacios.' });
+        if (connectionStatus === 'connected') return res.status(409).json({ error: 'Ya está conectado.' });
+        // Pedir otro código con uno pendiente exige credenciales nuevas
+        if (pairingPending) {
+            pairingPending = false;
+            resetAuthState();
+            await initWhatsApp();
+        }
+        // WhatsApp solo acepta el pedido cuando el socket ya está esperando vinculación
+        for (let i = 0; i < 40 && connectionStatus !== 'qr_ready'; i++) {
+            await new Promise(r => setTimeout(r, 500));
+        }
+        if (connectionStatus !== 'qr_ready' || !sock) {
+            return res.status(503).json({ error: 'No se pudo contactar a WhatsApp. Revisá la conexión a internet.' });
+        }
+        pairingPending = true;
+        const code = await sock.requestPairingCode(phone);
+        console.log('[Baileys] Código de vinculación generado.');
+        res.json({ success: true, code });
+    } catch (e) {
+        console.error('[Baileys] Error pidiendo código de vinculación:', e.message);
+        res.status(500).json({ error: e.message });
+    }
 });
 
 app.get('/contacts', (req, res) => {

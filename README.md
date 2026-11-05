@@ -208,6 +208,10 @@ python main.py
 - En el primer arranque se ejecuta `npm install` automáticamente (requiere Node.js y npm en el PATH).
   El log queda en `~/.magsapp/npm_install.log`.
 
+## 📱 Android
+
+La app para celular está en [`android/`](android/README.md): funciona sin la PC y reutiliza este mismo gateway.
+
 ## 🧪 Pruebas
 
 ```powershell
