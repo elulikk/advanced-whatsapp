@@ -26,6 +26,9 @@ object AppState {
     val connection = MutableStateFlow(Connection())
     val presence = MutableStateFlow<Map<String, Presence>>(emptyMap())
 
+    /** Cuántas veces se cortó un intento de vinculación: el código que se estaba mostrando ya no sirve. */
+    val pairingCuts = MutableStateFlow(0)
+
     /** Chat abierto con la app al frente: no se notifica ni se cuenta como sin leer. */
     @Volatile var activeChat: String? = null
     val foreground = MutableStateFlow(false)
@@ -35,6 +38,7 @@ object AppState {
 
     fun updateConnection(d: JSONObject) = synchronized(lock) {
         val status = d.optString("status").ifEmpty { return }
+        if (d.optBoolean("pairing_cut")) pairingCuts.value++
         val cur = connection.value
         val qr = if (d.isNull("qr_data_url")) null else d.optString("qr_data_url").ifEmpty { null }
         connection.value = Connection(

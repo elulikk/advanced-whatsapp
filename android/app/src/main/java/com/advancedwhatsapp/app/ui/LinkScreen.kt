@@ -29,6 +29,7 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -84,9 +85,21 @@ private fun CodeTab() {
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
+    val cuts by AppState.pairingCuts.collectAsStateWithLifecycle()
+
+    LaunchedEffect(cuts) {
+        if (code != null) {
+            code = null
+            error = "El código venció sin usarse. Pedí otro."
+        }
+    }
 
     Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("Usá esta opción si tu WhatsApp está en este mismo celular.", color = C.text2)
+        Text(
+            "Usá esta opción si tu WhatsApp está en este mismo celular. Poné el número de la cuenta que vas a vincular: " +
+                "si tenés WhatsApp y WhatsApp Business, el de la app donde vas a escribir el código.",
+            color = C.text2,
+        )
         OutlinedTextField(
             value = phone, onValueChange = { phone = it.filter { c -> c.isDigit() || c == '+' || c == ' ' } },
             label = { Text("Tu número con código de país") }, placeholder = { Text("5491112345678") },
@@ -122,7 +135,7 @@ private fun CodeTab() {
                 "1. Abrí WhatsApp y andá a Dispositivos vinculados.\n" +
                     "2. Tocá Vincular un dispositivo.\n" +
                     "3. Elegí «Vincular con el número de teléfono».\n" +
-                    "4. Escribí este código. Vence en unos minutos; si vence, pedí otro.",
+                    "4. Escribí este código. Pedí uno solo: cada código nuevo anula el anterior.",
                 color = C.text,
             )
         }
