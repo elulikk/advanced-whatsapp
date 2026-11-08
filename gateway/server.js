@@ -1980,7 +1980,7 @@ app.post('/fetch-avatar', async (req, res) => {
 
 app.post('/send', async (req, res) => {
     try {
-        const { to, text, image_path, image_url, document_path, document_name, mimetype,
+        const { to, text, image_path, image_thumb, image_url, document_path, document_name, mimetype,
                 video_path, audio_path, audio_seconds, audio_waveform, sticker_path, quoted } = req.body;
         const msgText = (text || '').trim();
 
@@ -2028,7 +2028,9 @@ app.post('/send', async (req, res) => {
             const buffer = fs.readFileSync(image_path);
             result = await sock.sendMessage(jid, {
                 image: buffer,
-                caption: msgText || undefined
+                caption: msgText || undefined,
+                // En Android no hay sharp ni jimp: la miniatura la arma la app
+                ...(image_thumb ? { jpegThumbnail: image_thumb } : {})
             }, sendOpts);
         } else if (video_path) {
             const buffer = mediaFile(video_path);

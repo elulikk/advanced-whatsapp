@@ -45,7 +45,9 @@ Gradle baja solo el NDK y CMake.
 
 ## Limitaciones de esta versión
 
-- Sin tags ni estados (quedaron fuera de la primera versión). Como en la PC, los grupos no se muestran.
+- Sin tags. Los estados de los contactos se pueden ver, pero todavía no se publican desde el celular. Como en la PC, los grupos no
+  se muestran.
+- La cámara abre la app de cámara del celular, por eso la app no pide ese permiso. Solo saca fotos: los videos se eligen de la galería.
 - Las llamadas solo avisan: se atienden en la app oficial.
 - Firmada con la clave de depuración de la PC que compila: sirve para instalar directo, no para Play Store. Compilar desde otra PC
   exige desinstalar antes, y eso borra los datos.

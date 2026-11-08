@@ -37,6 +37,11 @@ object Prefs {
         get() = p.getBoolean("read_receipts", true)
         set(v) = p.edit().putBoolean("read_receipts", v).apply()
 
+    /** Al ver un estado, el contacto ve que lo viste. */
+    var statusReceipts: Boolean
+        get() = p.getBoolean("status_receipts", true)
+        set(v) = p.edit().putBoolean("status_receipts", v).apply()
+
     /** Mantener despierto el procesador: los mensajes llegan al instante, a cambio de más batería. */
     var keepCpuAwake: Boolean
         get() = p.getBoolean("keep_cpu", true)

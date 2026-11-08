@@ -1,5 +1,6 @@
 package com.advancedwhatsapp.app.ui
 
+import android.app.NotificationManager
 import android.content.Intent
 import android.net.Uri
 import android.os.PowerManager
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -23,11 +25,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.DonutLarge
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -42,6 +46,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -57,10 +62,13 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
+import com.advancedwhatsapp.app.App
 import com.advancedwhatsapp.app.AppState
+import com.advancedwhatsapp.app.Prefs
 import com.advancedwhatsapp.app.data.Actions
 import com.advancedwhatsapp.app.data.Chat
 import com.advancedwhatsapp.app.data.Db
+import com.advancedwhatsapp.app.data.Statuses
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
@@ -70,7 +78,7 @@ import kotlinx.coroutines.withContext
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatListScreen(
-    onOpen: (String) -> Unit, onSettings: () -> Unit, onLink: () -> Unit, onNewChat: () -> Unit, onSelfAnalysis: () -> Unit,
+    onOpen: (String) -> Unit, onSettings: () -> Unit, onStatuses: () -> Unit, onLink: () -> Unit, onNewChat: () -> Unit, onSelfAnalysis: () -> Unit,
 ) {
     val conn by AppState.connection.collectAsStateWithLifecycle()
     var search by remember { mutableStateOf("") }
@@ -90,6 +98,18 @@ fun ChatListScreen(
             Db.changes.collectLatest {
                 delay(250)   // el historial llega en tandas: una sola recarga
                 reload()
+            }
+        }
+    }
+    // Cuántos contactos tienen estados sin ver; el gateway recién responde cuando terminó de arrancar
+    var unseenStatuses by remember { mutableIntStateOf(0) }
+    LaunchedEffect(owner, conn.isConnected) {
+        owner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            AppState.statusEvents.collectLatest {
+                delay(300)
+                unseenStatuses = withContext(Dispatchers.IO) {
+                    runCatching { Statuses.list().count { it.unseen > 0 } }.getOrDefault(unseenStatuses)
+                }
             }
         }
     }
@@ -113,6 +133,7 @@ fun ChatListScreen(
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize().background(C.panel)) {
             ConnectionBanner(conn.status, conn.label, onLink)
+            NotificationsBanner()
             BatteryBanner()
             if (searching) {
                 OutlinedTextField(
@@ -123,6 +144,14 @@ fun ChatListScreen(
             Row(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 FilterChip(selected = !unreadOnly, onClick = { unreadOnly = false }, label = { Text("Todos") })
                 FilterChip(selected = unreadOnly, onClick = { unreadOnly = true }, label = { Text("No leídos") })
+                Spacer(Modifier.weight(1f))
+                AssistChip(
+                    onClick = onStatuses,
+                    label = { Text(if (unseenStatuses > 0) "Estados ($unseenStatuses)" else "Estados") },
+                    leadingIcon = {
+                        Icon(Icons.Default.DonutLarge, null, tint = if (unseenStatuses > 0) C.accent else C.text2, modifier = Modifier.size(18.dp))
+                    },
+                )
             }
             if (chats.isEmpty()) {
                 Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
@@ -154,6 +183,28 @@ private fun ConnectionBanner(status: String, label: String, onLink: () -> Unit) 
         color = if (needsLink) C.ember else C.text2, fontSize = 13.sp,
         modifier = Modifier.fillMaxWidth().background(C.raised).clickable(enabled = needsLink, onClick = onLink)
             .padding(horizontal = 14.dp, vertical = 8.dp),
+    )
+}
+
+/** Si Android tiene apagados los avisos de la app o de los mensajes, no llega ninguno y no hay otra señal de por qué. */
+@Composable
+private fun NotificationsBanner() {
+    val c = LocalContext.current
+    val nm = c.getSystemService(NotificationManager::class.java)
+    fun blocked() = Prefs.notifications && (!nm.areNotificationsEnabled() ||
+        nm.getNotificationChannel(App.CH_MESSAGES)?.importance == NotificationManager.IMPORTANCE_NONE)
+    var off by remember { mutableStateOf(false) }
+    val owner = LocalLifecycleOwner.current
+    LaunchedEffect(owner) {
+        owner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) { off = blocked() }
+    }
+    if (!off) return
+    Text(
+        "Las notificaciones están apagadas: no te van a avisar de los mensajes. Tocá acá para activarlas.",
+        color = C.warn, fontSize = 13.sp,
+        modifier = Modifier.fillMaxWidth().background(C.emberDim).clickable {
+            c.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, c.packageName))
+        }.padding(horizontal = 14.dp, vertical = 8.dp),
     )
 }
 

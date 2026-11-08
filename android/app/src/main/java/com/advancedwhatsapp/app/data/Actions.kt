@@ -44,7 +44,7 @@ object Actions {
     fun sendFile(to: String, file: File, kind: String, caption: String, fileName: String?, mime: String?, quoted: Message?) {
         val body = JSONObject().put("to", to).put("text", caption)
         when (kind) {
-            "image" -> body.put("image_path", file.path)
+            "image" -> body.put("image_path", file.path).put("image_thumb", Photos.thumbnailBase64(file))
             "video" -> body.put("video_path", file.path)
             else -> body.put("document_path", file.path).put("document_name", fileName ?: file.name).put("mimetype", mime)
         }

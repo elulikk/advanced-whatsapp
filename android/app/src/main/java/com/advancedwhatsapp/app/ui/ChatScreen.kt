@@ -1,8 +1,10 @@
 package com.advancedwhatsapp.app.ui
 
 import android.Manifest
+import android.content.ActivityNotFoundException
 import android.content.pm.PackageManager
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -33,7 +35,9 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -58,19 +62,23 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
+import coil.compose.AsyncImage
 import com.advancedwhatsapp.app.AppState
 import com.advancedwhatsapp.app.Prefs
 import com.advancedwhatsapp.app.ai.AiService
@@ -81,6 +89,7 @@ import com.advancedwhatsapp.app.data.Actions
 import com.advancedwhatsapp.app.data.Chat
 import com.advancedwhatsapp.app.data.Db
 import com.advancedwhatsapp.app.data.Message
+import com.advancedwhatsapp.app.data.Photos
 import com.advancedwhatsapp.app.notify.Notifier
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -195,6 +204,57 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit) {
     val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { sendPicked(it, null) }
     val pickDocument = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { sendPicked(it, "document") }
 
+    // Cámara: Android puede cerrar esta pantalla mientras la cámara está abierta, por eso las rutas se guardan
+    var cameraFile by rememberSaveable { mutableStateOf<String?>(null) }
+    var photoToSend by rememberSaveable { mutableStateOf<String?>(null) }
+    val takePicture = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        val path = cameraFile ?: return@rememberLauncherForActivityResult
+        cameraFile = null
+        if (!ok) {
+            File(path).delete()
+            return@rememberLauncherForActivityResult
+        }
+        runTask {
+            Photos.prepare(File(path))
+            withContext(Dispatchers.Main) { photoToSend = path }
+        }
+    }
+
+    fun openCamera() {
+        val file = Photos.newCameraFile()
+        cameraFile = file.path
+        try {
+            takePicture.launch(FileProvider.getUriForFile(context, "${context.packageName}.files", file))
+        } catch (e: ActivityNotFoundException) {
+            cameraFile = null
+            notifyError("No hay ninguna app de cámara en este celular.")
+        }
+    }
+
+    fun discardPhoto(path: String) {
+        photoToSend = null
+        File(path).delete()
+    }
+
+    fun sendPhoto(path: String, caption: String) {
+        val quoted = replyTo
+        photoToSend = null
+        draft = ""
+        replyTo = null
+        scope.launch(Dispatchers.IO) {
+            try {
+                Actions.sendFile(jid, File(path), "image", caption.trim(), File(path).name, "image/jpeg", quoted)
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    draft = caption
+                    replyTo = quoted
+                    photoToSend = path   // la foto no se pierde: queda lista para reintentar
+                    notifyError(e.message)
+                }
+            }
+        }
+    }
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
@@ -217,6 +277,18 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit) {
             )
         },
     ) { pad ->
+        photoToSend?.let { path ->
+            PhotoPreview(
+                path = path, initialCaption = draft, modifier = Modifier.padding(pad),
+                onCancel = { discardPhoto(path) },
+                onRetake = {
+                    discardPhoto(path)
+                    openCamera()
+                },
+                onSend = { caption -> sendPhoto(path, caption) },
+            )
+            return@Scaffold
+        }
         Column(Modifier.padding(pad).fillMaxSize().background(C.chatBg)) {
             LazyColumn(
                 state = listState, reverseLayout = true,
@@ -279,6 +351,7 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit) {
             Composer(
                 draft = draft, onDraft = { draft = it }, scope = scope,
                 onToggleAi = { showAi = !showAi },
+                onCamera = { openCamera() },
                 onPickMedia = { pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) },
                 onPickDocument = { pickDocument.launch(arrayOf("*/*")) },
                 onSend = {
@@ -331,9 +404,39 @@ private fun ReplyPreview(q: Message, onClose: () -> Unit) {
     }
 }
 
+/** La foto recién tomada, antes de enviarla: se puede agregar un texto o sacarla de nuevo. */
+@Composable
+private fun PhotoPreview(
+    path: String, initialCaption: String, modifier: Modifier, onCancel: () -> Unit, onRetake: () -> Unit, onSend: (String) -> Unit,
+) {
+    var caption by rememberSaveable(path) { mutableStateOf(initialCaption) }
+    BackHandler(onBack = onCancel)
+    Column(modifier.fillMaxSize().background(Color.Black)) {
+        AsyncImage(
+            model = File(path), contentDescription = "Foto tomada", contentScale = ContentScale.Fit,
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+        )
+        Row(Modifier.fillMaxWidth().background(C.surface).padding(4.dp), verticalAlignment = Alignment.Bottom) {
+            IconButton(onClick = onCancel) { Icon(Icons.Default.Close, "Descartar foto") }
+            IconButton(onClick = onRetake) { Icon(Icons.Default.Replay, "Sacar otra foto") }
+            TextField(
+                value = caption, onValueChange = { caption = it }, placeholder = { Text("Agregá un texto") },
+                modifier = Modifier.weight(1f).heightIn(max = 140.dp), shape = RoundedCornerShape(22.dp),
+                colors = TextFieldDefaults.colors(
+                    focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent,
+                    focusedContainerColor = C.raised, unfocusedContainerColor = C.raised,
+                ),
+            )
+            IconButton(onClick = { onSend(caption) }, modifier = Modifier.background(C.accent, CircleShape)) {
+                Icon(Icons.AutoMirrored.Filled.Send, "Enviar foto", tint = C.onAccent)
+            }
+        }
+    }
+}
+
 @Composable
 private fun Composer(
-    draft: String, onDraft: (String) -> Unit, scope: CoroutineScope, onToggleAi: () -> Unit, onPickMedia: () -> Unit,
+    draft: String, onDraft: (String) -> Unit, scope: CoroutineScope, onToggleAi: () -> Unit, onCamera: () -> Unit, onPickMedia: () -> Unit,
     onPickDocument: () -> Unit, onSend: () -> Unit, onSendVoice: (Recording) -> Unit, onRecordingState: (Boolean) -> Unit,
     onError: (String) -> Unit,
 ) {
@@ -397,6 +500,10 @@ private fun Composer(
         Box {
             IconButton(onClick = { attachMenu = true }) { Icon(Icons.Default.AttachFile, "Adjuntar") }
             DropdownMenu(expanded = attachMenu, onDismissRequest = { attachMenu = false }) {
+                DropdownMenuItem(text = { Text("Sacar una foto") }, onClick = {
+                    attachMenu = false
+                    onCamera()
+                })
                 DropdownMenuItem(text = { Text("Foto o video") }, onClick = {
                     attachMenu = false
                     onPickMedia()
@@ -408,6 +515,7 @@ private fun Composer(
             }
         }
         if (draft.isBlank()) {
+            IconButton(onClick = onCamera) { Icon(Icons.Default.PhotoCamera, "Sacar una foto") }
             IconButton(
                 onClick = {
                     val ok = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED

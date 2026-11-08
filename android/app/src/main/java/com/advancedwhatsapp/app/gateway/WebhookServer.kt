@@ -139,7 +139,7 @@ class WebhookServer {
             "connection" -> AppState.updateConnection(d)
             "presence" -> AppState.updatePresence(d)
             "call" -> Notifier.call(d)
-            "contact_status" -> Unit   // Los estados quedan para una versión posterior
+            "contact_status" -> AppState.statusChanged()
             else -> return 404
         }
         return 200
