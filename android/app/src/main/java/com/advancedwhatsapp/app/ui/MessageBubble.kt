@@ -90,7 +90,7 @@ private fun linkify(text: String): AnnotatedString = buildAnnotatedString {
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MessageBubble(
-    m: Message, busy: Boolean, scope: CoroutineScope, onReply: () -> Unit, onReact: (String) -> Unit, onDelete: () -> Unit,
+    m: Message, busy: Boolean, scope: CoroutineScope, showSender: Boolean, onReply: () -> Unit, onReact: (String) -> Unit, onDelete: () -> Unit,
     onOpenMedia: () -> Unit, onTranscribe: () -> Unit, onSummarize: (redo: Boolean) -> Unit,
 ) {
     var menu by remember { mutableStateOf(false) }
@@ -105,6 +105,9 @@ fun MessageBubble(
                 .combinedClickable(onClick = {}, onLongClick = { menu = true })
                 .padding(horizontal = 9.dp, vertical = 5.dp),
         ) {
+            if (showSender && !m.senderName.isNullOrBlank()) {
+                Text(m.senderName, color = C.accent, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
             m.quotedText?.takeIf { it.isNotBlank() }?.let { q ->
                 Column(Modifier.padding(bottom = 4.dp).fillMaxWidth().background(Color(0x33000000), RoundedCornerShape(6.dp)).padding(6.dp)) {
                     m.quotedSender?.takeIf { it.isNotBlank() }?.let { Text(it, color = C.accent, fontSize = 12.sp, maxLines = 1) }

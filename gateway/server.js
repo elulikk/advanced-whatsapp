@@ -13,7 +13,8 @@ import makeWASocket, {
     downloadMediaMessage,
     areJidsSameUser,
     makeCacheableSignalKeyStore,
-    BufferJSON
+    BufferJSON,
+    generateMessageIDV2
 } from '@whiskeysockets/baileys';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -253,10 +254,23 @@ function reportRenamedContacts(entries) {
     if (list.length) dispatchSyncBatch({ chats: [], contacts: list, messages: [], rename_chats: true });
 }
 
-// Solo se procesan chats individuales: grupos, comunidades, canales y difusiones se ignoran por completo
-// (sin mensajes, sin descargas, sin fotos de perfil ni metadatos) para no gastar internet.
 function isIndividualJid(jid) {
     return typeof jid === 'string' && (jid.endsWith('@s.whatsapp.net') || jid.endsWith('@lid'));
+}
+
+// Se procesan chats individuales y grupos. Comunidades, canales y difusiones se ignoran por completo para no gastar internet.
+// De los grupos no se bajan fotos, y sus archivos, como todos, solo cuando el usuario los pide.
+function isChatJid(jid) {
+    return isIndividualJid(jid) || (typeof jid === 'string' && jid.endsWith('@g.us'));
+}
+
+// Para confirmar la lectura en un grupo WhatsApp pide quién mandó cada mensaje
+const groupSenders = new Map();
+const GROUP_SENDERS_MAX = 5000;
+function rememberGroupSender(msg) {
+    if (!msg.key?.remoteJid?.endsWith('@g.us') || msg.key.fromMe || !msg.key.participant) return;
+    groupSenders.set(msg.key.id, msg.key.participant);
+    if (groupSenders.size > GROUP_SENDERS_MAX) groupSenders.delete(groupSenders.keys().next().value);
 }
 
 function resolveContact(jid, pushName = '') {
@@ -374,6 +388,27 @@ function queueGroupName(jid) {
     if (!sock || !jid || !jid.endsWith('@g.us') || groupNames[jid] || groupQueue.has(jid)) return;
     groupQueue.add(jid);
     if (!isProcessingGroupQueue) processGroupQueue();
+}
+
+// Una sola consulta trae todos los grupos con su nombre: se evita pedirlos de a uno
+let groupsSyncedFor = null;
+async function syncGroupList() {
+    if (!sock || connectionStatus !== 'connected' || groupsSyncedFor === connectedPhone) return;
+    groupsSyncedFor = connectedPhone;
+    try {
+        const groups = await sock.groupFetchAllParticipating();
+        const chats = [];
+        for (const g of Object.values(groups || {})) {
+            if (g.isCommunity || !g.subject) continue;
+            groupNames[g.id] = g.subject;
+            chats.push({ jid: g.id, name: g.subject, phone: null, last_message_time: 0, is_group: 1 });
+        }
+        if (chats.length) dispatchSyncBatch({ chats, messages: [] });
+        console.log(`[Baileys] Grupos sincronizados: ${chats.length}`);
+    } catch (e) {
+        groupsSyncedFor = null;   // se reintenta en la próxima conexión
+        console.error('[Baileys] No se pudo traer la lista de grupos:', e.message);
+    }
 }
 
 async function processGroupQueue() {
@@ -951,7 +986,8 @@ async function initWhatsApp() {
             const parsedChats = [];
             if (Array.isArray(chats)) {
                 for (const ch of chats) {
-                    if (!isIndividualJid(ch.id)) continue;
+                    if (!isChatJid(ch.id)) continue;
+                    if (ch.id.endsWith('@g.us') && ch.name) groupNames[ch.id] = ch.name;
                     const resolved = resolveContact(ch.id, ch.name);
                     parsedChats.push({
                         jid: ch.id,
@@ -974,7 +1010,8 @@ async function initWhatsApp() {
                         else trackContactStatus(m, false);
                         continue;
                     }
-                    if (!isIndividualJid(m.key.remoteJid)) continue;
+                    if (!isChatJid(m.key.remoteJid)) continue;
+                    rememberGroupSender(m);
                     const details = extractMessageDetails(m);
                     if (!details) continue;
                     const { text, mediaType, quotedText, quotedSender } = details;
@@ -1014,7 +1051,8 @@ async function initWhatsApp() {
         // ── Actualizaciones de Chats ──
         sock.ev.on('chats.upsert', (newChats) => {
             if (!Array.isArray(newChats)) return;
-            const batch = newChats.filter(ch => isIndividualJid(ch.id)).map(ch => {
+            const batch = newChats.filter(ch => isChatJid(ch.id)).map(ch => {
+                if (ch.id.endsWith('@g.us') && ch.name) groupNames[ch.id] = ch.name;
                 const resolved = resolveContact(ch.id, ch.name);
                 fetchAndSaveAvatar(ch.id);
                 return {
@@ -1096,6 +1134,7 @@ async function initWhatsApp() {
                 myPhone = connectedPhone;
                 myLid = user?.lid ? user.lid.split(':')[0].replace(/\D/g, '') : null;
                 myName = connectedPushName || 'Yo';
+                setTimeout(syncGroupList, 5000);   // deja pasar primero la sincronización inicial
 
                 if (myLid && myPhone) {
                     saveContactInfo(myPhone, myLid, `${myName} (Tú)`, myName);
@@ -1112,6 +1151,7 @@ async function initWhatsApp() {
                 setTimeout(flushOutbox, 1000);
                 // Estados que vencieron mientras no había conexión
                 setTimeout(processStatusSchedule, 5000);
+                setTimeout(processMessageSchedule, 5000);
                 setTimeout(requestStatusHistory, 8000);
             }
         });
@@ -1124,7 +1164,7 @@ async function initWhatsApp() {
                 if (!st) continue;
                 if (u.key.fromMe) {
                     reportMessageStatus(u.key.id, st);
-                } else if (st === 'read' && isIndividualJid(u.key.remoteJid)) {
+                } else if (st === 'read' && isChatJid(u.key.remoteJid)) {
                     // Mensaje recibido que leíste en el celular (u otro dispositivo vinculado)
                     queueReadElsewhere(u.key.remoteJid, u.key.remoteJidAlt, { messageId: u.key.id });
                 }
@@ -1136,7 +1176,7 @@ async function initWhatsApp() {
         // los números positivos son sumas de mensajes nuevos y los cuenta la app sola.
         sock.ev.on('chats.update', (updates) => {
             for (const u of updates || []) {
-                if (!isIndividualJid(u.id)) continue;
+                if (!isChatJid(u.id)) continue;
                 if (u.unreadCount === 0) queueReadElsewhere(u.id, null, { all: true });
                 else if (u.unreadCount === -1) queueReadElsewhere(u.id, null, { unread: true });
             }
@@ -1160,7 +1200,7 @@ async function initWhatsApp() {
             for (const r of reactions || []) {
                 try {
                     const key = r.key || {};
-                    if (!key.id || !isIndividualJid(key.remoteJid)) continue;
+                    if (!key.id || !isChatJid(key.remoteJid)) continue;
                     const rk = r.reaction?.key || {};
                     const isGroup = key.remoteJid.endsWith('@g.us');
                     const reactor = rk.fromMe ? 'me' : (rk.participant || (isGroup ? '' : key.remoteJid));
@@ -1249,7 +1289,8 @@ async function initWhatsApp() {
                     else trackContactStatus(msg, type === 'notify');
                     continue;
                 }
-                if (!isIndividualJid(msg.key.remoteJid)) continue;
+                if (!isChatJid(msg.key.remoteJid)) continue;
+                rememberGroupSender(msg);
                 console.log(`[Baileys] Recibido (${type}): [${msg.key.remoteJid}] id=${msg.key.id} fromMe=${Boolean(msg.key.fromMe)}`);
 
                 const fromMe = Boolean(msg.key.fromMe);
@@ -1456,6 +1497,150 @@ async function processStatusSchedule() {
         }
     } finally {
         isPublishingStatus = false;
+    }
+}
+
+// ─── MENSAJES PROGRAMADOS ────────────────────────────────────────────────────
+// Misma idea que los estados: la cola vive en el gateway y aplica el mismo margen de atraso.
+// En vez de revisar la cola cada tantos segundos hay un único temporizador apuntado al próximo envío,
+// así sale en hora y sin trabajo de fondo. El tope de un minuto cubre cambios de hora y suspensiones.
+const MESSAGE_SCHEDULE_FILE = path.join(USER_DATA_DIR, 'mensajes_programados.json');
+const MESSAGE_SCHEDULE_MEDIA_DIR = path.join(MEDIA_DIR, 'mensajes_programados');
+const MESSAGE_MEDIA_KEYS = ['document_path', 'image_path', 'video_path', 'audio_path', 'sticker_path'];   // prioridad de /send
+const MESSAGE_SEND_FIELDS = ['image_thumb', 'document_name', 'mimetype', 'audio_seconds', 'audio_waveform', 'quoted'];
+const MESSAGE_TIMER_MAX_MS = 60000;
+const MESSAGE_HISTORY_MAX = 100;
+const MESSAGE_DONE_STATES = ['sent', 'failed', 'expired', 'canceled'];
+if (!fs.existsSync(MESSAGE_SCHEDULE_MEDIA_DIR)) fs.mkdirSync(MESSAGE_SCHEDULE_MEDIA_DIR, { recursive: true });
+
+let scheduledMessages = [];
+let isSendingScheduledMessage = false;
+let messageTimer = null;
+try {
+    if (fs.existsSync(MESSAGE_SCHEDULE_FILE)) scheduledMessages = JSON.parse(fs.readFileSync(MESSAGE_SCHEDULE_FILE, 'utf-8'));
+    // Un mensaje que quedó "enviando" al cerrarse el gateway vuelve a la cola (conserva su id: WhatsApp no lo duplica)
+    for (const m of scheduledMessages) if (m.state === 'sending') m.state = 'pending';
+} catch (e) {
+    console.error('[Programados] No se pudo leer la cola:', e.message);
+}
+
+function saveMessageSchedule() {
+    try {
+        const tmp = `${MESSAGE_SCHEDULE_FILE}.tmp`;
+        fs.writeFileSync(tmp, JSON.stringify(scheduledMessages), 'utf-8');
+        fs.renameSync(tmp, MESSAGE_SCHEDULE_FILE);
+    } catch (e) {
+        console.error('[Programados] No se pudo guardar la cola:', e.message);
+    }
+}
+
+// El archivo de un mensaje ya enviado no se borra: lo sigue mostrando el chat
+function removeScheduledMedia(item) {
+    if (item.media_path && item.state !== 'sent') fs.rm(item.media_path, { force: true }, () => {});
+}
+
+function pruneMessageHistory() {
+    const done = scheduledMessages.filter(m => MESSAGE_DONE_STATES.includes(m.state));
+    if (done.length <= MESSAGE_HISTORY_MAX) return;
+    const drop = new Set(done.sort((a, b) => a.at - b.at).slice(0, done.length - MESSAGE_HISTORY_MAX));
+    drop.forEach(removeScheduledMedia);
+    scheduledMessages = scheduledMessages.filter(m => !drop.has(m));
+}
+
+const scheduledDueAt = (m) => Math.max(m.at, m.retry_at || 0);
+
+function armMessageTimer() {
+    clearTimeout(messageTimer);
+    messageTimer = null;
+    // Sin conexión no hace falta temporizador: al conectar se revisa la cola
+    if (isSendingScheduledMessage || connectionStatus !== 'connected') return;
+    let next = Infinity;
+    for (const m of scheduledMessages) if (m.state === 'pending') next = Math.min(next, scheduledDueAt(m));
+    if (next === Infinity) return;
+    messageTimer = setTimeout(processMessageSchedule, Math.min(Math.max(0, next * 1000 - Date.now()), MESSAGE_TIMER_MAX_MS));
+}
+
+function reportScheduledMessage(item) {
+    deliverReliably(`${PYTHON_API}/scheduled`, {
+        id: item.id, state: item.state, to: item.to, chat_name: item.chat_name, type: item.type,
+        text: item.text, source_name: item.source_name, at: item.at, error: item.error || null
+    });
+}
+
+async function runScheduledMessage(item) {
+    item.state = 'sending';
+    item.attempts = (item.attempts || 0) + 1;
+    // Un id fijo por mensaje: si un reintento repite un envío que sí había salido, WhatsApp no lo muestra dos veces
+    item.wa_id = item.wa_id || generateMessageIDV2(sock.user?.id);
+    saveMessageSchedule();
+    try {
+        const body = { ...item.send, to: item.to, text: item.text };
+        const result = await sendWhatsApp(body, { messageId: item.wa_id });
+        const now = Math.floor(Date.now() / 1000);
+        item.state = 'sent';
+        item.sent_at = now;
+        item.message_id = result?.key?.id || item.wa_id;
+        item.error = null;
+        item.retry_at = null;
+        item.send = null;   // miniatura y onda ya no hacen falta
+        console.log(`[Programados] ✅ Enviado ${item.id} (${item.type}) a ${item.to}`);
+        // El gateway descarta el eco de lo que envía: la app se entera por acá
+        deliverReliably(PYTHON_WEBHOOK_URL, {
+            message_id: item.message_id,
+            upsert_type: 'append',
+            chat_jid: item.to,
+            sender_jid: 'me',
+            push_name: 'Yo',
+            chat_name: item.chat_name || null,
+            from_me: true,
+            text: item.type === 'document' ? (item.text || item.source_name || '') : item.text,
+            media_type: item.type,
+            media_path: item.media_path,
+            quoted_text: item.quoted_text || null,
+            quoted_sender: item.quoted_sender || null,
+            timestamp: now,
+            is_group: item.to.endsWith('@g.us')
+        });
+    } catch (e) {
+        item.error = e.message || String(e);
+        item.retry_at = Math.floor(Date.now() / 1000) + SCHEDULE_RETRY_DELAY;
+        // Si se cortó la conexión no cuenta como intento: sale al volver (o vence, si pasó el margen)
+        if (connectionStatus !== 'connected') item.attempts -= 1;
+        item.state = e.httpStatus === 404 || item.attempts >= SCHEDULE_MAX_ATTEMPTS ? 'failed' : 'pending';
+        console.error(`[Programados] ❌ Falló ${item.id} (intento ${item.attempts}):`, item.error);
+    }
+    pruneMessageHistory();
+    saveMessageSchedule();
+    if (item.state !== 'pending') reportScheduledMessage(item);
+}
+
+// De a uno y en orden. La cola se vuelve a mirar tras cada envío: lo programado o cancelado durante una subida larga cuenta.
+async function processMessageSchedule() {
+    if (isSendingScheduledMessage) return;
+    if (connectionStatus !== 'connected' || !sock) return;
+    isSendingScheduledMessage = true;
+    try {
+        while (connectionStatus === 'connected') {
+            const now = Math.floor(Date.now() / 1000);
+            let item = null;
+            for (const m of scheduledMessages) {
+                if (m.state === 'pending' && scheduledDueAt(m) <= now && (!item || m.at < item.at)) item = m;
+            }
+            if (!item) break;
+            if (now - item.at > SCHEDULE_LATE_GRACE && !item.attempts) {
+                item.state = 'expired';
+                item.error = 'El equipo estaba apagado o sin conexión a la hora programada';
+                pruneMessageHistory();
+                saveMessageSchedule();
+                reportScheduledMessage(item);
+                console.log(`[Programados] ⌛ Vencido ${item.id}: programado ${new Date(item.at * 1000).toISOString()}`);
+                continue;
+            }
+            await runScheduledMessage(item);
+        }
+    } finally {
+        isSendingScheduledMessage = false;
+        armMessageTimer();
     }
 }
 
@@ -1900,6 +2085,106 @@ app.post('/status-schedule/remove', (req, res) => {
     res.json({ success: true });
 });
 
+// Las rutas del archivo y la miniatura quedan en el gateway: la lista lleva solo lo que se muestra
+app.get('/message-schedule', (req, res) => {
+    res.json({ items: scheduledMessages.map(({ send, wa_id, ...item }) => item) });
+});
+
+// Programa un mensaje. Cuerpo: el mismo de POST /send, más "at" (epoch s), "chat_name" y, para mostrarlo al enviarse,
+// "quoted_text" y "quoted_sender". Con "consume" el archivo se mueve en vez de copiarse (ya es de la app).
+app.post('/message-schedule', async (req, res) => {
+    try {
+        const body = req.body || {};
+        const text = String(body.text || '').trim();
+        const mediaKey = MESSAGE_MEDIA_KEYS.find(k => body[k]);
+        const type = mediaKey ? mediaKey.replace('_path', '') : 'text';
+        const now = Math.floor(Date.now() / 1000);
+        if (!body.to) return res.status(400).json({ error: 'Falta el destinatario' });
+        if (type === 'text' && !text) return res.status(400).json({ error: 'El mensaje está vacío' });
+        if (!(Number(body.at) > now)) return res.status(400).json({ error: 'Elegí una fecha y hora futuras' });
+
+        const id = crypto.randomBytes(6).toString('hex');
+        const send = {};
+        for (const k of MESSAGE_SEND_FIELDS) if (body[k]) send[k] = body[k];
+        let storedPath = null;
+        if (mediaKey) {
+            const source = body[mediaKey];
+            if (!fs.existsSync(source)) return res.status(404).json({ error: `Archivo no encontrado: ${source}` });
+            // Copia propia: si el original se mueve o se borra, el mensaje igual sale
+            storedPath = path.join(MESSAGE_SCHEDULE_MEDIA_DIR, `${id}${path.extname(source).toLowerCase()}`);
+            let moved = false;
+            if (body.consume) moved = await fs.promises.rename(source, storedPath).then(() => true, () => false);
+            if (!moved) await fs.promises.copyFile(source, storedPath);
+            send[mediaKey] = storedPath;
+        }
+        const item = {
+            id, type, to: body.to,
+            chat_name: body.chat_name || null,
+            text,
+            media_path: storedPath,
+            source_name: mediaKey ? (body.document_name || path.basename(body[mediaKey])) : null,
+            quoted_text: body.quoted_text || null,
+            quoted_sender: body.quoted_sender || null,
+            send,
+            at: Math.floor(Number(body.at)),
+            created_at: now,
+            state: 'pending',
+            attempts: 0
+        };
+        scheduledMessages.push(item);
+        saveMessageSchedule();
+        armMessageTimer();
+        console.log(`[Programados] 🗓️ ${id} (${type}) para ${new Date(item.at * 1000).toISOString()}`);
+        res.json({ success: true, id });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Cambia la fecha/hora o el texto de un mensaje que no salió ("at" = ahora lo envía ya)
+app.post('/message-schedule/update', (req, res) => {
+    const { id, at, text } = req.body || {};
+    const item = scheduledMessages.find(m => m.id === id);
+    if (!item) return res.status(404).json({ error: 'No existe ese mensaje programado' });
+    if (!['pending', 'failed', 'expired', 'canceled'].includes(item.state)) {
+        return res.status(409).json({ error: 'Ese mensaje ya se envió o se está enviando' });
+    }
+    if (typeof text === 'string') {
+        if (item.type === 'text' && !text.trim()) return res.status(400).json({ error: 'El mensaje está vacío' });
+        item.text = text.trim();
+    }
+    if (Number(at) > 0) item.at = Math.floor(Number(at));
+    item.state = 'pending';
+    item.attempts = 0;
+    item.retry_at = null;
+    item.error = null;
+    saveMessageSchedule();
+    armMessageTimer();
+    res.json({ success: true });
+});
+
+app.post('/message-schedule/cancel', (req, res) => {
+    const item = scheduledMessages.find(m => m.id === req.body?.id);
+    if (!item) return res.status(404).json({ error: 'No existe ese mensaje programado' });
+    if (item.state !== 'pending') return res.status(409).json({ error: 'Solo se cancelan mensajes pendientes' });
+    item.state = 'canceled';
+    saveMessageSchedule();
+    armMessageTimer();
+    res.json({ success: true });
+});
+
+// Quita el mensaje de la lista (no borra de WhatsApp uno ya enviado)
+app.post('/message-schedule/remove', (req, res) => {
+    const idx = scheduledMessages.findIndex(m => m.id === req.body?.id);
+    if (idx < 0) return res.status(404).json({ error: 'No existe ese mensaje programado' });
+    if (scheduledMessages[idx].state === 'sending') return res.status(409).json({ error: 'Se está enviando ahora' });
+    const [item] = scheduledMessages.splice(idx, 1);
+    removeScheduledMedia(item);
+    saveMessageSchedule();
+    armMessageTimer();
+    res.json({ success: true });
+});
+
 app.get('/status', (req, res) => {
     res.json({
         build: BUILD_ID,
@@ -1978,99 +2263,93 @@ app.post('/fetch-avatar', async (req, res) => {
     res.json({ success: true, avatar_path: p });
 });
 
+// Envía un mensaje con el cuerpo de POST /send. Si algo falla lanza un error con httpStatus (404 = falta el archivo).
+async function sendWhatsApp(body, extraOpts = {}) {
+    const { to, text, image_path, image_thumb, image_url, document_path, document_name, mimetype,
+            video_path, audio_path, audio_seconds, audio_waveform, sticker_path, quoted } = body;
+    const msgText = (text || '').trim();
+    const fail = (httpStatus, message) => Object.assign(new Error(message), { httpStatus });
+
+    if (!to) throw fail(400, 'Falta parámetro "to"');
+    if (connectionStatus !== 'connected' || !sock) throw fail(503, 'WhatsApp no está conectado.');
+
+    let jid = to;
+    if (!jid.includes('@')) {
+        const clean = jid.replace(/\D/g, '');
+        jid = `${clean}@s.whatsapp.net`;
+    }
+
+    // Respuesta a un mensaje: Baileys solo necesita la clave y un texto representativo para citarlo
+    const sendOpts = { ...extraOpts };
+    if (quoted?.message_id) {
+        const qKey = { remoteJid: jid, id: quoted.message_id, fromMe: Boolean(quoted.from_me) };
+        if (jid.endsWith('@g.us') && quoted.participant && !quoted.from_me) qKey.participant = quoted.participant;
+        sendOpts.quoted = { key: qKey, message: { conversation: quoted.text || '' } };
+    }
+
+    const mediaFile = (p, missing) => {
+        if (!fs.existsSync(p)) throw fail(404, `${missing}: ${p}`);
+        return fs.readFileSync(p);
+    };
+
+    let result;
+    if (document_path) {
+        const buffer = mediaFile(document_path, 'Archivo no encontrado');
+        const fileName = document_name || path.basename(document_path);
+        result = await sock.sendMessage(jid, {
+            document: buffer,
+            mimetype: mimetype || 'application/octet-stream',
+            fileName: fileName,
+            caption: msgText || undefined
+        }, sendOpts);
+    } else if (image_path) {
+        const buffer = mediaFile(image_path, 'Imagen no encontrada');
+        result = await sock.sendMessage(jid, {
+            image: buffer,
+            caption: msgText || undefined,
+            // En Android no hay sharp ni jimp: la miniatura la arma la app
+            ...(image_thumb ? { jpegThumbnail: image_thumb } : {})
+        }, sendOpts);
+    } else if (video_path) {
+        const buffer = mediaFile(video_path, 'Video no encontrado');
+        result = await sock.sendMessage(jid, { video: buffer, caption: msgText || undefined }, sendOpts);
+    } else if (audio_path) {
+        const buffer = mediaFile(audio_path, 'Audio no encontrado');
+        const audioMsg = { audio: buffer, mimetype: 'audio/ogg; codecs=opus', ptt: true };
+        // Notas grabadas en la app: llegan con su duración y su onda (si no, Baileys calcula solo la duración)
+        if (Number(audio_seconds) > 0) audioMsg.seconds = Math.max(1, Math.round(Number(audio_seconds)));
+        if (Array.isArray(audio_waveform) && audio_waveform.length) {
+            audioMsg.waveform = new Uint8Array(audio_waveform.map(v => Math.max(0, Math.min(100, Number(v) | 0))));
+        }
+        result = await sock.sendMessage(jid, audioMsg, sendOpts);
+    } else if (sticker_path) {
+        result = await sock.sendMessage(jid, { sticker: mediaFile(sticker_path, 'Sticker no encontrado') }, sendOpts);
+    } else if (image_url) {
+        result = await sock.sendMessage(jid, {
+            image: { url: image_url },
+            caption: msgText || undefined
+        }, sendOpts);
+    } else {
+        result = await sock.sendMessage(jid, { text: msgText }, sendOpts);
+    }
+
+    if (result?.key?.id) {
+        sentBotMessageIds.add(result.key.id);
+        if (sentBotMessageIds.size > 2000) {
+            const first = sentBotMessageIds.values().next().value;
+            sentBotMessageIds.delete(first);
+        }
+    }
+    return result;
+}
+
 app.post('/send', async (req, res) => {
     try {
-        const { to, text, image_path, image_thumb, image_url, document_path, document_name, mimetype,
-                video_path, audio_path, audio_seconds, audio_waveform, sticker_path, quoted } = req.body;
-        const msgText = (text || '').trim();
-
-        if (!to) {
-            return res.status(400).json({ error: 'Falta parámetro "to"' });
-        }
-
-        if (connectionStatus !== 'connected' || !sock) {
-            return res.status(503).json({ error: 'WhatsApp no está conectado.' });
-        }
-
-        let jid = to;
-        if (!jid.includes('@')) {
-            const clean = jid.replace(/\D/g, '');
-            jid = `${clean}@s.whatsapp.net`;
-        }
-
-        // Respuesta a un mensaje: Baileys solo necesita la clave y un texto representativo para citarlo
-        let sendOpts = {};
-        if (quoted?.message_id) {
-            const qKey = { remoteJid: jid, id: quoted.message_id, fromMe: Boolean(quoted.from_me) };
-            if (jid.endsWith('@g.us') && quoted.participant && !quoted.from_me) qKey.participant = quoted.participant;
-            sendOpts = { quoted: { key: qKey, message: { conversation: quoted.text || '' } } };
-        }
-
-        const mediaFile = (p) => (fs.existsSync(p) ? fs.readFileSync(p) : null);
-
-        let result;
-        if (document_path) {
-            if (!fs.existsSync(document_path)) {
-                return res.status(404).json({ error: `Archivo no encontrado: ${document_path}` });
-            }
-            const buffer = fs.readFileSync(document_path);
-            const fileName = document_name || path.basename(document_path);
-            result = await sock.sendMessage(jid, {
-                document: buffer,
-                mimetype: mimetype || 'application/octet-stream',
-                fileName: fileName,
-                caption: msgText || undefined
-            }, sendOpts);
-        } else if (image_path) {
-            if (!fs.existsSync(image_path)) {
-                return res.status(404).json({ error: `Imagen no encontrada: ${image_path}` });
-            }
-            const buffer = fs.readFileSync(image_path);
-            result = await sock.sendMessage(jid, {
-                image: buffer,
-                caption: msgText || undefined,
-                // En Android no hay sharp ni jimp: la miniatura la arma la app
-                ...(image_thumb ? { jpegThumbnail: image_thumb } : {})
-            }, sendOpts);
-        } else if (video_path) {
-            const buffer = mediaFile(video_path);
-            if (!buffer) return res.status(404).json({ error: `Video no encontrado: ${video_path}` });
-            result = await sock.sendMessage(jid, { video: buffer, caption: msgText || undefined }, sendOpts);
-        } else if (audio_path) {
-            const buffer = mediaFile(audio_path);
-            if (!buffer) return res.status(404).json({ error: `Audio no encontrado: ${audio_path}` });
-            const audioMsg = { audio: buffer, mimetype: 'audio/ogg; codecs=opus', ptt: true };
-            // Notas grabadas en la app: llegan con su duración y su onda (si no, Baileys calcula solo la duración)
-            if (Number(audio_seconds) > 0) audioMsg.seconds = Math.max(1, Math.round(Number(audio_seconds)));
-            if (Array.isArray(audio_waveform) && audio_waveform.length) {
-                audioMsg.waveform = new Uint8Array(audio_waveform.map(v => Math.max(0, Math.min(100, Number(v) | 0))));
-            }
-            result = await sock.sendMessage(jid, audioMsg, sendOpts);
-        } else if (sticker_path) {
-            const buffer = mediaFile(sticker_path);
-            if (!buffer) return res.status(404).json({ error: `Sticker no encontrado: ${sticker_path}` });
-            result = await sock.sendMessage(jid, { sticker: buffer }, sendOpts);
-        } else if (image_url) {
-            result = await sock.sendMessage(jid, {
-                image: { url: image_url },
-                caption: msgText || undefined
-            }, sendOpts);
-        } else {
-            result = await sock.sendMessage(jid, { text: msgText }, sendOpts);
-        }
-
-        if (result?.key?.id) {
-            sentBotMessageIds.add(result.key.id);
-            if (sentBotMessageIds.size > 2000) {
-                const first = sentBotMessageIds.values().next().value;
-                sentBotMessageIds.delete(first);
-            }
-        }
-
+        const result = await sendWhatsApp(req.body || {});
         res.json({ success: true, message_id: result?.key?.id });
     } catch (e) {
-        console.error('[Baileys] Error enviando mensaje:', e);
-        res.status(500).json({ error: e.message });
+        if (!e.httpStatus) console.error('[Baileys] Error enviando mensaje:', e);
+        res.status(e.httpStatus || 500).json({ error: e.message });
     }
 });
 
@@ -2099,13 +2378,14 @@ app.post('/read', async (req, res) => {
         if (!to || !Array.isArray(messages) || !messages.length) {
             return res.status(400).json({ error: 'Faltan "to" o "messages"' });
         }
-        if (!isIndividualJid(to)) return res.json({ success: true, skipped: true });
+        if (!isChatJid(to)) return res.json({ success: true, skipped: true });
         if (connectionStatus !== 'connected' || !sock) {
             return res.status(503).json({ error: 'WhatsApp no está conectado.' });
         }
+        const isGroup = to.endsWith('@g.us');
         const keys = messages
-            .filter(id => typeof id === 'string' && id)
-            .map(id => ({ remoteJid: to, id, fromMe: false }));
+            .filter(id => typeof id === 'string' && id && (!isGroup || groupSenders.has(id)))
+            .map(id => ({ remoteJid: to, id, fromMe: false, ...(isGroup ? { participant: groupSenders.get(id) } : {}) }));
         if (keys.length) await sock.readMessages(keys);
         res.json({ success: true, count: keys.length });
     } catch (e) {

@@ -333,6 +333,8 @@ class ChatViewPanel(QWidget):
     _polish_done = Signal(int, str, str)       # id de petición, jid, texto (respuesta o error)
     _polish_models_ready = Signal(str, list)   # proveedor, modelos
     _voice_done = Signal(dict)                 # nota de voz convertida y enviada (o con error)
+    _scheduled_counts_ready = Signal(dict)     # jid -> mensajes programados pendientes
+    scheduled_total_changed = Signal(int)
     _att_result = Signal(int, dict)            # índice del adjunto, respuesta del gateway
     _att_finished = Signal()
 
@@ -386,7 +388,14 @@ class ChatViewPanel(QWidget):
         self._voice_sending: set = set() # chats con una nota convirtiéndose / subiendo
         self._voice_blink = False
 
+        # Programar envío: con hora elegida, lo próximo que se mande en este chat queda en la cola del gateway
+        self._schedule_at = None
+        self._scheduled_counts: dict = {}   # copia local: abrir un chat no consulta al gateway
+        self._scheduled_loaded = False
+
         self._init_ui()
+
+        self._scheduled_counts_ready.connect(self._on_scheduled_counts)
 
         self._recorder.level.connect(self.voice_meter.push)
         self._recorder.failed.connect(self._on_recorder_failed)
@@ -803,6 +812,11 @@ class ChatViewPanel(QWidget):
         self.btn_polish.setCheckable(True)
         self.btn_polish.clicked.connect(self._toggle_polish)
         composer_layout.addWidget(self.btn_polish, alignment=Qt.AlignBottom)
+
+        self.btn_schedule = tool_button("clock", "Programar envío: elegí día y hora, y lo próximo que mandes sale solo",
+                                        size=btn, icon_size=20)
+        self.btn_schedule.clicked.connect(self._choose_schedule_time)
+        composer_layout.addWidget(self.btn_schedule, alignment=Qt.AlignBottom)
         composer_layout.addSpacing(4)
 
         self.input_text = MessageInputEdit(placeholder="Escribe un mensaje  (Enter envía, Shift+Enter salto de línea)",
@@ -860,6 +874,32 @@ class ChatViewPanel(QWidget):
         self.btn_action.clicked.connect(self._on_action_clicked)
         composer_layout.addWidget(self.btn_action, alignment=Qt.AlignBottom)
         self._update_action_button()
+
+        # Encima del compositor: la hora elegida y cuántos mensajes de este chat están en cola
+        self.schedule_bar = QFrame()
+        self.schedule_bar.setObjectName("scheduleBar")
+        self.schedule_bar.setStyleSheet(f"#scheduleBar {{ {bar_qss} }}")
+        self.schedule_bar.setVisible(False)
+        sb_lay = QHBoxLayout(self.schedule_bar)
+        sb_lay.setContentsMargins(12, 4, 8, 4)
+        sb_lay.setSpacing(8)
+        self.lbl_schedule_icon = QLabel()
+        self.lbl_schedule_icon.setPixmap(icon_pixmap("clock", C["accent_hi"], 16))
+        sb_lay.addWidget(self.lbl_schedule_icon)
+        self.lbl_schedule = QLabel()
+        self.lbl_schedule.setStyleSheet(f"color: {C['text']}; font-size: 13px;")
+        sb_lay.addWidget(self.lbl_schedule)
+        self.btn_schedule_clear = tool_button("close", "No programar: volver a enviar en el momento", size=24, icon_size=14)
+        self.btn_schedule_clear.clicked.connect(lambda: self._set_schedule(None))
+        sb_lay.addWidget(self.btn_schedule_clear)
+        sb_lay.addStretch()
+        self.btn_schedule_list = QPushButton()
+        self.btn_schedule_list.setFlat(True)
+        self.btn_schedule_list.setCursor(Qt.PointingHandCursor)
+        self.btn_schedule_list.setStyleSheet(f"color: {C['accent_hi']}; border: none; font-size: 13px; padding: 2px 6px;")
+        self.btn_schedule_list.clicked.connect(self._open_chat_scheduled)
+        sb_lay.addWidget(self.btn_schedule_list)
+        self.chat_layout.addWidget(self.schedule_bar)
 
         self.chat_layout.addWidget(composer_frame)
 
@@ -935,6 +975,7 @@ class ChatViewPanel(QWidget):
     def show_empty_state(self):
         self._cancel_voice()
         self.current_chat = None
+        self._set_schedule(None)
         self._cancel_reply()
         self._exit_select_mode(refresh=False)
         self.empty_container.setVisible(True)
@@ -954,7 +995,11 @@ class ChatViewPanel(QWidget):
             self._remove_attachment()
             self.input_text.setPlainText(self._drafts.get(chat_data.get("jid"), ""))
             self.input_text.moveCursor(QTextCursor.End)
+            self._schedule_at = None   # la hora elegida es para ese chat: no viaja al siguiente
         self.current_chat = chat_data
+        self._update_schedule_bar()
+        if not self._scheduled_loaded:
+            self.refresh_scheduled()
         self._cancel_reply()
         self._exit_select_mode(refresh=False)
         self._refresh_voice_ui()
@@ -2317,9 +2362,12 @@ class ChatViewPanel(QWidget):
             return
 
         chat_jid = self.current_chat.get("jid")
+        at = self._schedule_at
+        if at and self._schedule_is_past():
+            return
 
-        st = self.gateway.get_status()
-        if st.get("status") != "connected":
+        # Lo programado no necesita conexión ahora: sale cuando llegue la hora
+        if not at and self.gateway.get_status().get("status") != "connected":
             QMessageBox.warning(
                 self,
                 "WhatsApp no conectado",
@@ -2332,19 +2380,111 @@ class ChatViewPanel(QWidget):
         quoted = self._quoted_payload()
 
         if att_paths:
-            self._start_attachment_send(chat_jid, text, att_paths, quoted, quoted_text, quoted_sender)
+            self._start_attachment_send(chat_jid, text, att_paths, quoted, quoted_text, quoted_sender, at)
             return
 
-        res = self.gateway.send_message(to=chat_jid, text=text, quoted=quoted)
+        res = self.gateway.send_message(to=chat_jid, text=text, quoted=quoted,
+                                        **self._schedule_kwargs(at, quoted_text, quoted_sender))
         if res.get("success"):
             self.input_text.clear()
             self._drafts.pop(chat_jid, None)
-            self._store_sent(res, chat_jid, text, None, None, quoted_text, quoted_sender)
             self._cancel_reply()
+            if at:
+                self._on_scheduled(at)
+                return
+            self._store_sent(res, chat_jid, text, None, None, quoted_text, quoted_sender)
             self.refresh_messages()
             self.message_sent.emit({"chat_jid": chat_jid, "text": text})
         else:
-            QMessageBox.critical(self, "Error al enviar", f"No se pudo enviar el mensaje:\n{res.get('error', 'Desconocido')}")
+            title, what = ("No se pudo programar", "programar") if at else ("Error al enviar", "enviar")
+            QMessageBox.critical(self, title, f"No se pudo {what} el mensaje:\n{res.get('error', 'Desconocido')}")
+
+    # ── Programar envío ──
+    def _choose_schedule_time(self):
+        from app.ui.scheduled_messages import ScheduleTimeDialog
+        if not self.current_chat:
+            return
+        dlg = ScheduleTimeDialog(self._schedule_at, parent=self)
+        accepted = dlg.exec() == QDialog.Accepted
+        at = dlg.values()[0]
+        dlg.deleteLater()
+        if not accepted:
+            return
+        if at <= time.time():
+            QMessageBox.warning(self, "Fecha pasada", "Elegí una fecha y hora futuras.")
+            return
+        self._set_schedule(at)
+        if self.input_text.isVisible():
+            self.input_text.setFocus()
+
+    def _set_schedule(self, at):
+        self._schedule_at = at
+        self._update_schedule_bar()
+        self._update_action_button()
+
+    def _schedule_is_past(self) -> bool:
+        if self._schedule_at > time.time():
+            return False
+        QMessageBox.warning(self, "Fecha pasada", "La hora que elegiste ya pasó. Elegí otra para programar el envío.")
+        return True
+
+    def _schedule_kwargs(self, at, quoted_text, quoted_sender) -> dict:
+        if not at:
+            return {}
+        return {"at": at, "chat_name": self._display_name(), "quoted_text": quoted_text, "quoted_sender": quoted_sender}
+
+    def _on_scheduled(self, at: int):
+        from app.ui.scheduled_messages import when_text
+        if self._schedule_at == at:   # si mientras tanto se eligió otra hora, esa sigue vigente
+            self._set_schedule(None)
+        self.refresh_scheduled()
+        QToolTip.showText(self.btn_action.mapToGlobal(QPoint(0, -34)), f"Programado: {when_text(at)}", self.btn_action)
+
+    def _update_schedule_bar(self):
+        from app.ui.scheduled_messages import when_text
+        at = self._schedule_at
+        count = self._scheduled_counts.get(self.current_chat.get("jid"), 0) if self.current_chat else 0
+        for w in (self.lbl_schedule_icon, self.lbl_schedule, self.btn_schedule_clear):
+            w.setVisible(bool(at))
+        if at:
+            self.lbl_schedule.setText(f"Lo próximo que mandes sale: {when_text(at)}")
+        self.btn_schedule_list.setVisible(count > 0)
+        self.btn_schedule_list.setText(f"{count} programado{'s' if count != 1 else ''} en este chat")
+        self.schedule_bar.setVisible(bool(at) or count > 0)
+
+    def refresh_scheduled(self):
+        """Recuenta en segundo plano; la barra y el rail usan la copia local."""
+        gateway = self.gateway
+
+        def work():
+            res = gateway.list_scheduled_messages()
+            if not res.get("success"):
+                return
+            counts: dict = {}
+            for m in res.get("items", []):
+                if m.get("state") in ("pending", "sending"):
+                    counts[m.get("to")] = counts.get(m.get("to"), 0) + 1
+            try:
+                self._scheduled_counts_ready.emit(counts)
+            except RuntimeError:   # la ventana se cerró antes de terminar
+                pass
+
+        threading.Thread(target=work, daemon=True, name="advancedwhatsapp-programados").start()
+
+    def _on_scheduled_counts(self, counts: dict):
+        self._scheduled_loaded = True
+        self._scheduled_counts = counts
+        self._update_schedule_bar()
+        self.scheduled_total_changed.emit(sum(counts.values()))
+
+    def _open_chat_scheduled(self):
+        from app.ui.scheduled_messages import ScheduledMessagesDialog
+        if not self.current_chat:
+            return
+        dlg = ScheduledMessagesDialog(self.gateway, self.current_chat.get("jid"), self)
+        dlg.exec()
+        dlg.deleteLater()
+        self.refresh_scheduled()
 
     def _store_sent(self, res, chat_jid, text, path, mtype, quoted_text, quoted_sender):
         import time
@@ -2358,11 +2498,13 @@ class ChatViewPanel(QWidget):
         )
 
     # ── Envío de adjuntos: hilo aparte + barra de progreso ──
-    def _start_attachment_send(self, chat_jid, text, paths, quoted, quoted_text, quoted_sender):
+    def _start_attachment_send(self, chat_jid, text, paths, quoted, quoted_text, quoted_sender, at=None):
         self._att_sending = True
         self._att_state = {"jid": chat_jid, "text": text, "paths": paths, "done": 0, "cur": 0.0,
                            "errors": [], "ok": [], "quoted_text": quoted_text, "quoted_sender": quoted_sender,
-                           "text_sent": False}
+                           "text_sent": False, "at": at}
+        scheduling = self._schedule_kwargs(at, quoted_text, quoted_sender)
+        later = self._schedule_kwargs(at, None, None)   # la cita va solo en el primer adjunto
         for p in paths:
             self.attachment_bar.set_state(p, "")
         self.attachment_bar.set_state(paths[0], "sending")
@@ -2384,7 +2526,8 @@ class ChatViewPanel(QWidget):
                     video_path=path if kind == "video" else None,
                     document_path=path if kind == "document" else None,
                     document_name=os.path.basename(path) if kind == "document" else None,
-                    quoted=quoted if i == 0 else None)
+                    quoted=quoted if i == 0 else None,
+                    **(scheduling if i == 0 else later))
                 self._att_result.emit(i, res)
             self._att_finished.emit()
 
@@ -2414,8 +2557,9 @@ class ChatViewPanel(QWidget):
         if res.get("success"):
             kind = kind_for(path)
             caption = st["text"] if i == 0 else ""
-            self._store_sent(res, st["jid"], caption, path, kind, st["quoted_text"] if i == 0 else None,
-                             st["quoted_sender"] if i == 0 else None)
+            if not st["at"]:   # lo programado llega al chat recién cuando sale
+                self._store_sent(res, st["jid"], caption, path, kind, st["quoted_text"] if i == 0 else None,
+                                 st["quoted_sender"] if i == 0 else None)
             st["ok"].append(path)
             if i == 0:
                 st["text_sent"] = True
@@ -2446,11 +2590,17 @@ class ChatViewPanel(QWidget):
             self.input_text.clear()
             self._drafts.pop(st["jid"], None)
             self._cancel_reply()
-        self.message_sent.emit({"chat_jid": st["jid"], "text": st["text"]})
+        if not st["at"]:
+            self.message_sent.emit({"chat_jid": st["jid"], "text": st["text"]})
+        elif st["errors"]:
+            self.refresh_scheduled()   # la hora sigue elegida para reintentar los que fallaron
+        else:
+            self._on_scheduled(st["at"])
         # Los enviados salen de la barra; los fallidos quedan para reintentar
         QTimer.singleShot(700, lambda ok=list(st["ok"]), err=bool(st["errors"]): self._finish_att_bar(ok, err))
         if st["errors"]:
-            QMessageBox.critical(self, "Error al enviar", "No se pudo enviar:\n" + "\n".join(st["errors"]))
+            QMessageBox.critical(self, "Error al enviar", f"No se pudo {'programar' if st['at'] else 'enviar'}:\n"
+                                 + "\n".join(st["errors"]))
         self._update_action_button()
 
     def _finish_att_bar(self, ok_paths, had_errors):
@@ -2482,8 +2632,8 @@ class ChatViewPanel(QWidget):
     def _update_action_button(self):
         """Con texto o adjunto el botón envía; con el campo vacío graba una nota de voz, como en WhatsApp."""
         if self._recorder.active or self._composer_has_content():
-            name = "send"
-            tip = "Enviar nota de voz  (Enter)" if self._recorder.active else "Enviar  (Enter)"
+            verb, name = ("Programar", "clock") if self._schedule_at else ("Enviar", "send")
+            tip = f"{verb} nota de voz  (Enter)" if self._recorder.active else f"{verb}  (Enter)"
         else:
             name, tip = "mic", "Grabar nota de voz"
         self.btn_action.setIcon(icon(name, C["on_accent"], active_color=C["on_accent"]))
@@ -2522,7 +2672,7 @@ class ChatViewPanel(QWidget):
     def _start_voice(self):
         if not self.current_chat or self._voice_sending_here():
             return
-        if self.gateway.get_status().get("status") != "connected":
+        if not self._schedule_at and self.gateway.get_status().get("status") != "connected":
             QMessageBox.warning(self, "WhatsApp no conectado", "No se pueden enviar notas de voz sin conexión a WhatsApp.")
             return
         err = self._recorder.start()
@@ -2599,7 +2749,17 @@ class ChatViewPanel(QWidget):
             QToolTip.showText(self.btn_action.mapToGlobal(QPoint(0, -34)),
                               "Nota de voz demasiado corta: no se envió", self.btn_action)
             return
-        if self.gateway.get_status().get("status") != "connected":
+        at = self._schedule_at
+        if at and at <= time.time():
+            if leaving:   # al cambiar de chat no queda dónde elegir otra hora: mejor no enviarla a destiempo
+                self._cancel_voice()
+                QMessageBox.warning(self, "Fecha pasada", "La hora elegida ya pasó: la nota de voz se descartó.")
+            else:
+                self._recorder.pause()
+                self._set_voice_paused_ui(True)
+                self._schedule_is_past()
+            return
+        if not at and self.gateway.get_status().get("status") != "connected":
             if leaving:
                 self._cancel_voice()
                 QMessageBox.warning(self, "WhatsApp no conectado",
@@ -2612,7 +2772,6 @@ class ChatViewPanel(QWidget):
                                     "envíala cuando vuelva la conexión o descártala.")
             return
 
-        import time
         pcm = self._recorder.stop()
         self._voice_clock.stop()
         chat_jid = self._voice_chat_jid or self.current_chat.get("jid")
@@ -2626,7 +2785,10 @@ class ChatViewPanel(QWidget):
 
         quoted_text, quoted_sender = self._quote_fields()
         job = {"chat_jid": chat_jid, "timestamp": int(time.time()), "quoted": self._quoted_payload(),
-               "quoted_text": quoted_text, "quoted_sender": quoted_sender}
+               "quoted_text": quoted_text, "quoted_sender": quoted_sender, "at": at}
+        scheduling = self._schedule_kwargs(at, quoted_text, quoted_sender)
+        if scheduling:
+            scheduling["consume"] = True   # el archivo recién convertido no se usa para nada más
         self._cancel_reply()
         self._voice_sending.add(chat_jid)
         self._refresh_voice_ui()
@@ -2640,7 +2802,8 @@ class ChatViewPanel(QWidget):
                     res = {"success": False, "error": err}
                 else:
                     res = self.gateway.send_message(to=chat_jid, audio_path=path, quoted=job["quoted"],
-                                                    audio_seconds=round(secs, 1), audio_waveform=whatsapp_waveform(pcm))
+                                                    audio_seconds=round(secs, 1), audio_waveform=whatsapp_waveform(pcm),
+                                                    **scheduling)
             except Exception as e:
                 res = {"success": False, "error": str(e)}
             try:
@@ -2651,7 +2814,12 @@ class ChatViewPanel(QWidget):
 
     def _on_voice_done(self, job: dict):
         chat_jid, res = job["chat_jid"], job["res"]
+        at = job.get("at")
         self._voice_sending.discard(chat_jid)
+        if at and res.get("success"):
+            self._refresh_voice_ui()
+            self._on_scheduled(at)
+            return
         if res.get("success"):
             save_message(
                 msg_id=res.get("message_id") or f"self_{job['timestamp']}", chat_jid=chat_jid, sender_jid="me",
@@ -2660,7 +2828,8 @@ class ChatViewPanel(QWidget):
                 status="sent")
         self._refresh_voice_ui()
         if not res.get("success"):
-            QMessageBox.critical(self, "Error al enviar", f"No se pudo enviar la nota de voz:\n{res.get('error', 'Desconocido')}")
+            QMessageBox.critical(self, "Error al enviar",
+                                 f"No se pudo {'programar' if at else 'enviar'} la nota de voz:\n{res.get('error', 'Desconocido')}")
             return
         if self.current_chat and self.current_chat.get("jid") == chat_jid:
             self.refresh_messages()

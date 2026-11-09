@@ -465,7 +465,7 @@ class ChatListPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.all_chats = []
-        self._filter_unread = False
+        self._filter = "all"       # "all", "unread" o "groups"
         self._page_size = 40
         self._current_offset = 0
         self._has_more = True
@@ -577,10 +577,13 @@ class ChatListPanel(QWidget):
         self._filter_group = QButtonGroup(self)
         self.btn_filter_all = self._make_filter("Todos", True)
         self.btn_filter_unread = self._make_filter("No leídos", False)
-        self.btn_filter_all.clicked.connect(lambda: self._set_filter_unread(False))
-        self.btn_filter_unread.clicked.connect(lambda: self._set_filter_unread(True))
+        self.btn_filter_groups = self._make_filter("Grupos", False)
+        self.btn_filter_all.clicked.connect(lambda: self._set_filter("all"))
+        self.btn_filter_unread.clicked.connect(lambda: self._set_filter("unread"))
+        self.btn_filter_groups.clicked.connect(lambda: self._set_filter("groups"))
         chips.addWidget(self.btn_filter_all)
         chips.addWidget(self.btn_filter_unread)
+        chips.addWidget(self.btn_filter_groups)
         chips.addStretch()
         # Red de seguridad: si algún chat quedó "sin leer" por error, se limpia todo de un clic
         self.btn_read_all = tool_button("check_all", "Marcar todos los chats como leídos",
@@ -731,11 +734,13 @@ class ChatListPanel(QWidget):
         data = item.data(Qt.UserRole) if item else None
         return data.get("jid") if isinstance(data, dict) else None
 
-    def _set_filter_unread(self, unread: bool):
-        self._filter_unread = unread
-        self.btn_filter_unread.setChecked(unread)
-        self.btn_filter_all.setChecked(not unread)
+    def _set_filter(self, kind: str):
+        self._filter = kind
         self.reload_chats(select_jid=self._current_jid())
+
+    def _fetch_chats(self, search: str, offset: int) -> list:
+        return get_chats(search=search, filter_unread=self._filter == "unread", groups_only=self._filter == "groups",
+                         limit=self._page_size, offset=offset)
 
     def _on_search_changed(self, text: str):
         self._search_timer.start()
@@ -770,7 +775,7 @@ class ChatListPanel(QWidget):
         self._is_loading = False
 
         search = self.txt_search.text().strip()
-        chats = get_chats(search=search, filter_unread=self._filter_unread, limit=self._page_size, offset=0)
+        chats = self._fetch_chats(search, 0)
         self.all_chats = chats
         if time.time() - self._last_purge > 30:
             self._last_purge = time.time()
@@ -810,7 +815,8 @@ class ChatListPanel(QWidget):
         if empty:
             self.lbl_no_results.setText(
                 "No hay chats que coincidan." if search else
-                ("No tienes chats sin leer." if self._filter_unread else "Todavía no hay chats."))
+                {"unread": "No tienes chats sin leer.", "groups": "Todavía no hay grupos."}.get(
+                    self._filter, "Todavía no hay chats."))
 
     def _on_scroll(self, value):
         sb = self.list_widget.verticalScrollBar()
@@ -825,12 +831,7 @@ class ChatListPanel(QWidget):
 
         search = self.txt_search.text().strip()
         next_offset = self._current_offset + self._page_size
-        more_chats = get_chats(
-            search=search,
-            filter_unread=self._filter_unread,
-            limit=self._page_size,
-            offset=next_offset
-        )
+        more_chats = self._fetch_chats(search, next_offset)
 
         if not more_chats:
             self._has_more = False

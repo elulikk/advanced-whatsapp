@@ -96,6 +96,7 @@ class NavRailWidget(QWidget):
     settings_requested = Signal()
     qr_requested = Signal()
     self_analysis_requested = Signal()
+    scheduled_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -121,6 +122,10 @@ class NavRailWidget(QWidget):
         self.btn_status = NavButton("status", "Estados  (Ctrl+2)")
         self.btn_status.clicked.connect(lambda: self._select_tab("status"))
         layout.addWidget(self.btn_status)
+
+        self.btn_scheduled = NavButton("clock", "Mensajes programados")
+        self.btn_scheduled.clicked.connect(self.scheduled_requested.emit)
+        layout.addWidget(self.btn_scheduled)
 
         layout.addStretch()
 
@@ -149,6 +154,9 @@ class NavRailWidget(QWidget):
         self.btn_status.set_dot(unseen_contacts > 0)
         self.btn_status.setToolTip(f"Estados  (Ctrl+2) · {unseen_contacts} sin ver" if unseen_contacts
                                    else "Estados  (Ctrl+2)")
+
+    def set_scheduled_badge(self, count: int):
+        self.btn_scheduled.set_badge("99+" if count > 99 else (str(count) if count > 0 else ""))
 
     def set_unread_badge(self, count: int):
         self.btn_chats.set_badge("99+" if count > 99 else (str(count) if count > 0 else ""))

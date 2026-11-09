@@ -24,6 +24,7 @@ class WebhookSignals(QObject):
     contact_status = Signal(dict)       # estado nuevo (o borrado) de un contacto
     app_activate = Signal(str)          # otra instancia (o una notificación) pide abrir/mostrar algo: advancedwhatsapp://...
     read_elsewhere = Signal(list)       # [chat_jid]: chats que leíste (o marcaste no leídos) en el celular
+    scheduled_changed = Signal(dict)    # {id, state: sent|failed|expired, to, chat_name, type, text, error}
 
 
 signals = WebhookSignals()
@@ -76,7 +77,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
                 if chat_jid and msg_id:
                     # Guardar contacto solo si no es el propio usuario
-                    if (push_name or phone) and not from_me and push_name.lower() not in ["yo", "null", "none", "mag tecnologia"]:
+                    # (los integrantes de un grupo no son contactos: no se agregan a la agenda)
+                    if (push_name or phone) and not from_me and not chat_jid.endswith("@g.us") \
+                            and push_name.lower() not in ["yo", "null", "none", "mag tecnologia"]:
                         save_contact(sender_jid, name=push_name, phone=phone, push_name=push_name)
 
                     existed = message_exists(msg_id)
@@ -131,10 +134,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._ok()
             return
 
-        elif self.path in ("/api/whatsapp/presence", "/api/whatsapp/call", "/api/whatsapp/contact_status"):
+        elif self.path in ("/api/whatsapp/presence", "/api/whatsapp/call", "/api/whatsapp/contact_status",
+                           "/api/whatsapp/scheduled"):
             sig = {"/api/whatsapp/presence": signals.presence_changed,
                    "/api/whatsapp/call": signals.call_event,
-                   "/api/whatsapp/contact_status": signals.contact_status}[self.path]
+                   "/api/whatsapp/contact_status": signals.contact_status,
+                   "/api/whatsapp/scheduled": signals.scheduled_changed}[self.path]
             try:
                 sig.emit(data)
             except Exception as e:

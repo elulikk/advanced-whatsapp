@@ -3,6 +3,8 @@ package com.advancedwhatsapp.app
 import com.advancedwhatsapp.app.ai.MessageSummary
 import com.advancedwhatsapp.app.ai.Psych
 import com.advancedwhatsapp.app.ai.ReplyPolisher
+import com.advancedwhatsapp.app.data.ChatFilter
+import com.advancedwhatsapp.app.data.Db
 import com.advancedwhatsapp.app.data.Message
 import com.advancedwhatsapp.app.data.Photos
 import com.advancedwhatsapp.app.data.StatusContact
@@ -38,6 +40,37 @@ class AiLogicTest {
         assertEquals(30_000L, Statuses.durationMs(status("a", "audio")))
         assertEquals(5_000L, Statuses.durationMs(status("a", "text", text = "x".repeat(18))))
         assertEquals(14_000L, Statuses.durationMs(status("a", "text", text = "x".repeat(1000))))
+    }
+
+    @Test
+    fun inboxHidesTabsAndGroupsUntilYouSearch() {
+        val inbox = Db.filterSql(ChatFilter.Inbox, searching = false)
+        assertTrue("tab_id = 0" in inbox)
+        assertFalse("@g.us" in inbox)
+        val searching = Db.filterSql(ChatFilter.Inbox, searching = true)
+        assertFalse("tab_id" in searching)
+        assertTrue("@g.us" in searching)
+    }
+
+    @Test
+    fun unreadCoversEveryTab() {
+        val unread = Db.filterSql(ChatFilter.Unread, searching = false)
+        assertFalse("tab_id" in unread)
+        assertTrue("@g.us" in unread)
+    }
+
+    @Test
+    fun analysisOnlySeesIndividualChats() {
+        assertFalse("@g.us" in Db.filterSql(null, searching = false))
+    }
+
+    @Test
+    fun tabNamesCannotRepeatOrUseReservedOnes() {
+        val others = listOf("Marketplaces")
+        assertTrue(Db.isValidTabName("Trabajo", others))
+        assertFalse(Db.isValidTabName("  marketplaces ", others))
+        assertFalse(Db.isValidTabName("Grupos", others))
+        assertFalse(Db.isValidTabName("   ", others))
     }
 
     @Test

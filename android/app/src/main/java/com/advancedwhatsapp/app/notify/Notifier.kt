@@ -52,9 +52,14 @@ object Notifier {
         publishShortcut(jid, chat.name, person, icon)
         val me = Person.Builder().setName("Yo").build()
         val style = Notification.MessagingStyle(me)
+        if (chat.isGroup) style.setConversationTitle(chat.name).setGroupConversation(true)
+        val members = HashMap<String, Person>()
         for (m in pending) {
             val text = Db.preview(m.mediaType, m.text).ifEmpty { "Mensaje" }
-            style.addMessage(Notification.MessagingStyle.Message(text, m.timestamp * 1000, person))
+            val sender = if (!chat.isGroup) person else members.getOrPut(m.senderJid ?: m.senderName.orEmpty()) {
+                Person.Builder().setName(m.senderName?.ifEmpty { null } ?: "Alguien").setKey(m.senderJid).build()
+            }
+            style.addMessage(Notification.MessagingStyle.Message(text, m.timestamp * 1000, sender))
         }
 
         val reply = Notification.Action.Builder(
@@ -107,6 +112,26 @@ object Notifier {
                 .setContentIntent(openChat(jid))
                 .setAutoCancel(true)
                 .setOnlyAlertOnce(true)
+                .build()
+        )
+    }
+
+    /** Quien programó un mensaje confía en que salió: si no salió, hay que avisarle. */
+    fun scheduledFailed(d: JSONObject) {
+        val jid = d.optString("to").ifEmpty { return }
+        fun text(k: String) = if (d.isNull(k)) "" else d.optString(k)
+        val name = text("chat_name").ifEmpty { Db.getChat(jid)?.name.orEmpty() }
+        val preview = text("text").ifEmpty { text("source_name") }.ifEmpty { "Mensaje" }
+        nm.notify(
+            idFor("programado_${d.optString("id")}"),
+            Notification.Builder(ctx, App.CH_MESSAGES)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setColor(ACCENT)
+                .setContentTitle("No se envió tu mensaje programado a $name")
+                .setContentText(preview)
+                .setStyle(Notification.BigTextStyle().bigText("$preview\n${text("error")}".trim()))
+                .setContentIntent(openChat(jid))
+                .setAutoCancel(true)
                 .build()
         )
     }

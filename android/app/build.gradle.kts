@@ -12,8 +12,8 @@ android {
         applicationId = "com.advancedwhatsapp.app"
         minSdk = 29          // Android 10: primera versión que graba OGG/Opus (notas de voz de WhatsApp)
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.2.1"
         externalNativeBuild {
             cmake {
                 cppFlags += "-std=c++17"
@@ -41,7 +41,9 @@ android {
             // Instalación directa: se firma con la clave de depuración de esta PC.
             // Compose funciona mucho más fluido que en la variante debug.
             signingConfig = signingConfigs.getByName("debug")
-            isMinifyEnabled = false
+            // R8 optimiza el código: la app arranca más rápido y el APK pesa menos
+            isMinifyEnabled = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
 

@@ -96,7 +96,11 @@ private fun AppNav(pendingChat: String?, onChatOpened: () -> Unit) {
                 onLink = { nav.navigate("link") },
                 onNewChat = { nav.navigate("new") },
                 onSelfAnalysis = { nav.navigate("analysis/${Uri.encode(Psych.SELF_JID)}") },
+                onScheduled = { nav.navigate("scheduled") },
             )
+        }
+        composable("scheduled?chat={chat}", arguments = listOf(navArgument("chat") { type = NavType.StringType; nullable = true })) { e ->
+            ScheduledScreen(e.arguments?.getString("chat"), onBack = { nav.popBackStack() })
         }
         composable("link") { LinkScreen(onBack = { nav.popBackStack() }) }
         composable("settings") { SettingsScreen(onBack = { nav.popBackStack() }) }
@@ -110,7 +114,12 @@ private fun AppNav(pendingChat: String?, onChatOpened: () -> Unit) {
         composable("chat/{jid}", arguments = listOf(navArgument("jid") { type = NavType.StringType })) { e ->
             val jid = e.arguments?.getString("jid").orEmpty()
             // Tocar la notificación de otro chat reusa esta pantalla: sin key, el borrador pasaría al otro contacto
-            key(jid) { ChatScreen(jid, onBack = { nav.popBackStack() }, onAnalysis = { nav.navigate("analysis/${Uri.encode(jid)}") }) }
+            key(jid) {
+                ChatScreen(
+                    jid, onBack = { nav.popBackStack() }, onAnalysis = { nav.navigate("analysis/${Uri.encode(jid)}") },
+                    onScheduled = { nav.navigate("scheduled?chat=${Uri.encode(jid)}") },
+                )
+            }
         }
         composable("analysis/{jid}", arguments = listOf(navArgument("jid") { type = NavType.StringType })) { e ->
             AnalysisScreen(e.arguments?.getString("jid").orEmpty(), onBack = { nav.popBackStack() })

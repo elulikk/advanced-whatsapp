@@ -140,6 +140,10 @@ class WebhookServer {
             "presence" -> AppState.updatePresence(d)
             "call" -> Notifier.call(d)
             "contact_status" -> AppState.statusChanged()
+            "scheduled" -> {
+                AppState.scheduledChanged()
+                if (d.optString("state") in listOf("failed", "expired")) Notifier.scheduledFailed(d)
+            }
             else -> return 404
         }
         return 200
@@ -152,7 +156,8 @@ class WebhookServer {
         val push = d.optString("push_name").takeUnless { d.isNull("push_name") }.orEmpty()
         val fromMe = d.optBoolean("from_me")
         val phone = d.str("phone")
-        if ((push.isNotEmpty() || phone != null) && !fromMe && push.lowercase() !in listOf("yo", "null", "none")) {
+        // Los integrantes de un grupo no son contactos: no se agregan a la agenda
+        if ((push.isNotEmpty() || phone != null) && !fromMe && !chat.endsWith("@g.us") && push.lowercase() !in listOf("yo", "null", "none")) {
             Db.saveContact(sender, push, phone, push)
         }
         val existed = Db.messageExists(id)

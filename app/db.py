@@ -540,7 +540,7 @@ def save_sync_batch(chats: List[Dict[str, Any]], contacts: List[Dict[str, Any]],
                 VALUES (?, ?, ?, COALESCE(?, 0), '', ?, ?, ?)
                 ON CONFLICT(jid) DO UPDATE SET
                     name = CASE 
-                        WHEN excluded.name IS NOT NULL AND excluded.name != '' AND NOT excluded.name GLOB '[0-9]*' AND NOT excluded.name LIKE 'Usuario%' THEN excluded.name 
+                        WHEN excluded.name IS NOT NULL AND excluded.name != '' AND excluded.name != 'Grupo' AND NOT excluded.name GLOB '[0-9]*' AND NOT excluded.name LIKE 'Usuario%' THEN excluded.name
                         ELSE chats.name 
                     END,
                     phone = COALESCE(excluded.phone, chats.phone),
@@ -761,8 +761,10 @@ def update_chat_avatar(jid: str, avatar_path: str):
         conn.commit()
 
 
-# Solo se muestran chats individuales: los grupos, comunidades, canales y listas de difusión se ocultan
+# Todos muestra los chats individuales y los grupos van en su pestaña; comunidades, canales y difusiones se ocultan
 INDIVIDUAL_CHAT_SQL = "(jid LIKE '%@s.whatsapp.net' OR jid LIKE '%@lid')"
+GROUP_CHAT_SQL = "jid LIKE '%@g.us'"
+VISIBLE_CHAT_SQL = f"({INDIVIDUAL_CHAT_SQL} OR {GROUP_CHAT_SQL})"
 
 
 def get_chats_count() -> int:
@@ -774,25 +776,29 @@ def get_chats_count() -> int:
 
 
 def get_total_unread_count() -> int:
-    """Retorna la cantidad total de mensajes no leídos sumados en los chats individuales."""
+    """Retorna la cantidad total de mensajes no leídos sumados en los chats individuales y los grupos."""
     with db_conn() as conn:
         cursor = conn.cursor()
-        cursor.execute(f"SELECT COALESCE(SUM(unread_count), 0) FROM chats WHERE {INDIVIDUAL_CHAT_SQL}")
+        cursor.execute(f"SELECT COALESCE(SUM(unread_count), 0) FROM chats WHERE {VISIBLE_CHAT_SQL}")
         row = cursor.fetchone()
         return int(row[0]) if row else 0
 
 
 def get_chats(search: Optional[str] = None, filter_unread: bool = False, limit: int = 40, offset: int = 0,
-              include_hidden: bool = False) -> List[Dict[str, Any]]:
+              include_hidden: bool = False, groups_only: bool = False) -> List[Dict[str, Any]]:
     """Obtiene la lista de chats ordenados por actividad reciente con paginación de alto rendimiento.
-    Por defecto solo devuelve chats individuales; include_hidden=True suma grupos y otros."""
+    Sin filtros devuelve los individuales; los sin leer y las búsquedas también abarcan los grupos.
+    groups_only=True deja solo los grupos; include_hidden=True suma además canales y difusiones."""
     with db_conn() as conn:
         cursor = conn.cursor()
         query = "SELECT * FROM chats WHERE 1=1"
         params: list = []
 
-        if not include_hidden:
-            query += f" AND {INDIVIDUAL_CHAT_SQL}"
+        if groups_only:
+            query += f" AND {GROUP_CHAT_SQL}"
+        elif not include_hidden:
+            everywhere = filter_unread or bool(search and search.strip())
+            query += f" AND {VISIBLE_CHAT_SQL if everywhere else INDIVIDUAL_CHAT_SQL}"
 
         if filter_unread:
             query += " AND unread_count > 0"

@@ -340,10 +340,17 @@ class GatewayManager:
         sticker_path: Optional[str] = None,
         quoted: Optional[Dict[str, Any]] = None,
         audio_seconds: Optional[float] = None,
-        audio_waveform: Optional[list] = None
+        audio_waveform: Optional[list] = None,
+        at: Optional[int] = None,
+        chat_name: Optional[str] = None,
+        quoted_text: Optional[str] = None,
+        quoted_sender: Optional[str] = None,
+        consume: bool = False
     ) -> Dict[str, Any]:
         """`quoted` = {message_id, from_me, participant, text}: envía el mensaje como respuesta a otro.
-        `audio_seconds` / `audio_waveform` (0..100): duración y onda que verá el destinatario de una nota de voz."""
+        `audio_seconds` / `audio_waveform` (0..100): duración y onda que verá el destinatario de una nota de voz.
+        Con `at` (epoch en segundos) no se envía: queda programado en el gateway. `chat_name`, `quoted_text` y
+        `quoted_sender` son para mostrarlo; `consume` mueve el archivo en vez de copiarlo."""
         payload: Dict[str, Any] = {"to": to, "text": text}
         if quoted:
             payload["quoted"] = quoted
@@ -374,6 +381,10 @@ class GatewayManager:
                 if payload.get(key) and os.path.isfile(payload[key]):
                     size = max(size, os.path.getsize(payload[key]))
             timeout = max(25, min(1800, 60 + size / (1024 * 1024) * 15))
+            if at:
+                payload.update(at=int(at), chat_name=chat_name, quoted_text=quoted_text, quoted_sender=quoted_sender,
+                               consume=consume)
+                return self._json_call("POST", "message-schedule", payload, timeout=timeout)
             r = _http.post(f"{GATEWAY_URL}/send", json=payload, timeout=timeout)
             if r.status_code == 200:
                 return r.json()
@@ -508,8 +519,30 @@ class GatewayManager:
         return self._json_call("POST", "status-schedule/remove", {"id": item_id})
 
     def pending_scheduled_count(self) -> int:
-        res = self.list_scheduled_statuses()
-        return sum(1 for s in res.get("items", []) if s.get("state") in ("pending", "sending"))
+        """Estados y mensajes que el gateway todavía tiene que enviar."""
+        items = self.list_scheduled_statuses().get("items", []) + self.list_scheduled_messages().get("items", [])
+        return sum(1 for s in items if s.get("state") in ("pending", "sending"))
+
+    # ── Mensajes programados (se crean con send_message(at=...); la cola vive en el gateway) ──
+
+    def list_scheduled_messages(self) -> Dict[str, Any]:
+        """Devuelve {success, items: [{id, type, to, chat_name, text, source_name, at, state, error...}]}."""
+        return self._json_call("GET", "message-schedule", timeout=5)
+
+    def update_scheduled_message(self, item_id: str, at: Optional[int] = None,
+                                 text: Optional[str] = None) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"id": item_id}
+        if at:
+            payload["at"] = int(at)
+        if text is not None:
+            payload["text"] = text
+        return self._json_call("POST", "message-schedule/update", payload)
+
+    def cancel_scheduled_message(self, item_id: str) -> Dict[str, Any]:
+        return self._json_call("POST", "message-schedule/cancel", {"id": item_id})
+
+    def remove_scheduled_message(self, item_id: str) -> Dict[str, Any]:
+        return self._json_call("POST", "message-schedule/remove", {"id": item_id})
 
     # ── Mis estados activos (últimas 24 h) ──
 

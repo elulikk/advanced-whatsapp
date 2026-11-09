@@ -30,6 +30,9 @@ object AppState {
     /** Sube cada vez que aparece o se borra un estado de un contacto: las pantallas vuelven a pedir la lista. */
     val statusEvents = MutableStateFlow(0)
 
+    /** Sube cada vez que cambia la cola de mensajes programados. */
+    val scheduledEvents = MutableStateFlow(0)
+
     /** Cuántas veces se cortó un intento de vinculación: el código que se estaba mostrando ya no sirve. */
     val pairingCuts = MutableStateFlow(0)
 
@@ -59,6 +62,8 @@ object AppState {
     }
 
     fun statusChanged() = statusEvents.update { it + 1 }
+
+    fun scheduledChanged() = scheduledEvents.update { it + 1 }
 
     fun updatePresence(d: JSONObject) {
         val jid = d.optString("chat_jid").ifEmpty { return }

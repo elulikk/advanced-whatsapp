@@ -41,12 +41,14 @@ Gradle baja solo el NDK y CMake.
   responder, `GatewayService` lo mata para que se reinicie.
 - **Seguridad**: gateway y webhook escuchan solo en `127.0.0.1`, pero otras apps del celular alcanzan esos puertos: todo exige un
   token aleatorio, también `/status`. Los datos y las claves de IA quedan en la carpeta privada de la app, sin copia de seguridad.
+- **Optimización**: la variante release pasa por R8. Lo que se llama por nombre desde código nativo necesita una regla en
+  `app/proguard-rules.pro`; para leer errores de esa variante hace falta `app/build/outputs/mapping/release/mapping.txt`.
 - **Datos separados**: la app tiene su propia sesión y base; no comparte chats, notas ni análisis con la PC.
 
 ## Limitaciones de esta versión
 
-- Sin tags. Los estados de los contactos se pueden ver, pero todavía no se publican desde el celular. Como en la PC, los grupos no
-  se muestran.
+- Sin tags. Los estados de los contactos se pueden ver, pero todavía no se publican desde el celular.
+- Las pestañas (Marketplaces y las que crees) se guardan solo en el celular. De los grupos no se bajan las fotos de perfil.
 - La cámara abre la app de cámara del celular, por eso la app no pide ese permiso. Solo saca fotos: los videos se eligen de la galería.
 - Las llamadas solo avisan: se atienden en la app oficial.
 - Firmada con la clave de depuración de la PC que compila: sirve para instalar directo, no para Play Store. Compilar desde otra PC
