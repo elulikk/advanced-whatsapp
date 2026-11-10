@@ -1035,7 +1035,10 @@ class StatusPanel(QWidget):
             finally:
                 QApplication.restoreOverrideCursor()
             if res.get("success"):
-                os.startfile(res["media_path"])
+                try:
+                    os.startfile(res.get("media_path") or "")
+                except (OSError, AttributeError) as e:
+                    QMessageBox.warning(self, "Estados", f"No se pudo abrir el archivo.\n\n{e}")
             else:
                 QMessageBox.warning(self, "Estados", res.get("error") or "No se pudo abrir el archivo.")
             return

@@ -1,6 +1,7 @@
 import hmac
 import json
 import threading
+import time
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from PySide6.QtCore import QObject, Signal
 
@@ -45,18 +46,32 @@ class _Server(ThreadingHTTPServer):
 
 class WebhookHandler(BaseHTTPRequestHandler):
     def do_POST(self):
-        if not hmac.compare_digest(self.headers.get(TOKEN_HEADER, ""), _TOKEN):
+        # Bytes y no str: compare_digest lanza TypeError con caracteres no ASCII en el encabezado
+        if not hmac.compare_digest(self.headers.get(TOKEN_HEADER, "").encode("utf-8", "replace"),
+                                   _TOKEN.encode("utf-8")):
+            try:   # vaciar el cuerpo (acotado): cerrar con datos sin leer hace que el cliente reciba un RST en vez del 401
+                self.rfile.read(min(max(0, int(self.headers.get("Content-Length") or 0)), 1 << 20))
+            except (ValueError, OSError):
+                pass
             self.send_response(401)
+            self.send_header("Content-Length", "0")
             self.end_headers()
             return
 
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length).decode("utf-8")
+        try:
+            content_length = max(0, int(self.headers.get("Content-Length") or 0))
+        except ValueError:
+            self.send_response(400)
+            self.end_headers()
+            return
+        body = self.rfile.read(content_length).decode("utf-8", "replace")
 
         try:
             data = json.loads(body)
         except Exception:
             data = {}
+        if not isinstance(data, dict):
+            data = {}   # un JSON que no es un objeto (lista, número…) se trata como vacío
 
         if self.path == "/api/whatsapp/incoming":
             try:
@@ -73,7 +88,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 media_raw = data.get("media_raw")
                 quoted_text = data.get("quoted_text")
                 quoted_sender = data.get("quoted_sender")
-                timestamp = data.get("timestamp")
+                timestamp = data.get("timestamp") or int(time.time())   # NOT NULL en la base
 
                 if chat_jid and msg_id:
                     # Guardar contacto solo si no es el propio usuario
@@ -295,7 +310,6 @@ class WebhookServer:
             return
 
         # Si el puerto quedó tomado un instante (cierre anterior), se reintenta unos segundos
-        import time
         last = None
         for _ in range(10):
             try:

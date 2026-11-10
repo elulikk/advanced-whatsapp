@@ -49,9 +49,18 @@ if (!fs.existsSync(AVATARS_DIR)) fs.mkdirSync(AVATARS_DIR, { recursive: true });
 
 // Logger
 const logStream = fs.createWriteStream(LOG_FILE, { flags: 'a' });
+logStream.on('error', () => {});
+process.stdout.on('error', () => {});   // pipe cerrado (la app ya no lee): sin esto cada log reintentaba y fallaba en bucle
+function logArg(a) {
+    if (a instanceof Error) return a.stack || a.message;   // JSON.stringify(Error) daba "{}"
+    if (a && typeof a === 'object') {
+        try { return JSON.stringify(a); } catch (_) { return String(a); }
+    }
+    return String(a);
+}
 function writeLog(...args) {
     const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
-    const msg = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
+    const msg = args.map(logArg).join(' ');
     const line = `[${timestamp}] ${msg}\n`;
     try { logStream.write(line); } catch (_) {}
     try { process.stdout.write(line); } catch (_) {}
@@ -359,7 +368,8 @@ async function processAvatarQueue() {
             if (url) {
                 const cleanName = cleanJid.replace(/[@:]/g, '_');
                 const filePath = path.join(AVATARS_DIR, `${cleanName}.jpg`);
-                const res = await fetch(url);
+                const res = await fetch(url, { signal: AbortSignal.timeout(20000) });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 const buf = await res.arrayBuffer();
                 fs.writeFileSync(filePath, Buffer.from(buf));
                 console.log(`[Baileys] 📸 Foto descargada: ${cleanJid}`);
@@ -628,10 +638,16 @@ async function downloadWithReupload(waMessage) {
         const expired = [403, 404, 410].includes(status) || /status code 4(03|04|10)|Failed to fetch stream/i.test(err?.message || '');
         if (!expired || !sock || connectionStatus !== 'connected' || !sock.updateMediaMessage) throw err;
         console.log(`[Baileys] Archivo vencido en el servidor (${err.message}); se le pide al celular que lo vuelva a subir...`);
-        const updated = await Promise.race([
-            sock.updateMediaMessage(waMessage),
-            new Promise((_, rej) => setTimeout(() => rej(new Error('El celular no respondió (tiene que estar con internet)')), 30000))
-        ]);
+        let timer;
+        let updated;
+        try {
+            updated = await Promise.race([
+                sock.updateMediaMessage(waMessage),
+                new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('El celular no respondió (tiene que estar con internet)')), 30000); })
+            ]);
+        } finally {
+            clearTimeout(timer);
+        }
         return await downloadMediaMessage(updated, 'buffer', {});
     }
 }
@@ -660,6 +676,7 @@ function notifyConnectionState(status, extra = {}) {
 // y se reenvía en orden apenas la app vuelve a responder. Antes, tras 5 intentos el mensaje se perdía.
 const OUTBOX_FILE = path.join(USER_DATA_DIR, 'outbox.json');
 const OUTBOX_MAX = 5000;
+const OUTBOX_MAX_REJECTS = 30;   // respuestas de error seguidas (unos 5 min) antes de descartar un aviso
 let outbox = [];
 let outboxFlushing = false;
 try {
@@ -677,8 +694,10 @@ function saveOutbox() {
     }
 }
 
-async function postToPython(url, payload, attempts = 3) {
+// info.httpStatus queda con el código HTTP de la última respuesta (0 = la app no respondió)
+async function postToPython(url, payload, attempts = 3, info = {}) {
     for (let attempt = 1; attempt <= attempts; attempt++) {
+        info.httpStatus = 0;
         try {
             const r = await fetch(url, {
                 method: 'POST',
@@ -686,6 +705,7 @@ async function postToPython(url, payload, attempts = 3) {
                 body: JSON.stringify(payload),
                 signal: AbortSignal.timeout(30000)
             });
+            info.httpStatus = r.status;
             if (!r.ok) throw new Error(`HTTP ${r.status}`);
             return true;
         } catch (err) {
@@ -724,7 +744,22 @@ async function flushOutbox() {
         let sent = 0;
         while (outbox.length) {
             const item = outbox[0];
-            if (!(await postToPython(item.url, item.payload, 1))) break;
+            const info = {};
+            if (!(await postToPython(item.url, item.payload, 1, info))) {
+                // La app respondió con error: si es un rechazo definitivo (o se repite demasiado) se descarta
+                // ese aviso; si no, bloquearía para siempre todo lo que viene detrás. Sin respuesta = se espera.
+                const st = info.httpStatus;
+                if (st > 0 && st !== 401) {
+                    item.rejects = (item.rejects || 0) + 1;
+                    if ([400, 404, 413, 422].includes(st) || item.rejects >= OUTBOX_MAX_REJECTS) {
+                        console.error(`[Outbox] Se descarta un aviso para ${item.url.split('/').pop()} (la app respondió HTTP ${st}, intento ${item.rejects}).`);
+                        outbox.shift();
+                        saveOutbox();
+                        continue;
+                    }
+                }
+                break;
+            }
             outbox.shift();
             sent++;
             if (sent % 25 === 0) saveOutbox();
@@ -1564,14 +1599,14 @@ function reportScheduledMessage(item) {
     deliverReliably(`${PYTHON_API}/scheduled`, {
         id: item.id, state: item.state, to: item.to, chat_name: item.chat_name, type: item.type,
         text: item.text, source_name: item.source_name, at: item.at, error: item.error || null
-    });
+    }).catch(err => console.error('[Programados] Error avisando a la app:', err.message));
 }
 
 async function runScheduledMessage(item) {
     item.state = 'sending';
     item.attempts = (item.attempts || 0) + 1;
     // Un id fijo por mensaje: si un reintento repite un envío que sí había salido, WhatsApp no lo muestra dos veces
-    item.wa_id = item.wa_id || generateMessageIDV2(sock.user?.id);
+    item.wa_id = item.wa_id || generateMessageIDV2(sock?.user?.id);
     saveMessageSchedule();
     try {
         const body = { ...item.send, to: item.to, text: item.text };
@@ -1600,7 +1635,7 @@ async function runScheduledMessage(item) {
             quoted_sender: item.quoted_sender || null,
             timestamp: now,
             is_group: item.to.endsWith('@g.us')
-        });
+        }).catch(err => console.error('[Programados] Error avisando el envío a la app:', err.message));
     } catch (e) {
         item.error = e.message || String(e);
         item.retry_at = Math.floor(Date.now() / 1000) + SCHEDULE_RETRY_DELAY;
@@ -2099,7 +2134,7 @@ app.post('/message-schedule', async (req, res) => {
         const mediaKey = MESSAGE_MEDIA_KEYS.find(k => body[k]);
         const type = mediaKey ? mediaKey.replace('_path', '') : 'text';
         const now = Math.floor(Date.now() / 1000);
-        if (!body.to) return res.status(400).json({ error: 'Falta el destinatario' });
+        if (!body.to || typeof body.to !== 'string') return res.status(400).json({ error: 'Falta el destinatario' });
         if (type === 'text' && !text) return res.status(400).json({ error: 'El mensaje está vacío' });
         if (!(Number(body.at) > now)) return res.status(400).json({ error: 'Elegí una fecha y hora futuras' });
 
@@ -2117,8 +2152,9 @@ app.post('/message-schedule', async (req, res) => {
             if (!moved) await fs.promises.copyFile(source, storedPath);
             send[mediaKey] = storedPath;
         }
+        const to = body.to.includes('@') ? body.to : `${body.to.replace(/\D/g, '')}@s.whatsapp.net`;
         const item = {
-            id, type, to: body.to,
+            id, type, to,
             chat_name: body.chat_name || null,
             text,
             media_path: storedPath,
@@ -2472,7 +2508,8 @@ app.post('/media/download', async (req, res) => {
             ext = (fileName.split('.').pop() || 'bin').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) || 'bin';
         }
 
-        const mediaPath = path.join(MEDIA_DIR, `media_${message_id}.${ext}`);
+        const safeId = String(message_id).replace(/[^\w.-]/g, '_');
+        const mediaPath = path.join(MEDIA_DIR, `media_${safeId}.${ext}`);
         fs.writeFileSync(mediaPath, buffer);
         res.json({ success: true, media_path: mediaPath });
     } catch (e) {
@@ -2481,11 +2518,26 @@ app.post('/media/download', async (req, res) => {
     }
 });
 
+// Los estados se guardan con un retraso de 1 s: al apagar se escriben ya para no perder los últimos
+function saveBeforeExit() {
+    saveOutbox();
+    try { fs.writeFileSync(MY_STATUS_FILE, JSON.stringify(myStatuses), 'utf-8'); } catch (_) {}
+    try { fs.writeFileSync(CONTACT_STATUS_FILE, JSON.stringify(contactStatuses), 'utf-8'); } catch (_) {}
+}
+
 app.post('/shutdown', (req, res) => {
     res.json({ message: 'Apagando gateway...' });
     setTimeout(() => {
+        saveBeforeExit();
         process.exit(0);
     }, 500);
+});
+
+// Cuerpo malformado o demasiado grande (express.json): 400/413 en JSON, sin la traza de Express
+app.use((err, req, res, next) => {
+    if (res.headersSent) return next(err);
+    const status = err?.status || err?.statusCode || 500;
+    res.status(status).json({ error: status === 413 ? 'Cuerpo demasiado grande' : (status < 500 ? 'Solicitud inválida' : 'Error interno') });
 });
 
 // Un error suelto de Baileys (socket, descifrado) no debe tumbar el gateway entero
@@ -2502,7 +2554,7 @@ if (PARENT_PID > 0) {
         } catch (e) {
             if (e.code === 'ESRCH') {
                 console.log('[Advanced WhatsApp Gateway] La app ya no está abierta: apagando el gateway.');
-                saveOutbox();
+                saveBeforeExit();
                 process.exit(0);
             }
         }

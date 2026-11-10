@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QSplitter, QStackedWidget, QApplication,
     QSystemTrayIcon, QMenu, QMessageBox
 )
-from PySide6.QtCore import Qt, QTimer, QEvent, QSettings, QRectF
+from PySide6.QtCore import Qt, QTimer, QEvent, QSettings, QRectF, Signal
 from PySide6.QtGui import QShortcut, QKeySequence, QIcon, QPixmap, QPainter, QColor, QFont
 
 from app.config import APP_NAME, get_pref, set_pref
@@ -27,6 +27,8 @@ from app.ui.effects import WindowPolisher
 
 class MainWindow(QMainWindow):
     """Ventana Principal de Advanced WhatsApp - WhatsApp Desktop Oficial."""
+
+    _pending_count_ready = Signal(int)   # recuento de envíos programados calculado en segundo plano
 
     def __init__(self, start_hidden: bool = False):
         super().__init__()
@@ -89,6 +91,8 @@ class MainWindow(QMainWindow):
 
         # Estados programados: evitar la suspensión mientras haya pendientes
         self._keep_awake_on = False
+        self._keep_awake_busy = False
+        self._pending_count_ready.connect(self._apply_keep_awake)
         self._awake_timer = QTimer(self)
         self._awake_timer.setInterval(60000)
         self._awake_timer.timeout.connect(self._update_keep_awake)
@@ -165,15 +169,20 @@ class MainWindow(QMainWindow):
 
     def restore_geometry_and_show(self):
         """Tamaño, posición y ancho de la lista de chats como se dejaron la última vez."""
-        try:
-            geo = self._settings.value("window/geometry")
-            if geo is not None:
-                self.restoreGeometry(geo)
-            split = self._settings.value("window/splitter")
-            if split is not None:
-                self.splitter.restoreState(split)
-        except Exception:
-            pass
+        # Solo la primera vez: al volver de la bandeja la ventana oculta conserva su estado (p. ej. maximizada).
+        # Reaplicar la geometría guardada (la normal, porque maximizada no se guarda) la achicaba por dentro
+        # mientras Windows la mostraba maximizada: contenido chico sobre fondo blanco hasta moverla.
+        if not getattr(self, "_geometry_restored", False):
+            self._geometry_restored = True
+            try:
+                geo = self._settings.value("window/geometry")
+                if geo is not None:
+                    self.restoreGeometry(geo)
+                split = self._settings.value("window/splitter")
+                if split is not None:
+                    self.splitter.restoreState(split)
+            except Exception:
+                pass
         if self._settings.value("window/maximized", False) in (True, "true"):
             self.showMaximized()
         else:
@@ -547,9 +556,26 @@ class MainWindow(QMainWindow):
     def _update_keep_awake(self):
         """Pide a Windows que no se suspenda mientras haya envíos programados (como un reproductor de video).
         No impide apagar la PC ni la suspensión al cerrar la tapa de una notebook."""
-        if sys.platform != "win32":
+        if sys.platform != "win32" or self._keep_awake_busy:
             return
-        want = self.gateway.pending_scheduled_count() > 0
+        self._keep_awake_busy = True
+        gateway = self.gateway
+
+        def work():   # la consulta HTTP no debe frenar la interfaz si el gateway está caído o lento
+            try:
+                count = gateway.pending_scheduled_count()
+            except Exception:
+                count = 0
+            try:
+                self._pending_count_ready.emit(count)
+            except RuntimeError:   # la ventana se cerró antes de terminar
+                pass
+
+        threading.Thread(target=work, daemon=True, name="advancedwhatsapp-keepawake").start()
+
+    def _apply_keep_awake(self, count: int):
+        self._keep_awake_busy = False
+        want = count > 0
         if want == self._keep_awake_on:
             return
         import ctypes
@@ -671,6 +697,7 @@ class MainWindow(QMainWindow):
             if self._tray:
                 self._tray.hide()
             self.notifications.close()
+            self.settings_panel.stop_threads()
             self.webhook_server.stop()
             self.gateway.stop()
         except Exception as e:

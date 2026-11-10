@@ -566,7 +566,17 @@ class SettingsPanel(QWidget):
         else:
             QMessageBox.critical(self, "Error", "No se pudo guardar el archivo de configuración.")
 
+    def stop_threads(self, wait_ms: int = 1500):
+        """Al cerrar la app: espera a los hilos de red; un QThread en marcha que se destruye aborta el proceso."""
+        for name in ("thread_models", "thread_test"):
+            t = getattr(self, name, None)
+            if t is not None and t.isRunning():
+                t.wait(wait_ms)
+
     def refrescar_modelos(self):
+        prev = getattr(self, "thread_models", None)
+        if prev is not None and prev.isRunning():
+            return   # ya hay una búsqueda en curso: reemplazar el QThread en marcha lo destruiría
         self.btn_refresh_models.setEnabled(False)
         self.btn_refresh_models.setText("Buscando…")
 
@@ -645,6 +655,9 @@ class SettingsPanel(QWidget):
             QMessageBox.warning(self, "API Key Requerida", f"Por favor ingresa la API Key de {provider} antes de probar.")
             return
 
+        prev = getattr(self, "thread_test", None)
+        if prev is not None and prev.isRunning():
+            return   # prueba en curso: reemplazar el QThread en marcha lo destruiría
         self._set_result(f"Conectando con {provider} ({model})…", "busy")
 
         self.thread_test = TestConnectionThread(self.ai_service, provider, key, model)

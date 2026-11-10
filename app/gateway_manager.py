@@ -234,18 +234,21 @@ class GatewayManager:
                 time.sleep(interval)
                 if self._stopping:
                     break
-                died = self.process is not None and self.process.poll() is not None
+                proc = self.process   # copia local: stop() puede dejar self.process en None en cualquier momento
+                died = proc is not None and proc.poll() is not None
                 if not died and self.get_status().get("online"):
                     failures = 0
                     continue
                 failures += 1
                 # El proceso terminó, o dos chequeos seguidos sin respuesta: se reinicia
                 if died or failures >= 2:
-                    code = self.process.poll() if self.process else None
+                    if self._stopping:
+                        break
+                    code = proc.poll() if proc else None
                     print(f"[Advanced WhatsApp Gateway] El gateway no responde (código {code}); reiniciando…")
-                    if self.process is not None and not died:
+                    if proc is not None and not died:
                         try:
-                            self.process.kill()
+                            proc.kill()
                         except Exception:
                             pass
                     self.process = None

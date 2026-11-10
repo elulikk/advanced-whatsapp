@@ -637,7 +637,7 @@ def save_or_update_contact(jid: str, name: str, phone: Optional[str] = None) -> 
                 phone = COALESCE(?, phone),
                 updated_at = CURRENT_TIMESTAMP
             WHERE jid = ? OR jid LIKE ?
-        """, (clean_name, clean_phone, jid, f"{jid.split('@')[0]}%"))
+        """, (clean_name, clean_phone, jid, f"{jid.split('@')[0]}@%"))
 
         # Si el chat no existía, crearlo
         cursor.execute("SELECT jid FROM chats WHERE jid = ?", (jid,))
@@ -660,8 +660,8 @@ def get_all_contacts(search: Optional[str] = None) -> List[Dict[str, Any]]:
                 COALESCE(c.avatar_path, ch.avatar_path) as avatar_path
             FROM contacts c
             LEFT JOIN chats ch ON c.jid = ch.jid
-            WHERE (c.name IS NOT NULL AND c.name != '' AND c.name NOT LIKE 'Usuario%' AND c.name != 'Yo' AND c.name != 'Mag Tecnologia')
-               OR (ch.name IS NOT NULL AND ch.name != '' AND ch.name NOT LIKE 'Usuario%' AND ch.name != 'Mag Tecnologia (Tú)')
+            WHERE ((c.name IS NOT NULL AND c.name != '' AND c.name NOT LIKE 'Usuario%' AND c.name != 'Yo' AND c.name != 'Mag Tecnologia')
+               OR (ch.name IS NOT NULL AND ch.name != '' AND ch.name NOT LIKE 'Usuario%' AND ch.name != 'Mag Tecnologia (Tú)'))
         """
         params = []
         if search and search.strip():
@@ -714,7 +714,7 @@ def resolve_phone(chat: Dict[str, Any]) -> str:
         return "".join(ch for ch in mapped.split("@")[0] if ch.isdigit())
     with db_conn() as conn:
         row = conn.execute(
-            "SELECT phone FROM contacts WHERE jid = ? OR jid LIKE ?", (jid, f"{base}%")
+            "SELECT phone FROM contacts WHERE jid = ? OR jid LIKE ?", (jid, f"{base}@%")
         ).fetchone()
     return "".join(ch for ch in (row["phone"] or "") if ch.isdigit()) if row else ""
 
@@ -756,8 +756,8 @@ def update_chat_avatar(jid: str, avatar_path: str):
     """Actualiza la foto de perfil en el chat y en contactos."""
     with db_conn() as conn:
         cursor = conn.cursor()
-        cursor.execute("UPDATE chats SET avatar_path = ? WHERE jid = ? OR jid LIKE ?", (avatar_path, jid, f"{jid.split('@')[0]}%"))
-        cursor.execute("UPDATE contacts SET avatar_path = ? WHERE jid = ? OR jid LIKE ?", (avatar_path, jid, f"{jid.split('@')[0]}%"))
+        cursor.execute("UPDATE chats SET avatar_path = ? WHERE jid = ? OR jid LIKE ?", (avatar_path, jid, f"{jid.split('@')[0]}@%"))
+        cursor.execute("UPDATE contacts SET avatar_path = ? WHERE jid = ? OR jid LIKE ?", (avatar_path, jid, f"{jid.split('@')[0]}@%"))
         conn.commit()
 
 

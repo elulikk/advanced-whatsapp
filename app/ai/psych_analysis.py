@@ -362,11 +362,12 @@ def ask_llm(prompt: str, provider: Optional[str] = None, model: Optional[str] = 
     """Envía el prompt al LLM elegido, sin fallback a otros (bloqueante; usar en un hilo)."""
     svc = AIService()
     model = model or None
-    if provider == "Groq":
+    prov = (provider or "").strip().lower()
+    if prov == "groq":
         return svc.get_groq_response(prompt, model=model, timeout=AI_TIMEOUT)
-    if provider == "OpenAI":
+    if prov == "openai":
         return svc.get_openai_response(prompt, model=model, timeout=AI_TIMEOUT)
-    if provider == "Claude":
+    if prov in ("claude", "anthropic"):
         return svc.get_anthropic_response(prompt, model=model, timeout=AI_TIMEOUT)
     return svc.get_gemini_response(prompt, model_name=model)
 
@@ -374,7 +375,8 @@ def ask_llm(prompt: str, provider: Optional[str] = None, model: Optional[str] = 
 # ─── Persistencia: una carpeta por sujeto ────────────────────────────────────
 
 def _safe(jid: str) -> str:
-    return re.sub(r"[^\w.-]", "_", (jid or "desconocido").split("@")[0]) or "desconocido"
+    # sin puntos en los extremos: ".." apuntaría fuera de ANALYSIS_DIR
+    return re.sub(r"[^\w.-]", "_", (jid or "desconocido").split("@")[0]).strip(".") or "desconocido"
 
 
 # Encabezado que la app ponía a cada análisis o respuesta dentro de notas.txt (versiones anteriores)
@@ -386,7 +388,7 @@ def _split_legacy_notes(path: str) -> None:
     primer encabezado con fecha) queda en notas.txt y el resto pasa a historial.txt."""
     notes = os.path.join(path, "notas.txt")
     try:
-        with open(notes, "r", encoding="utf-8") as f:
+        with open(notes, "r", encoding="utf-8", errors="replace") as f:
             raw = f.read()
     except OSError:
         return
@@ -426,7 +428,7 @@ def analysis_path(jid: str, focus: str) -> str:
 
 def load_notes(jid: str) -> str:
     try:
-        with open(notes_path(jid), "r", encoding="utf-8") as f:
+        with open(notes_path(jid), "r", encoding="utf-8", errors="replace") as f:
             return f.read()
     except OSError:
         return ""
@@ -443,7 +445,7 @@ def history_path(jid: str) -> str:
 
 def load_history(jid: str) -> str:
     try:
-        with open(history_path(jid), "r", encoding="utf-8") as f:
+        with open(history_path(jid), "r", encoding="utf-8", errors="replace") as f:
             return f.read()
     except OSError:
         return ""
@@ -485,7 +487,7 @@ def save_question(jid: str, focus: str, question: str, answer: str) -> None:
 
 def _read_analysis(path: str) -> Optional[Dict[str, str]]:
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
             raw = f.read()
     except OSError:
         return None

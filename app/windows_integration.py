@@ -15,6 +15,7 @@ import base64
 import ctypes
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -258,11 +259,13 @@ def acquire_single_instance() -> bool:
     if not IS_WINDOWS:
         return True
     try:
-        kernel32 = ctypes.windll.kernel32
+        # use_last_error: ctypes guarda el error justo después de la llamada (GetLastError directo puede quedar pisado)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.CreateMutexW.restype = wintypes.HANDLE
+        kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
         name = "Local\\ADVANCEDWHATSAPP_SingleInstance" + (f"_{WEBHOOK_PORT}" if TEST_COPY else "")
         _mutex_handle = kernel32.CreateMutexW(None, False, name)
-        return kernel32.GetLastError() != 183   # ERROR_ALREADY_EXISTS
+        return ctypes.get_last_error() != 183   # ERROR_ALREADY_EXISTS
     except Exception:
         return True
 
@@ -332,9 +335,13 @@ while ($true) {
 """
 
 
+_XML_INVALID = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f￾￿]")
+
+
 def _xml(text: str) -> str:
-    return (str(text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            .replace('"', "&quot;"))
+    # Los caracteres de control no son válidos en XML: XmlDocument.LoadXml rechazaría todo el toast
+    return (_XML_INVALID.sub("", str(text or "")).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
 
 
 def _file_uri(path: Optional[str]) -> Optional[str]:
@@ -402,6 +409,7 @@ class Toaster:
                 line = line.strip()
                 if line.startswith("ready"):
                     self.ready = True
+                    self._failures = 0   # arrancó bien: fallos viejos no deben acumularse hasta apagar los toasts
                     # Setting: Enabled / DisabledForApplication / DisabledForUser / DisabledByGroupPolicy
                     self.disabled_by_user = "Disabled" in line
                     if self.disabled_by_user:
