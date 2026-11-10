@@ -51,6 +51,36 @@ def test_group_without_name_never_takes_sender_name():
     assert chat["name"] != "Carlos"
 
 
+def _chat_jids(**kw):
+    return {c["jid"] for c in db.get_chats(**kw)}
+
+
+def test_groups_stay_out_of_all_and_appear_in_their_tab():
+    _msg()
+    db.save_message("g4", "777@g.us", "5@s.whatsapp.net", "Carlos", False, "hola", int(time.time()), chat_name="Familia")
+    assert _chat_jids() == {"111@s.whatsapp.net"}
+    assert _chat_jids(groups_only=True) == {"777@g.us"}
+
+
+def test_unread_and_search_include_groups():
+    _msg()
+    db.save_message("g5", "777@g.us", "5@s.whatsapp.net", "Carlos", False, "hola", int(time.time()), chat_name="Familia")
+    assert _chat_jids(filter_unread=True) == {"111@s.whatsapp.net", "777@g.us"}
+    assert _chat_jids(search="Familia") == {"777@g.us"}
+    assert db.get_total_unread_count() == 2
+
+
+def test_channels_stay_hidden():
+    db.save_message("n1", "123@newsletter", "123@newsletter", "Canal", False, "hola", int(time.time()))
+    assert "123@newsletter" not in _chat_jids(filter_unread=True)
+
+
+def test_placeholder_does_not_replace_group_name():
+    db.save_sync_batch([{"jid": "777@g.us", "name": "Familia", "phone": None, "last_message_time": 0, "is_group": 1}], [], [])
+    db.save_sync_batch([{"jid": "777@g.us", "name": "Grupo", "phone": None, "last_message_time": 0, "is_group": 1}], [], [])
+    assert [c["name"] for c in db.get_chats(groups_only=True)] == ["Familia"]
+
+
 def test_sync_batch_without_unread_keeps_counter():
     _msg(); _msg("m2")
     db.save_sync_batch([{"jid": "111@s.whatsapp.net", "name": "Ana"}], [], [])

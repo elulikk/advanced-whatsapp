@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QSplitter, QStackedWidget, QApplication,
     QSystemTrayIcon, QMenu, QMessageBox
 )
-from PySide6.QtCore import Qt, QTimer, QEvent, QSettings, QRectF
+from PySide6.QtCore import Qt, QTimer, QEvent, QSettings, QRectF, Signal
 from PySide6.QtGui import QShortcut, QKeySequence, QIcon, QPixmap, QPainter, QColor, QFont
 
 from app.config import APP_NAME, get_pref, set_pref
@@ -27,6 +27,8 @@ from app.ui.effects import WindowPolisher
 
 class MainWindow(QMainWindow):
     """Ventana Principal de Advanced WhatsApp - WhatsApp Desktop Oficial."""
+
+    _pending_count_ready = Signal(int)   # recuento de envíos programados calculado en segundo plano
 
     def __init__(self, start_hidden: bool = False):
         super().__init__()
@@ -89,6 +91,8 @@ class MainWindow(QMainWindow):
 
         # Estados programados: evitar la suspensión mientras haya pendientes
         self._keep_awake_on = False
+        self._keep_awake_busy = False
+        self._pending_count_ready.connect(self._apply_keep_awake)
         self._awake_timer = QTimer(self)
         self._awake_timer.setInterval(60000)
         self._awake_timer.timeout.connect(self._update_keep_awake)
@@ -165,15 +169,20 @@ class MainWindow(QMainWindow):
 
     def restore_geometry_and_show(self):
         """Tamaño, posición y ancho de la lista de chats como se dejaron la última vez."""
-        try:
-            geo = self._settings.value("window/geometry")
-            if geo is not None:
-                self.restoreGeometry(geo)
-            split = self._settings.value("window/splitter")
-            if split is not None:
-                self.splitter.restoreState(split)
-        except Exception:
-            pass
+        # Solo la primera vez: al volver de la bandeja la ventana oculta conserva su estado (p. ej. maximizada).
+        # Reaplicar la geometría guardada (la normal, porque maximizada no se guarda) la achicaba por dentro
+        # mientras Windows la mostraba maximizada: contenido chico sobre fondo blanco hasta moverla.
+        if not getattr(self, "_geometry_restored", False):
+            self._geometry_restored = True
+            try:
+                geo = self._settings.value("window/geometry")
+                if geo is not None:
+                    self.restoreGeometry(geo)
+                split = self._settings.value("window/splitter")
+                if split is not None:
+                    self.splitter.restoreState(split)
+            except Exception:
+                pass
         if self._settings.value("window/maximized", False) in (True, "true"):
             self.showMaximized()
         else:
@@ -213,6 +222,8 @@ class MainWindow(QMainWindow):
         self.nav_rail.tab_changed.connect(self._on_tab_changed)
         self.nav_rail.qr_requested.connect(self._open_qr_dialog)
         self.nav_rail.self_analysis_requested.connect(self._open_self_analysis)
+        self.nav_rail.scheduled_requested.connect(self._open_scheduled)
+        self.chat_view_panel.scheduled_total_changed.connect(self.nav_rail.set_scheduled_badge)
         self.chat_list_panel.unread_total_changed.connect(self.nav_rail.set_unread_badge)
         self.chat_list_panel.unread_total_changed.connect(self._update_window_title)
         self.chat_list_panel.unread_total_changed.connect(self._update_unread_ui)
@@ -254,6 +265,7 @@ class MainWindow(QMainWindow):
         signals.contact_status.connect(self.status_panel.on_contact_status)
         signals.app_activate.connect(self.handle_uri)
         signals.read_elsewhere.connect(self._on_read_elsewhere)
+        signals.scheduled_changed.connect(self._on_scheduled_changed)
 
     def _check_initial_connection(self):
         st = self.gateway.get_status()
@@ -471,6 +483,7 @@ class MainWindow(QMainWindow):
         if status == "connected":
             self._presence_sent = None
             self._presence_timer.start()
+            self.chat_view_panel.refresh_scheduled()
         elif status == "logged_out":
             # Se desvinculó desde el celular: avisar y ofrecer el QR nuevo
             if self.isVisible() and not self.isMinimized():
@@ -479,6 +492,26 @@ class MainWindow(QMainWindow):
                 self.notifications.notify_simple(
                     "Se cerró la sesión de WhatsApp en Advanced WhatsApp",
                     "Tocá acá para volver a vincular con el código QR.", uri="advancedwhatsapp://link", tag="link", sound=True)
+
+    # ── Mensajes programados ──
+
+    def _open_scheduled(self):
+        from app.ui.scheduled_messages import ScheduledMessagesDialog
+        dlg = ScheduledMessagesDialog(self.gateway, parent=self)
+        dlg.exec()
+        dlg.deleteLater()
+        self.chat_view_panel.refresh_scheduled()
+
+    def _on_scheduled_changed(self, data: dict):
+        self.chat_view_panel.refresh_scheduled()
+        if data.get("state") not in ("failed", "expired"):
+            return
+        # Quien programó un mensaje confía en que salió: si no salió hay que avisarle aunque no esté mirando
+        preview = (data.get("text") or data.get("source_name") or "Mensaje").replace("\n", " ")[:80]
+        self.notifications.notify_simple(
+            f"No se envió tu mensaje programado a {data.get('chat_name') or 'un chat'}",
+            f"{preview}\n{data.get('error') or ''}".strip(),
+            uri=f"advancedwhatsapp://open?chat={data.get('to')}", tag=f"programado-{data.get('id')}", sound=True)
 
     # ── Contador de no leídos: título, barra de tareas y bandeja ──
 
@@ -518,14 +551,31 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(300, lambda: self._update_unread_ui(self._unread_total))
         QTimer.singleShot(1000, self._reregister_tray)
 
-    # ── Segundo plano: los estados programados necesitan que el gateway siga vivo ──
+    # ── Segundo plano: los estados y mensajes programados necesitan que el gateway siga vivo ──
 
     def _update_keep_awake(self):
-        """Pide a Windows que no se suspenda mientras haya estados por publicar (como un reproductor de video).
+        """Pide a Windows que no se suspenda mientras haya envíos programados (como un reproductor de video).
         No impide apagar la PC ni la suspensión al cerrar la tapa de una notebook."""
-        if sys.platform != "win32":
+        if sys.platform != "win32" or self._keep_awake_busy:
             return
-        want = self.gateway.pending_scheduled_count() > 0
+        self._keep_awake_busy = True
+        gateway = self.gateway
+
+        def work():   # la consulta HTTP no debe frenar la interfaz si el gateway está caído o lento
+            try:
+                count = gateway.pending_scheduled_count()
+            except Exception:
+                count = 0
+            try:
+                self._pending_count_ready.emit(count)
+            except RuntimeError:   # la ventana se cerró antes de terminar
+                pass
+
+        threading.Thread(target=work, daemon=True, name="advancedwhatsapp-keepawake").start()
+
+    def _apply_keep_awake(self, count: int):
+        self._keep_awake_busy = False
+        want = count > 0
         if want == self._keep_awake_on:
             return
         import ctypes
@@ -541,6 +591,7 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         menu.addAction("Abrir Advanced WhatsApp", self.show_from_background)
         menu.addAction("Estados", lambda: (self.show_from_background(), self.nav_rail.set_tab("status")))
+        menu.addAction("Mensajes programados", lambda: (self.show_from_background(), self._open_scheduled()))
         menu.addSeparator()
         self._act_notify = menu.addAction("Notificaciones activadas")
         self._act_notify.setCheckable(True)
@@ -582,7 +633,7 @@ class MainWindow(QMainWindow):
         self.hide()
         self._presence_timer.start()
         if pending:
-            msg = f"Sigue funcionando en segundo plano para publicar {pending} estado(s)."
+            msg = f"Sigue funcionando en segundo plano para hacer {pending} envío(s) programado(s)."
         elif not self._told_about_tray and not self._settings.value("tray/told", False):
             msg = "Advanced WhatsApp sigue abierto en la bandeja y te va a avisar de los mensajes nuevos."
             self._settings.setValue("tray/told", True)
@@ -599,7 +650,7 @@ class MainWindow(QMainWindow):
     def quit_app(self):
         pending = self.gateway.pending_scheduled_count()
         if pending and QMessageBox.question(
-            self, APP_NAME, f"Quedan {pending} estado(s) sin publicar. Si salís no se van a publicar.\n\n¿Salir igual?"
+            self, APP_NAME, f"Quedan {pending} envío(s) programado(s). Si salís no se van a hacer.\n\n¿Salir igual?"
         ) != QMessageBox.Yes:
             return
         self._quitting = True
@@ -618,8 +669,8 @@ class MainWindow(QMainWindow):
                 box = QMessageBox(self)
                 box.setIcon(QMessageBox.Question)
                 box.setWindowTitle(APP_NAME)
-                box.setText(f"Tenés {pending} estado(s) programado(s).")
-                box.setInformativeText("Si cerrás Advanced WhatsApp no se van a publicar. Podés dejarlo funcionando en la bandeja.")
+                box.setText(f"Tenés {pending} envío(s) programado(s).")
+                box.setInformativeText("Si cerrás Advanced WhatsApp no se van a hacer. Podés dejarlo funcionando en la bandeja.")
                 btn_tray = box.addButton("Dejar en la bandeja", QMessageBox.AcceptRole)
                 btn_quit = box.addButton("Cerrar igual", QMessageBox.DestructiveRole)
                 box.addButton("Cancelar", QMessageBox.RejectRole)
@@ -646,6 +697,7 @@ class MainWindow(QMainWindow):
             if self._tray:
                 self._tray.hide()
             self.notifications.close()
+            self.settings_panel.stop_threads()
             self.webhook_server.stop()
             self.gateway.stop()
         except Exception as e:

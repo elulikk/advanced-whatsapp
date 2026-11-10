@@ -11,6 +11,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -37,7 +38,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         GatewayService.start(this)
         if (Build.VERSION.SDK_INT >= 33) askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
-        pendingChat.value = intent.getStringExtra(Notifier.EXTRA_CHAT)
+        // Al girar el celular se recrea la actividad con el mismo intent: no hay que volver a abrir ese chat
+        if (savedInstanceState == null) pendingChat.value = intent.getStringExtra(Notifier.EXTRA_CHAT)
         setContent { AppTheme { AppNav(pendingChat.value) { pendingChat.value = null } } }
     }
 
@@ -90,13 +92,19 @@ private fun AppNav(pendingChat: String?, onChatOpened: () -> Unit) {
             ChatListScreen(
                 onOpen = { nav.navigate("chat/${Uri.encode(it)}") },
                 onSettings = { nav.navigate("settings") },
+                onStatuses = { nav.navigate("statuses") },
                 onLink = { nav.navigate("link") },
                 onNewChat = { nav.navigate("new") },
                 onSelfAnalysis = { nav.navigate("analysis/${Uri.encode(Psych.SELF_JID)}") },
+                onScheduled = { nav.navigate("scheduled") },
             )
+        }
+        composable("scheduled?chat={chat}", arguments = listOf(navArgument("chat") { type = NavType.StringType; nullable = true })) { e ->
+            ScheduledScreen(e.arguments?.getString("chat"), onBack = { nav.popBackStack() })
         }
         composable("link") { LinkScreen(onBack = { nav.popBackStack() }) }
         composable("settings") { SettingsScreen(onBack = { nav.popBackStack() }) }
+        composable("statuses") { StatusListScreen(onBack = { nav.popBackStack() }) }
         composable("new") {
             NewChatScreen(onBack = { nav.popBackStack() }, onOpen = { jid ->
                 nav.popBackStack()
@@ -105,7 +113,13 @@ private fun AppNav(pendingChat: String?, onChatOpened: () -> Unit) {
         }
         composable("chat/{jid}", arguments = listOf(navArgument("jid") { type = NavType.StringType })) { e ->
             val jid = e.arguments?.getString("jid").orEmpty()
-            ChatScreen(jid, onBack = { nav.popBackStack() }, onAnalysis = { nav.navigate("analysis/${Uri.encode(jid)}") })
+            // Tocar la notificación de otro chat reusa esta pantalla: sin key, el borrador pasaría al otro contacto
+            key(jid) {
+                ChatScreen(
+                    jid, onBack = { nav.popBackStack() }, onAnalysis = { nav.navigate("analysis/${Uri.encode(jid)}") },
+                    onScheduled = { nav.navigate("scheduled?chat=${Uri.encode(jid)}") },
+                )
+            }
         }
         composable("analysis/{jid}", arguments = listOf(navArgument("jid") { type = NavType.StringType })) { e ->
             AnalysisScreen(e.arguments?.getString("jid").orEmpty(), onBack = { nav.popBackStack() })

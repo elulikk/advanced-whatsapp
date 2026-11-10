@@ -3,7 +3,13 @@ package com.advancedwhatsapp.app
 import com.advancedwhatsapp.app.ai.MessageSummary
 import com.advancedwhatsapp.app.ai.Psych
 import com.advancedwhatsapp.app.ai.ReplyPolisher
+import com.advancedwhatsapp.app.data.ChatFilter
+import com.advancedwhatsapp.app.data.Db
 import com.advancedwhatsapp.app.data.Message
+import com.advancedwhatsapp.app.data.Photos
+import com.advancedwhatsapp.app.data.StatusContact
+import com.advancedwhatsapp.app.data.StatusItem
+import com.advancedwhatsapp.app.data.Statuses
 import com.advancedwhatsapp.app.ui.VoiceRecorder
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -11,6 +17,69 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AiLogicTest {
+    private fun status(id: String, type: String = "image", text: String = "", seconds: Int? = null, seen: Boolean = false) =
+        StatusItem(id, type, text, null, null, 1_700_000_000, seconds, null, type != "text", seen)
+
+    private fun contact(vararg items: StatusItem) =
+        StatusContact("54911", "54911@s.whatsapp.net", "Ana", null, items.toList(), items.count { !it.seen }, 1_700_000_000)
+
+    @Test
+    fun statusesStartAtTheFirstUnseen() {
+        assertEquals(1, Statuses.startIndex(contact(status("a", seen = true), status("b"), status("c"))))
+    }
+
+    @Test
+    fun statusesAllSeenStartFromTheBeginning() {
+        assertEquals(0, Statuses.startIndex(contact(status("a", seen = true), status("b", seen = true))))
+    }
+
+    @Test
+    fun statusDurationDependsOnItsType() {
+        assertEquals(6_000L, Statuses.durationMs(status("a")))
+        assertEquals(12_000L, Statuses.durationMs(status("a", "video", seconds = 12)))
+        assertEquals(30_000L, Statuses.durationMs(status("a", "audio")))
+        assertEquals(5_000L, Statuses.durationMs(status("a", "text", text = "x".repeat(18))))
+        assertEquals(14_000L, Statuses.durationMs(status("a", "text", text = "x".repeat(1000))))
+    }
+
+    @Test
+    fun inboxHidesTabsAndGroupsUntilYouSearch() {
+        val inbox = Db.filterSql(ChatFilter.Inbox, searching = false)
+        assertTrue("tab_id = 0" in inbox)
+        assertFalse("@g.us" in inbox)
+        val searching = Db.filterSql(ChatFilter.Inbox, searching = true)
+        assertFalse("tab_id" in searching)
+        assertTrue("@g.us" in searching)
+    }
+
+    @Test
+    fun unreadCoversEveryTab() {
+        val unread = Db.filterSql(ChatFilter.Unread, searching = false)
+        assertFalse("tab_id" in unread)
+        assertTrue("@g.us" in unread)
+    }
+
+    @Test
+    fun analysisOnlySeesIndividualChats() {
+        assertFalse("@g.us" in Db.filterSql(null, searching = false))
+    }
+
+    @Test
+    fun tabNamesCannotRepeatOrUseReservedOnes() {
+        val others = listOf("Marketplaces")
+        assertTrue(Db.isValidTabName("Trabajo", others))
+        assertFalse(Db.isValidTabName("  marketplaces ", others))
+        assertFalse(Db.isValidTabName("Grupos", others))
+        assertFalse(Db.isValidTabName("   ", others))
+    }
+
+    @Test
+    fun photoSampleKeepsAtLeastTheRequestedSide() {
+        assertEquals(1, Photos.sampleSize(1600, 1200, 1600))
+        assertEquals(2, Photos.sampleSize(4000, 3000, 1600))
+        assertEquals(4, Photos.sampleSize(3000, 6400, 1600))
+    }
+
     private fun msg(text: String, fromMe: Boolean = false, type: String = "text", transcript: String? = null) = Message(
         id = "x", chatJid = "1@s.whatsapp.net", senderJid = null, senderName = "Ana", fromMe = fromMe, text = text,
         mediaType = type, mediaPath = null, mediaRaw = null, quotedText = null, quotedSender = null,

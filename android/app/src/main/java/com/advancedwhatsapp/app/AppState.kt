@@ -1,6 +1,7 @@
 package com.advancedwhatsapp.app
 
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import org.json.JSONObject
 
 data class Connection(
@@ -25,6 +26,12 @@ data class Presence(val state: String, val lastSeen: Long?)
 object AppState {
     val connection = MutableStateFlow(Connection())
     val presence = MutableStateFlow<Map<String, Presence>>(emptyMap())
+
+    /** Sube cada vez que aparece o se borra un estado de un contacto: las pantallas vuelven a pedir la lista. */
+    val statusEvents = MutableStateFlow(0)
+
+    /** Sube cada vez que cambia la cola de mensajes programados. */
+    val scheduledEvents = MutableStateFlow(0)
 
     /** Cuántas veces se cortó un intento de vinculación: el código que se estaba mostrando ya no sirve. */
     val pairingCuts = MutableStateFlow(0)
@@ -53,6 +60,10 @@ object AppState {
         val cur = connection.value
         if (cur.status != "starting") connection.value = Connection(status = "disconnected")
     }
+
+    fun statusChanged() = statusEvents.update { it + 1 }
+
+    fun scheduledChanged() = scheduledEvents.update { it + 1 }
 
     fun updatePresence(d: JSONObject) {
         val jid = d.optString("chat_jid").ifEmpty { return }

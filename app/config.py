@@ -48,8 +48,11 @@ def get_gateway_token() -> str:
     except OSError:
         pass
     tok = secrets.token_urlsafe(32)
-    with open(TOKEN_PATH, "w", encoding="utf-8") as f:
+    # Escritura atómica: un corte a mitad de camino no deja un token truncado
+    tmp = TOKEN_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         f.write(tok)
+    os.replace(tmp, TOKEN_PATH)
     return tok
 
 
@@ -137,8 +140,11 @@ def load_app_config():
 def save_app_config(config) -> bool:
     """Guarda la configuración en el archivo local de ~/.magsapp/config.ini."""
     try:
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        # Escritura atómica: si la app se cierra a mitad de camino no queda un config.ini truncado
+        tmp = CONFIG_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             config.write(f)
+        os.replace(tmp, CONFIG_PATH)
         return True
     except Exception as e:
         print(f"[Advanced WhatsApp Config] Error guardando config.ini: {e}")
@@ -184,7 +190,10 @@ def set_polish_ai(provider: str, model: str) -> bool:
 
 def get_polish_profile() -> bool:
     """Si el redactor y «Sugerir respuesta» usan mis notas y el análisis del contacto como contexto."""
-    return load_app_config().getboolean("GENERAL", "polish_use_profile", fallback=True)
+    try:
+        return load_app_config().getboolean("GENERAL", "polish_use_profile", fallback=True)
+    except ValueError:
+        return True
 
 
 def set_polish_profile(on: bool) -> bool:
@@ -221,7 +230,11 @@ _pref_cache = {}
 def get_pref(key: str) -> bool:
     if key in _pref_cache:
         return _pref_cache[key]
-    val = load_app_config().getboolean("GENERAL", key, fallback=PREF_DEFAULTS.get(key, False))
+    default = PREF_DEFAULTS.get(key, False)
+    try:
+        val = load_app_config().getboolean("GENERAL", key, fallback=default)
+    except ValueError:
+        val = default   # valor mal escrito a mano en config.ini
     _pref_cache[key] = val
     return val
 

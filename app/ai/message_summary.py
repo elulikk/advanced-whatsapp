@@ -106,7 +106,7 @@ def summarize(msg: Dict, previous: List[Dict], contact_name: str, provider: str,
             lines.append(line)
     out = pa.ask_llm(build_summary_prompt(text, author, "\n".join(lines)), provider, model)
     if AIService.is_error_response(out):
-        return out
+        return out if isinstance(out, str) and out.strip() else "Error: la IA devolvió una respuesta vacía."
     return out.strip() if parse_summary(out) else "Error: la IA devolvió una respuesta vacía."
 
 
@@ -150,12 +150,18 @@ def request_summary(msg: Dict, contact_name: str, provider: str, model: str) -> 
             out = summarize(msg, previous, contact_name, provider, model)
         except Exception as e:
             out = f"Error: {e}"
-        with _lock:
-            if AIService.is_error_response(out):
-                _errors[msg_id] = out.strip()
-            else:
-                db.set_message_summary(msg_id, out)
-            _pending.discard(msg_id)
+        try:
+            with _lock:
+                if AIService.is_error_response(out):
+                    _errors[msg_id] = out.strip()
+                else:
+                    db.set_message_summary(msg_id, out)
+        except Exception as e:  # p. ej. base bloqueada: que el mensaje no quede «pendiente» para siempre
+            with _lock:
+                _errors[msg_id] = f"Error: {e}"
+        finally:
+            with _lock:
+                _pending.discard(msg_id)
         summary_signals.summary_ready.emit(msg_id)
 
     threading.Thread(target=work, name="advancedwhatsapp-summary", daemon=True).start()

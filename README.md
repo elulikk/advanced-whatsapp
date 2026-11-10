@@ -31,6 +31,12 @@ Aplicación de escritorio nativa para Windows tipo **WhatsApp Desktop**, constru
      de su hora (pasado eso queda como "Vencido"). Cola en `~/.magsapp/estados_programados.json`, copias de los archivos
      en `~/.magsapp/media/estados_programados/`.
 
+   - **Mensajes programados**: en el compositor, el botón de enviar permite elegir día y hora (también con adjuntos, notas de
+     voz y respuestas a un mensaje). La cola vive en el gateway, igual que la de estados: salen aunque la ventana esté en la
+     bandeja, pero no con la PC apagada (hasta 6 h tarde; después quedan "Vencido"). Cada chat muestra cuántos tiene pendientes
+     y se pueden editar, enviar ya o cancelar. Cola en `~/.magsapp/mensajes_programados.json`, adjuntos en
+     `~/.magsapp/media/mensajes_programados/`.
+
    - **Mis estados activos**: en la misma pestaña se ven los estados publicados en las últimas 24 h (desde Advanced WhatsApp o
      desde el celular), cuántos y quiénes los vieron, se puede abrir la foto/video y eliminarlos para todos.
      Solo se registran los estados y vistas que llegan mientras Advanced WhatsApp está conectado (`~/.magsapp/mis_estados.json`).
@@ -93,10 +99,14 @@ Advanced WhatsApp/
 │   ├── __init__.py
 │   ├── config.py             # Configuración de rutas y puertos
 │   ├── db.py                 # Capa de base de datos SQLite (chats, mensajes, contactos)
-│   ├── gateway_manager.py     # Administrador del proceso Node.js Baileys (instala dependencias solo)
+│   ├── gateway_manager.py     # Administrador del proceso Node.js Baileys (instala dependencias solo) y cliente HTTP del gateway
+│   ├── media_service.py       # Descarga de multimedia bajo demanda y transcripción de notas de voz
+│   ├── tags.py                # Tags visuales de los chats (forma, color, expiración)
 │   ├── ai/ai_service.py       # IA: Gemini, Groq, OpenAI y Claude con fallback automático
 │   ├── ai/message_summary.py  # Modo resumen: resume e interpreta un mensaje (botón ✨)
 │   ├── ai/psych_analysis.py   # Análisis psicológico: por tipo de relación / preguntas puntuales / interno (yo), notas por chat
+│   ├── ai/reply_polisher.py   # Redactor de respuestas: reformula el borrador según el objetivo elegido
+│   ├── ai/transcription.py   # Transcripción de notas de voz (Whisper vía Groq/OpenAI)
 │   ├── webhook_server.py      # Servidor HTTP local de eventos y señales Qt
 │   ├── notifications.py       # Cuándo y cómo avisar (toasts, sonido, llamadas, parpadeo)
 │   ├── windows_integration.py # Toasts nativos, advancedwhatsapp://, menú Inicio, inicio con Windows, contador de barra
@@ -110,18 +120,25 @@ Advanced WhatsApp/
 │       ├── qr_dialog.py      # Diálogo modal de escaneo de QR y estado
 │       ├── contact_dialog.py # Agenda y nuevo chat
 │       ├── status_view.py    # Estados: de contactos, activos (vistas, borrar), programar e historial
+│       ├── scheduled_messages.py # Mensajes programados: elegir fecha/hora y ver, editar o cancelar la cola
 │       ├── status_viewer.py  # Visor de estados de contactos (estilo celular)
 │       ├── settings_view.py  # Configuración (WhatsApp, IA)
+│       ├── attachments.py / message_menu.py / contact_info_panel.py / psych_dialog.py / tag_widgets.py
+│       ├── voice_recorder.py / voice_player.py   # Notas de voz
 │       ├── nav_rail.py / splash_screen.py
 │       └── main_window.py    # Ventana principal y splitter
 ├── gateway/
-│   ├── package.json          # Dependencias (@whiskeysockets/baileys, express, qrcode)
+│   ├── package.json          # Dependencias (@whiskeysockets/baileys, express, pino, qrcode)
 │   └── server.js             # Gateway WebSocket y API REST local
-├── tests/test_db.py          # Pruebas de la capa SQLite (pytest)
+├── android/                  # App para celular (Kotlin + Node embebido), ver android/README.md
+├── docs/ARQUITECTURA.md      # Flujo gateway <-> Python: endpoints, webhook y eventos
+├── tests/                    # Pruebas (pytest): base de datos, tags, mensajes programados, IA
+├── CLAUDE.md                 # Guía de la arquitectura y convenciones para trabajar en el repo
 ├── main.py                   # Punto de entrada de la aplicación
-├── requirements.txt          # Dependencias de Python (PySide6, requests)
+├── requirements.txt          # Dependencias de Python (PySide6, requests, google-generativeai, pywin32)
 ├── INSTALAR_DEPENDENCIAS.bat # Instalador: dependencias + accesos directos con icono
 ├── INICIAR_ADVANCEDWHATSAPP.bat       # Lanzador directo de Windows
+├── INSTALAR_ADVANCEDWHATSAPP.ps1      # Instalador de un solo archivo para una PC nueva (baja todo, sin winget ni admin)
 ├── assets/                   # Icono de la app (advancedwhatsapp.ico/.png) y SVG del tema
 ├── tools/instalar.py         # Paso final del instalador (gateway, registro, accesos)
 ├── tools/generar_iconos.py   # Regenera los archivos de assets/
@@ -207,6 +224,10 @@ python main.py
   análisis y respuestas, que nunca se reenvían; y `ultimo_<enfoque>.txt`); el análisis interno (botón 🧠 del rail) en `~/.magsapp/analisis/_yo/`.
 - En el primer arranque se ejecuta `npm install` automáticamente (requiere Node.js y npm en el PATH).
   El log queda en `~/.magsapp/npm_install.log`.
+
+## 📖 Documentación técnica
+
+La arquitectura, los endpoints del gateway y los eventos del webhook están en [`docs/ARQUITECTURA.md`](docs/ARQUITECTURA.md).
 
 ## 📱 Android
 

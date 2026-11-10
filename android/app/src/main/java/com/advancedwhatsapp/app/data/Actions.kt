@@ -19,10 +19,17 @@ object Actions {
             .put("text", Db.preview(it.mediaType, it.text))
     }
 
-    /** El gateway no devuelve el eco de lo enviado: se guarda acá con el id que asignó WhatsApp. */
+    /**
+     * El gateway no devuelve el eco de lo enviado: se guarda acá con el id que asignó WhatsApp.
+     * Con [at] (epoch segundos) no se envía: queda programado y llega al chat cuando sale.
+     */
     private fun saveSent(
-        to: String, body: JSONObject, text: String, mediaType: String, path: String?, quoted: Message?,
-    ): String {
+        to: String, body: JSONObject, text: String, mediaType: String, path: String?, quoted: Message?, at: Long?,
+    ) {
+        if (at != null) {
+            Scheduled.enqueue(to, at, body, path != null, quoted)
+            return
+        }
         val id = GatewayClient.post("/send", body).optString("message_id")
         if (id.isEmpty()) throw GatewayException("WhatsApp no confirmó el envío.")
         Db.saveMessage(
@@ -31,32 +38,33 @@ object Actions {
             quotedText = quoted?.let { Db.preview(it.mediaType, it.text) },
             quotedSender = quoted?.let { if (it.fromMe) "Yo" else it.senderName },
         )
-        return id
     }
 
-    fun sendText(to: String, text: String, quoted: Message? = null) {
+    fun sendText(to: String, text: String, quoted: Message? = null, at: Long? = null) {
         val body = JSONObject().put("to", to).put("text", text)
         quotedJson(quoted)?.let { body.put("quoted", it) }
-        saveSent(to, body, text, "text", null, quoted)
+        saveSent(to, body, text, "text", null, quoted, at)
     }
 
     /** kind: image, video o document. */
-    fun sendFile(to: String, file: File, kind: String, caption: String, fileName: String?, mime: String?, quoted: Message?) {
+    fun sendFile(
+        to: String, file: File, kind: String, caption: String, fileName: String?, mime: String?, quoted: Message?, at: Long? = null,
+    ) {
         val body = JSONObject().put("to", to).put("text", caption)
         when (kind) {
-            "image" -> body.put("image_path", file.path)
+            "image" -> body.put("image_path", file.path).put("image_thumb", Photos.thumbnailBase64(file))
             "video" -> body.put("video_path", file.path)
             else -> body.put("document_path", file.path).put("document_name", fileName ?: file.name).put("mimetype", mime)
         }
         quotedJson(quoted)?.let { body.put("quoted", it) }
-        saveSent(to, body, if (kind == "document") caption.ifEmpty { fileName ?: file.name } else caption, kind, file.path, quoted)
+        saveSent(to, body, if (kind == "document") caption.ifEmpty { fileName ?: file.name } else caption, kind, file.path, quoted, at)
     }
 
-    fun sendVoice(to: String, file: File, seconds: Int, waveform: List<Int>, quoted: Message?) {
+    fun sendVoice(to: String, file: File, seconds: Int, waveform: List<Int>, quoted: Message?, at: Long? = null) {
         val body = JSONObject().put("to", to).put("audio_path", file.path).put("audio_seconds", seconds)
             .put("audio_waveform", JSONArray(waveform))
         quotedJson(quoted)?.let { body.put("quoted", it) }
-        saveSent(to, body, "", "audio", file.path, quoted)
+        saveSent(to, body, "", "audio", file.path, quoted, at)
     }
 
     fun markRead(jid: String) {

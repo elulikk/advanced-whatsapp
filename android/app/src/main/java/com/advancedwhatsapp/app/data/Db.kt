@@ -23,9 +23,11 @@ data class Chat(
     val pinned: Boolean,
     val avatarPath: String?,
     val mutedUntil: Long,
+    val tabId: Long = 0,
 ) {
     val isMuted: Boolean
         get() = mutedUntil == -1L || mutedUntil > System.currentTimeMillis() / 1000
+    val isGroup: Boolean get() = jid.endsWith("@g.us")
 }
 
 data class Message(
@@ -50,6 +52,19 @@ data class Message(
 
 data class Contact(val jid: String, val name: String, val phone: String?, val avatarPath: String?)
 
+/** Pestaña de la lista de chats. unread = cuántos de sus chats tienen mensajes sin leer. */
+data class ChatTab(val id: Long, val name: String, val unread: Int) {
+    val isBuiltIn: Boolean get() = id == Db.TAB_MARKETPLACES
+}
+
+/** Qué chats muestra la lista. */
+sealed interface ChatFilter {
+    data object Inbox : ChatFilter
+    data object Unread : ChatFilter
+    data object Groups : ChatFilter
+    data class Tab(val id: Long) : ChatFilter
+}
+
 /** Base local: misma estructura y mismas reglas que app/db.py en la PC. */
 object Db {
     private lateinit var helper: SQLiteOpenHelper
@@ -66,9 +81,14 @@ object Db {
     )
 
     const val INDIVIDUAL = "(jid LIKE '%@s.whatsapp.net' OR jid LIKE '%@lid')"
+    private const val GROUP = "jid LIKE '%@g.us'"
+    private const val VISIBLE = "($INDIVIDUAL OR $GROUP)"
+    const val TAB_MARKETPLACES = 1L
+    private const val GROUP_PLACEHOLDER = "Grupo"
+    private val RESERVED_TAB_NAMES = listOf("todos", "no leídos", "grupos")
 
     fun init(c: Context) {
-        helper = object : SQLiteOpenHelper(c, "magsapp.db", null, 1) {
+        helper = object : SQLiteOpenHelper(c, "magsapp.db", null, 2) {
             override fun onConfigure(d: SQLiteDatabase) {
                 d.enableWriteAheadLogging()
             }
@@ -78,7 +98,8 @@ object Db {
                     """CREATE TABLE chats (
                         jid TEXT PRIMARY KEY, name TEXT, phone TEXT, unread_count INTEGER DEFAULT 0,
                         last_message_text TEXT, last_message_time INTEGER DEFAULT 0, is_pinned INTEGER DEFAULT 0,
-                        avatar_path TEXT, muted_until INTEGER DEFAULT 0, updated_at INTEGER DEFAULT 0)"""
+                        avatar_path TEXT, muted_until INTEGER DEFAULT 0, updated_at INTEGER DEFAULT 0,
+                        tab_id INTEGER DEFAULT 0)"""
                 )
                 d.execSQL(
                     """CREATE TABLE messages (
@@ -100,9 +121,21 @@ object Db {
                 d.execSQL("CREATE INDEX idx_messages_chat ON messages(chat_jid, timestamp)")
                 d.execSQL("CREATE INDEX idx_chats_time ON chats(last_message_time DESC)")
                 d.execSQL("CREATE INDEX idx_contacts_name ON contacts(name)")
+                createTabs(d)
             }
 
-            override fun onUpgrade(d: SQLiteDatabase, o: Int, n: Int) = Unit
+            override fun onUpgrade(d: SQLiteDatabase, o: Int, n: Int) {
+                if (o < 2) {
+                    d.execSQL("ALTER TABLE chats ADD COLUMN tab_id INTEGER DEFAULT 0")
+                    createTabs(d)
+                }
+            }
+
+            private fun createTabs(d: SQLiteDatabase) {
+                d.execSQL("CREATE TABLE tabs (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)")
+                d.execSQL("INSERT INTO tabs (id, name) VALUES ($TAB_MARKETPLACES, 'Marketplaces')")
+                d.execSQL("CREATE INDEX idx_chats_tab ON chats(tab_id)")
+            }
         }
         mergeLidDuplicates(db, null)
     }
@@ -124,7 +157,7 @@ object Db {
     private fun Cursor.toChat() = Chat(
         jid = str("jid")!!, name = str("name").orEmpty(), phone = str("phone"), unread = lng("unread_count").toInt(),
         lastText = str("last_message_text").orEmpty(), lastTime = lng("last_message_time"), pinned = lng("is_pinned") != 0L,
-        avatarPath = str("avatar_path"), mutedUntil = lng("muted_until"),
+        avatarPath = str("avatar_path"), mutedUntil = lng("muted_until"), tabId = lng("tab_id"),
     )
 
     private fun Cursor.toMessage() = Message(
@@ -135,10 +168,21 @@ object Db {
         transcript = str("transcript"), summary = str("summary"), edited = lng("edited") != 0L,
     )
 
-    fun getChats(search: String = "", unreadOnly: Boolean = false, limit: Int = 300): List<Chat> {
-        val where = StringBuilder(INDIVIDUAL)
+    /**
+     * Todos deja afuera lo que tiene pestaña propia, pero al buscar abarca todo para que nunca se pierda un chat.
+     * Sin filtro devuelve solo los individuales (lo usa el análisis, que no sirve para grupos).
+     */
+    fun filterSql(filter: ChatFilter?, searching: Boolean): String = when (filter) {
+        null -> INDIVIDUAL
+        ChatFilter.Inbox -> if (searching) VISIBLE else "$INDIVIDUAL AND tab_id = 0"
+        ChatFilter.Unread -> "$VISIBLE AND unread_count != 0"
+        ChatFilter.Groups -> "$GROUP AND tab_id = 0"
+        is ChatFilter.Tab -> "$VISIBLE AND tab_id = ${filter.id}"
+    }
+
+    fun getChats(search: String = "", filter: ChatFilter? = null, limit: Int = 300): List<Chat> {
+        val where = StringBuilder(filterSql(filter, search.isNotBlank()))
         val args = mutableListOf<String>()
-        if (unreadOnly) where.append(" AND unread_count != 0")
         if (search.isNotBlank()) {
             where.append(" AND (name LIKE ? OR phone LIKE ? OR last_message_text LIKE ?)")
             repeat(3) { args += "%${search.trim()}%" }
@@ -147,6 +191,52 @@ object Db {
             "SELECT * FROM chats WHERE $where ORDER BY is_pinned DESC, last_message_time DESC, updated_at DESC LIMIT $limit",
             args.toTypedArray(),
         ).use { c -> buildList { while (c.moveToNext()) add(c.toChat()) } }
+    }
+
+    fun getTabs(): List<ChatTab> = db.rawQuery(
+        """SELECT t.id AS id, t.name AS name, COUNT(c.jid) AS unread FROM tabs t
+           LEFT JOIN chats c ON c.tab_id = t.id AND c.unread_count != 0 GROUP BY t.id ORDER BY t.id""",
+        null,
+    ).use { c -> buildList { while (c.moveToNext()) add(ChatTab(c.lng("id"), c.str("name").orEmpty(), c.lng("unread").toInt())) } }
+
+    fun unreadGroups(): Int = db.rawQuery("SELECT COUNT(*) FROM chats WHERE $GROUP AND tab_id = 0 AND unread_count != 0", null)
+        .use { if (it.moveToFirst()) it.getInt(0) else 0 }
+
+    /** Nombre aceptable para una pestaña: sin repetir otra ni las que trae la app. */
+    fun isValidTabName(name: String, others: List<String>): Boolean {
+        val clean = name.trim().lowercase()
+        return clean.isNotEmpty() && clean !in RESERVED_TAB_NAMES && others.none { it.trim().lowercase() == clean }
+    }
+
+    fun createTab(name: String) {
+        db.insert("tabs", null, ContentValues().apply { put("name", name.trim()) })
+        notifyChange()
+    }
+
+    fun renameTab(id: Long, name: String) {
+        if (id == TAB_MARKETPLACES) return
+        db.update("tabs", ContentValues().apply { put("name", name.trim()) }, "id = ?", arrayOf(id.toString()))
+        notifyChange()
+    }
+
+    /** Sus chats vuelven a Todos (o a Grupos): borrar una pestaña no borra conversaciones. */
+    fun deleteTab(id: Long) {
+        if (id == TAB_MARKETPLACES) return
+        val d = db
+        d.beginTransaction()
+        try {
+            d.update("chats", ContentValues().apply { put("tab_id", 0) }, "tab_id = ?", arrayOf(id.toString()))
+            d.delete("tabs", "id = ?", arrayOf(id.toString()))
+            d.setTransactionSuccessful()
+        } finally {
+            d.endTransaction()
+        }
+        notifyChange()
+    }
+
+    fun moveChatToTab(jid: String, tabId: Long) {
+        db.update("chats", ContentValues().apply { put("tab_id", tabId) }, "jid = ?", arrayOf(jid))
+        notifyChange()
     }
 
     fun getChat(jid: String): Chat? =
@@ -232,7 +322,7 @@ object Db {
         if (cur == null) {
             d.insert("chats", null, ContentValues().apply {
                 put("jid", jid)
-                put("name", name ?: phone?.let { "+$it" } ?: clean)
+                put("name", name ?: phone?.let { "+$it" } ?: if (jid.endsWith("@g.us")) GROUP_PLACEHOLDER else clean)
                 put("phone", phone)
                 put("last_message_text", "")
                 put("last_message_time", now())
@@ -271,7 +361,8 @@ object Db {
         val clean = text.trim()
         if (clean.isEmpty() && mediaType == "text" && mediaPath == null && quotedText == null) return false
         val valid = senderName?.trim()?.takeIf { !fromMe && it.isNotEmpty() && it.lowercase() !in listOf("yo", "null", "none") }
-        val label = chatName ?: valid
+        // Un grupo nunca toma el nombre de quien escribió
+        val label = chatName ?: valid.takeUnless { chat.endsWith("@g.us") }
         val d = db
         d.beginTransaction()
         try {
@@ -308,8 +399,8 @@ object Db {
             d.execSQL(
                 """UPDATE chats SET unread_count = unread_count + ?, updated_at = ?,
                    name = CASE WHEN ? IS NOT NULL AND (name IS NULL OR name = '' OR name GLOB '[0-9]*' OR name LIKE 'Usuario%'
-                        OR name LIKE 'Contacto%') THEN ? ELSE name END WHERE jid = ?""",
-                arrayOf<Any?>(increment, now(), label, label, chat),
+                        OR name LIKE 'Contacto%' OR name = ?) THEN ? ELSE name END WHERE jid = ?""",
+                arrayOf<Any?>(increment, now(), label, GROUP_PLACEHOLDER, label, chat),
             )
             refreshPreviews(d, listOf(chat))
             if (chat.endsWith("@lid")) mergeLidDuplicates(d, chat)
@@ -381,7 +472,7 @@ object Db {
             })
         } else {
             d.update("chats", ContentValues().apply {
-                if (name != null && !name.first().isDigit() && !name.startsWith("Usuario")) put("name", name)
+                if (name != null && name != GROUP_PLACEHOLDER && !name.first().isDigit() && !name.startsWith("Usuario")) put("name", name)
                 if (phone != null) put("phone", phone)
                 if (unread != null) put("unread_count", unread)
                 ch.s("avatar_path")?.let { put("avatar_path", it) }
@@ -626,9 +717,10 @@ object Db {
                 """UPDATE chats SET
                    unread_count = unread_count + COALESCE((SELECT unread_count FROM chats WHERE jid = ?), 0),
                    last_message_time = MAX(last_message_time, COALESCE((SELECT last_message_time FROM chats WHERE jid = ?), 0)),
-                   avatar_path = COALESCE(avatar_path, (SELECT avatar_path FROM chats WHERE jid = ?))
+                   avatar_path = COALESCE(avatar_path, (SELECT avatar_path FROM chats WHERE jid = ?)),
+                   tab_id = CASE WHEN tab_id != 0 THEN tab_id ELSE COALESCE((SELECT tab_id FROM chats WHERE jid = ?), 0) END
                    WHERE jid = ?""",
-                arrayOf(lid, lid, lid, target),
+                arrayOf(lid, lid, lid, lid, target),
             )
             d.delete("chats", "jid = ?", arrayOf(lid))
             refreshPreviews(d, listOf(target))

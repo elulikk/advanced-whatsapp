@@ -62,6 +62,7 @@ fun SettingsScreen(onBack: () -> Unit) {
     var confirmUnlink by remember { mutableStateOf(false) }
     var notifications by remember { mutableStateOf(Prefs.notifications) }
     var receipts by remember { mutableStateOf(Prefs.readReceipts) }
+    var statusReceipts by remember { mutableStateOf(Prefs.statusReceipts) }
     var keepCpu by remember { mutableStateOf(Prefs.keepCpuAwake) }
     var provider by remember { mutableStateOf(Prefs.provider) }
 
@@ -86,6 +87,7 @@ fun SettingsScreen(onBack: () -> Unit) {
             Section("Notificaciones y lectura")
             Toggle("Avisar de mensajes y llamadas", notifications) { notifications = it; Prefs.notifications = it }
             Toggle("Enviar confirmación de lectura (tildes azules)", receipts) { receipts = it; Prefs.readReceipts = it }
+            Toggle("Al ver un estado, avisar al contacto que lo viste", statusReceipts) { statusReceipts = it; Prefs.statusReceipts = it }
 
             Section("Segundo plano")
             Toggle("Mantener la conexión siempre activa (mensajes al instante, usa más batería)", keepCpu) {

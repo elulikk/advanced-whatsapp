@@ -335,7 +335,10 @@ class StatusViewerDialog(QDialog):
             thumb = item.get("thumb")
             if thumb:
                 pm = QPixmap()
-                pm.loadFromData(base64.b64decode(thumb))
+                try:
+                    pm.loadFromData(base64.b64decode(thumb))
+                except (ValueError, TypeError):   # miniatura corrupta: queda el cuadro vacío
+                    pass
                 self.page_image.set_source(pm)
                 self.stack.setCurrentWidget(self.page_image)
             else:
@@ -373,7 +376,11 @@ class StatusViewerDialog(QDialog):
             self.duration = IMAGE_SECONDS
         elif kind in ("video", "audio"):
             if not self._ensure_player():
-                os.startfile(path)
+                try:
+                    os.startfile(path)
+                except (OSError, AttributeError) as e:   # sin archivo o sin visor asociado
+                    self.page_msg.setText(f"No se pudo abrir el archivo.\n\n{e}")
+                    self.stack.setCurrentWidget(self.page_msg)
                 self.duration = 3.0
                 return
             if kind == "video":

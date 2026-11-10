@@ -17,6 +17,8 @@ OPENAI_TRANSCRIPTION_URL = "https://api.openai.com/v1/audio/transcriptions"
 
 def transcribe_audio(path: str, config=None) -> str:
     """Devuelve el texto de un audio. Lanza RuntimeError si ningún proveedor pudo transcribirlo."""
+    if not os.path.isfile(path):
+        raise RuntimeError(f"No se encontró el archivo de audio: {path}")
     cfg = config if config is not None else load_app_config()
 
     providers = []

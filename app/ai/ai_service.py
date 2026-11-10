@@ -6,6 +6,7 @@ Arquitectura sincronizada y compatible con MAGNETO.
 """
 
 import os
+import re
 import time
 import requests
 from typing import List, Dict, Optional, Any
@@ -15,6 +16,14 @@ from app.config import load_app_config
 ANTHROPIC_API = "https://api.anthropic.com/v1"
 ANTHROPIC_VERSION = "2023-06-01"
 ANTHROPIC_FALLBACK_MODELS = ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5", "claude-fable-5-1"]
+
+# Claves de API con formato conocido (OpenAI/Anthropic sk-..., Groq gsk_..., Google AIza...): nunca deben llegar a logs ni a la UI
+_KEY_PATTERN = re.compile(r"(?<![A-Za-z0-9])(?:sk-[A-Za-z0-9_-]{10,}|gsk_[A-Za-z0-9]{10,}|AIza[A-Za-z0-9_-]{20,})")
+
+
+def _redact(text: Any) -> str:
+    """Texto de un error sin claves de API."""
+    return _KEY_PATTERN.sub("[clave oculta]", str(text))
 
 
 class AIService:
@@ -57,19 +66,18 @@ class AIService:
             self._last_gemini_key = api_key
             return True
         except Exception as e:
-            print(f"[AIService] Error configurando Gemini: {e}")
+            print(f"[AIService] Error configurando Gemini: {_redact(e)}")
             return False
 
     def _format_error(self, provider: str, error: Any, model_name: str) -> str:
         """Formatea los errores típicos de API de forma comprensible para el usuario."""
-        err_str = str(error)
+        err_str = _redact(error)
 
         low = err_str.lower()
         if "429" in err_str or "quota" in low or "rate limit" in low or "rate_limit" in low:
             msg = f"⚠️ Cuota excedida en {provider} ({model_name}).\n"
             msg += "Se ha alcanzado el límite de peticiones o tokens de tu plan."
             if "retry" in err_str.lower():
-                import re
                 match = re.search(r"after (\d+\.?\d*)s|in (\d+\.?\d*)s", err_str.lower())
                 if match:
                     sec = match.group(1) or match.group(2)
@@ -135,7 +143,7 @@ class AIService:
 
             return sorted_models or fallback_gemini
         except Exception as e:
-            print(f"[AIService] Error obteniendo modelos de Gemini: {e}")
+            print(f"[AIService] Error obteniendo modelos de Gemini: {_redact(e)}")
             return fallback_gemini
 
     def get_groq_models(self, custom_key: Optional[str] = None) -> List[str]:
@@ -183,7 +191,7 @@ class AIService:
 
             return sorted_models or fallback_groq
         except Exception as e:
-            print(f"[AIService] Error obteniendo modelos de Groq: {e}")
+            print(f"[AIService] Error obteniendo modelos de Groq: {_redact(e)}")
             return fallback_groq
 
     def get_openai_models(self, custom_key: Optional[str] = None) -> List[str]:
@@ -234,7 +242,7 @@ class AIService:
 
             return sorted_models or fallback_openai
         except Exception as e:
-            print(f"[AIService] Error obteniendo modelos de OpenAI: {e}")
+            print(f"[AIService] Error obteniendo modelos de OpenAI: {_redact(e)}")
             return fallback_openai
 
     def _anthropic_key(self, custom_key: Optional[str] = None) -> str:
@@ -260,7 +268,7 @@ class AIService:
                        + [m for m in ids if m not in ANTHROPIC_FALLBACK_MODELS])
             return ordered or list(ANTHROPIC_FALLBACK_MODELS)
         except Exception as e:
-            print(f"[AIService] Error obteniendo modelos de Anthropic: {e}")
+            print(f"[AIService] Error obteniendo modelos de Anthropic: {_redact(e)}")
             return list(ANTHROPIC_FALLBACK_MODELS)
 
     # ─── PETICIONES DIRECTAS POR PROVEEDOR ─────────────────────────────────────
@@ -268,7 +276,7 @@ class AIService:
     def get_gemini_response(self, prompt: str, model_name: Optional[str] = None, api_key: Optional[str] = None) -> str:
         """Ejecuta una petición de generación con Google Gemini."""
         if not model_name:
-            model_name = self.config.get("GEMINI", "model", fallback="gemini-2.5-flash")
+            model_name = self.config.get("GEMINI", "model", fallback="") or "gemini-2.5-flash"
 
         if not self._ensure_gemini(api_key):
             return "Error: No se ha configurado la API Key de Google Gemini."
@@ -285,7 +293,7 @@ class AIService:
                           timeout: int = 30) -> str:
         """Ejecuta una petición de generación con Groq Cloud."""
         if not model:
-            model = self.config.get("GROQ", "model", fallback="qwen/qwen3.8-27b")
+            model = self.config.get("GROQ", "model", fallback="") or "qwen/qwen3.8-27b"
 
         key = (api_key or self.config.get("GROQ", "api_key", fallback="")).strip()
         if not key:
@@ -306,7 +314,7 @@ class AIService:
             res = requests.post(url, headers=headers, json=data, timeout=timeout)
             res.raise_for_status()
             parsed = res.json()
-            return parsed["choices"][0]["message"]["content"]
+            return parsed["choices"][0]["message"]["content"] or ""
         except Exception as e:
             return self._format_error("Groq", e, model)
 
@@ -314,7 +322,7 @@ class AIService:
                             timeout: int = 30) -> str:
         """Ejecuta una petición de generación con OpenAI."""
         if not model:
-            model = self.config.get("OPENAI", "model", fallback="gpt-4o-mini")
+            model = self.config.get("OPENAI", "model", fallback="") or "gpt-4o-mini"
 
         key = (api_key or self.config.get("OPENAI", "api_key", fallback="")).strip()
         if not key:
@@ -335,7 +343,7 @@ class AIService:
             res = requests.post(url, headers=headers, json=data, timeout=timeout)
             res.raise_for_status()
             parsed = res.json()
-            return parsed["choices"][0]["message"]["content"]
+            return parsed["choices"][0]["message"]["content"] or ""
         except Exception as e:
             return self._format_error("OpenAI", e, model)
 
@@ -343,7 +351,7 @@ class AIService:
                                timeout: int = 60, max_tokens: int = 4096) -> str:
         """Ejecuta una petición de generación con Anthropic (Claude) por la API de Messages."""
         if not model:
-            model = self.config.get("ANTHROPIC", "model", fallback="claude-sonnet-5-5")
+            model = self.config.get("ANTHROPIC", "model", fallback="") or "claude-sonnet-5-5"
 
         key = self._anthropic_key(api_key)
         if not key:
@@ -444,10 +452,8 @@ class AIService:
             return True
         if t.lower().startswith("error"):
             return True
-        for mark in ("⚠️", "❌", "⏳", "Cuota excedida", "Error de autenticación", "Error conectando"):
-            if mark in t:
-                return True
-        return False
+        # Solo al principio: una respuesta válida de la IA puede llevar ⚠️ o ❌ en medio del texto
+        return t.startswith(("⚠️", "❌", "⏳", "Cuota excedida", "Error de autenticación", "Error conectando"))
 
     # ─── COMPLETION INTELIGENTE CON FALLBACK ─────────────────────────────────
 
@@ -479,7 +485,7 @@ class AIService:
             res_openai = self.get_openai_response(prompt)
             if res_openai and not self.is_error_response(res_openai):
                 return res_openai
-            return res
+            return res or "Error: Ningún proveedor de IA disponible."
 
         # 1. Si el proveedor activo es Groq
         if "groq" in active_provider:
@@ -495,7 +501,7 @@ class AIService:
             res_openai = self.get_openai_response(prompt)
             if res_openai and not self.is_error_response(res_openai):
                 return res_openai
-            return res
+            return res or "Error: Ningún proveedor de IA disponible."
 
         # 2. Si el proveedor activo es OpenAI
         if "openai" in active_provider:
@@ -511,7 +517,7 @@ class AIService:
             res_groq = self.get_groq_response(prompt)
             if res_groq and not self.is_error_response(res_groq):
                 return res_groq
-            return res
+            return res or "Error: Ningún proveedor de IA disponible."
 
         # 3. Proveedor por defecto: Gemini
         res = self.get_gemini_response(prompt, model_name=active_model or "gemini-2.5-flash")

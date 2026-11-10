@@ -62,6 +62,7 @@ _PATHS = {
     "bell": '<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z"/><path d="M10 20.5a2.2 2.2 0 0 0 4 0"/>',
     "bell_off": '<path d="M8.6 5.9A6 6 0 0 1 18 11v4"/><path d="M6 11v5.5l-1.5 2H17"/><path d="M10 20.5a2.2 2.2 0 0 0 4 0"/><path d="M3.5 3.5l17 17"/>',
     "wifi_off": '<path d="M3.5 3.5l17 17"/><path d="M8.5 16a5 5 0 0 1 7 0"/><path d="M5 12.5a10 10 0 0 1 4.2-2.4M14.8 10.1A10 10 0 0 1 19 12.5"/><path d="M2 9a14.5 14.5 0 0 1 4.3-2.6M11 5.6a14.5 14.5 0 0 1 11 3.4"/><circle cx="12" cy="19.5" r="1" fill="currentColor" stroke="none"/>',
+    "clock": '<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5.2l3.4 2"/>',
     "prev": '<path d="M15 5l-7 7 7 7"/>',
     "next": '<path d="M9 5l7 7-7 7"/>',
 }

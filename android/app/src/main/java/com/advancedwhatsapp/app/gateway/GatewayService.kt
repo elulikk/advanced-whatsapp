@@ -18,6 +18,7 @@ import com.advancedwhatsapp.app.App
 import com.advancedwhatsapp.app.AppState
 import com.advancedwhatsapp.app.Prefs
 import com.advancedwhatsapp.app.R
+import com.advancedwhatsapp.app.notify.Notifier
 import com.advancedwhatsapp.app.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -132,10 +133,13 @@ class GatewayService : Service() {
         )
         return Notification.Builder(this, App.CH_SERVICE)
             .setSmallIcon(R.drawable.ic_notification)
+            .setColor(Notifier.ACCENT)
             .setContentTitle("Advanced WhatsApp")
             .setContentText(text)
             .setContentIntent(open)
             .setOngoing(true)
+            .setShowWhen(false)
+            .setCategory(Notification.CATEGORY_SERVICE)
             .build()
     }
 

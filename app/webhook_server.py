@@ -1,6 +1,7 @@
 import hmac
 import json
 import threading
+import time
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from PySide6.QtCore import QObject, Signal
 
@@ -24,6 +25,7 @@ class WebhookSignals(QObject):
     contact_status = Signal(dict)       # estado nuevo (o borrado) de un contacto
     app_activate = Signal(str)          # otra instancia (o una notificación) pide abrir/mostrar algo: advancedwhatsapp://...
     read_elsewhere = Signal(list)       # [chat_jid]: chats que leíste (o marcaste no leídos) en el celular
+    scheduled_changed = Signal(dict)    # {id, state: sent|failed|expired, to, chat_name, type, text, error}
 
 
 signals = WebhookSignals()
@@ -44,18 +46,32 @@ class _Server(ThreadingHTTPServer):
 
 class WebhookHandler(BaseHTTPRequestHandler):
     def do_POST(self):
-        if not hmac.compare_digest(self.headers.get(TOKEN_HEADER, ""), _TOKEN):
+        # Bytes y no str: compare_digest lanza TypeError con caracteres no ASCII en el encabezado
+        if not hmac.compare_digest(self.headers.get(TOKEN_HEADER, "").encode("utf-8", "replace"),
+                                   _TOKEN.encode("utf-8")):
+            try:   # vaciar el cuerpo (acotado): cerrar con datos sin leer hace que el cliente reciba un RST en vez del 401
+                self.rfile.read(min(max(0, int(self.headers.get("Content-Length") or 0)), 1 << 20))
+            except (ValueError, OSError):
+                pass
             self.send_response(401)
+            self.send_header("Content-Length", "0")
             self.end_headers()
             return
 
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length).decode("utf-8")
+        try:
+            content_length = max(0, int(self.headers.get("Content-Length") or 0))
+        except ValueError:
+            self.send_response(400)
+            self.end_headers()
+            return
+        body = self.rfile.read(content_length).decode("utf-8", "replace")
 
         try:
             data = json.loads(body)
         except Exception:
             data = {}
+        if not isinstance(data, dict):
+            data = {}   # un JSON que no es un objeto (lista, número…) se trata como vacío
 
         if self.path == "/api/whatsapp/incoming":
             try:
@@ -72,11 +88,13 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 media_raw = data.get("media_raw")
                 quoted_text = data.get("quoted_text")
                 quoted_sender = data.get("quoted_sender")
-                timestamp = data.get("timestamp")
+                timestamp = data.get("timestamp") or int(time.time())   # NOT NULL en la base
 
                 if chat_jid and msg_id:
                     # Guardar contacto solo si no es el propio usuario
-                    if (push_name or phone) and not from_me and push_name.lower() not in ["yo", "null", "none", "mag tecnologia"]:
+                    # (los integrantes de un grupo no son contactos: no se agregan a la agenda)
+                    if (push_name or phone) and not from_me and not chat_jid.endswith("@g.us") \
+                            and push_name.lower() not in ["yo", "null", "none", "mag tecnologia"]:
                         save_contact(sender_jid, name=push_name, phone=phone, push_name=push_name)
 
                     existed = message_exists(msg_id)
@@ -131,10 +149,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._ok()
             return
 
-        elif self.path in ("/api/whatsapp/presence", "/api/whatsapp/call", "/api/whatsapp/contact_status"):
+        elif self.path in ("/api/whatsapp/presence", "/api/whatsapp/call", "/api/whatsapp/contact_status",
+                           "/api/whatsapp/scheduled"):
             sig = {"/api/whatsapp/presence": signals.presence_changed,
                    "/api/whatsapp/call": signals.call_event,
-                   "/api/whatsapp/contact_status": signals.contact_status}[self.path]
+                   "/api/whatsapp/contact_status": signals.contact_status,
+                   "/api/whatsapp/scheduled": signals.scheduled_changed}[self.path]
             try:
                 sig.emit(data)
             except Exception as e:
@@ -290,7 +310,6 @@ class WebhookServer:
             return
 
         # Si el puerto quedó tomado un instante (cierre anterior), se reintenta unos segundos
-        import time
         last = None
         for _ in range(10):
             try:

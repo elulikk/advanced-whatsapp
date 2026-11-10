@@ -206,7 +206,10 @@ def clean_reply(text: str) -> str:
     if fence:
         t = fence.group(1).strip()
     if len(t) >= 2 and t[0] in "\"“«" and t[-1] in "\"”»":
-        t = t[1:-1].strip()
+        inner = t[1:-1]
+        # solo si son comillas envolventes: «"Hola" y "chau"» no se toca
+        if t[0] not in inner and t[-1] not in inner:
+            t = inner.strip()
     return t
 
 
@@ -214,7 +217,7 @@ def polish(draft: str, messages: List[Dict], contact_name: str, provider: str, m
            mode: str = DEFAULT_MODE, extra: Optional[str] = "", profile: str = "") -> str:
     """Devuelve el mensaje reformulado, o un texto de error (ver AIService.is_error_response).
     Bloqueante: usar en un hilo."""
-    prompt = build_polish_prompt(draft, format_recent_context(messages, contact_name), mode, extra or "", profile)
+    prompt = build_polish_prompt(draft, format_recent_context(messages, contact_name), mode, extra or "", profile or "")
     return _ask(prompt, provider, model)
 
 
@@ -226,11 +229,11 @@ def suggest(messages: List[Dict], contact_name: str, provider: str, model: str,
     context = format_recent_context(messages, contact_name)
     if not context.strip():
         return "Error: no hay mensajes de texto en este chat para sugerir una respuesta."
-    return _ask(build_suggest_prompt(context, mode, extra or "", notes, profile), provider, model)
+    return _ask(build_suggest_prompt(context, mode, extra or "", notes or "", profile or ""), provider, model)
 
 
 def _ask(prompt: str, provider: str, model: str) -> str:
     out = pa.ask_llm(prompt, provider, model)
     if AIService.is_error_response(out):
-        return out
+        return out if isinstance(out, str) and out.strip() else "Error: la IA devolvió una respuesta vacía."
     return clean_reply(out) or "Error: la IA devolvió una respuesta vacía."
