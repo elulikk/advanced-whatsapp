@@ -24,6 +24,9 @@ data class Chat(
     val avatarPath: String?,
     val mutedUntil: Long,
     val tabId: Long = 0,
+    val waName: String = "",       // nombre que manda WhatsApp (name es el que se muestra: el propio si hay)
+    val customName: String = "",
+    val notes: String = "",
 ) {
     val isMuted: Boolean
         get() = mutedUntil == -1L || mutedUntil > System.currentTimeMillis() / 1000
@@ -49,6 +52,9 @@ data class Message(
     val edited: Boolean,
     val reactions: List<String> = emptyList(),
 )
+
+/** Datos del contacto que edita el usuario; se guardan solo en este teléfono y prevalecen sobre los de WhatsApp. */
+data class ContactInfo(val jid: String, val waName: String, val customName: String, val notes: String, val phone: String?)
 
 data class Contact(val jid: String, val name: String, val phone: String?, val avatarPath: String?)
 
@@ -88,7 +94,7 @@ object Db {
     private val RESERVED_TAB_NAMES = listOf("todos", "no leídos", "grupos")
 
     fun init(c: Context) {
-        helper = object : SQLiteOpenHelper(c, "magsapp.db", null, 2) {
+        helper = object : SQLiteOpenHelper(c, "magsapp.db", null, 3) {
             override fun onConfigure(d: SQLiteDatabase) {
                 d.enableWriteAheadLogging()
             }
@@ -99,7 +105,7 @@ object Db {
                         jid TEXT PRIMARY KEY, name TEXT, phone TEXT, unread_count INTEGER DEFAULT 0,
                         last_message_text TEXT, last_message_time INTEGER DEFAULT 0, is_pinned INTEGER DEFAULT 0,
                         avatar_path TEXT, muted_until INTEGER DEFAULT 0, updated_at INTEGER DEFAULT 0,
-                        tab_id INTEGER DEFAULT 0)"""
+                        tab_id INTEGER DEFAULT 0, custom_name TEXT, notes TEXT, manual_unread INTEGER DEFAULT 0)"""
                 )
                 d.execSQL(
                     """CREATE TABLE messages (
@@ -129,6 +135,11 @@ object Db {
                     d.execSQL("ALTER TABLE chats ADD COLUMN tab_id INTEGER DEFAULT 0")
                     createTabs(d)
                 }
+                if (o < 3) {
+                    for (col in listOf("custom_name TEXT", "notes TEXT", "manual_unread INTEGER DEFAULT 0")) {
+                        runCatching { d.execSQL("ALTER TABLE chats ADD COLUMN $col") }
+                    }
+                }
             }
 
             private fun createTabs(d: SQLiteDatabase) {
@@ -138,6 +149,7 @@ object Db {
             }
         }
         mergeLidDuplicates(db, null)
+        recomputeUnread()
     }
 
     private fun notifyChange(jid: String = "") {
@@ -155,9 +167,11 @@ object Db {
     // ─── Lectura ─────────────────────────────────────────────────────────────
 
     private fun Cursor.toChat() = Chat(
-        jid = str("jid")!!, name = str("name").orEmpty(), phone = str("phone"), unread = lng("unread_count").toInt(),
+        jid = str("jid")!!, name = str("custom_name")?.takeIf { it.isNotBlank() } ?: str("name").orEmpty(),
+        phone = str("phone"), unread = lng("unread_count").toInt(),
         lastText = str("last_message_text").orEmpty(), lastTime = lng("last_message_time"), pinned = lng("is_pinned") != 0L,
         avatarPath = str("avatar_path"), mutedUntil = lng("muted_until"), tabId = lng("tab_id"),
+        waName = str("name").orEmpty(), customName = str("custom_name").orEmpty(), notes = str("notes").orEmpty(),
     )
 
     private fun Cursor.toMessage() = Message(
@@ -184,8 +198,8 @@ object Db {
         val where = StringBuilder(filterSql(filter, search.isNotBlank()))
         val args = mutableListOf<String>()
         if (search.isNotBlank()) {
-            where.append(" AND (name LIKE ? OR phone LIKE ? OR last_message_text LIKE ?)")
-            repeat(3) { args += "%${search.trim()}%" }
+            where.append(" AND (name LIKE ? OR custom_name LIKE ? OR phone LIKE ? OR last_message_text LIKE ?)")
+            repeat(4) { args += "%${search.trim()}%" }
         }
         return db.rawQuery(
             "SELECT * FROM chats WHERE $where ORDER BY is_pinned DESC, last_message_time DESC, updated_at DESC LIMIT $limit",
@@ -626,7 +640,7 @@ object Db {
             arrayOf(jid),
         ).use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
         val hadUnread = (getChat(jid)?.unread ?: 0) != 0
-        d.update("chats", ContentValues().apply { put("unread_count", 0) }, "jid = ?", arrayOf(jid))
+        d.update("chats", ContentValues().apply { put("unread_count", 0); put("manual_unread", 0) }, "jid = ?", arrayOf(jid))
         d.execSQL("UPDATE messages SET status = 'read' WHERE chat_jid = ? AND from_me = 0", arrayOf(jid))
         if (ids.isNotEmpty() || hadUnread) notifyChange(jid)
         return ids
@@ -654,19 +668,52 @@ object Db {
                      ELSE MAX(0, unread_count - ?) END WHERE jid = ?""",
                 arrayOf<Any?>(chat, count, chat),
             )
-            notifyChange(chat)
+        }
+        if (newly.isNotEmpty()) {
+            recomputeUnread(newly.keys)
+            newly.keys.forEach { notifyChange(it) }
         }
     }
 
     fun markChatReadElsewhere(jid: String) {
         db.execSQL("UPDATE messages SET status = 'read' WHERE chat_jid = ? AND from_me = 0 AND status != 'read'", arrayOf(jid))
-        db.update("chats", ContentValues().apply { put("unread_count", 0) }, "jid = ?", arrayOf(jid))
+        db.update("chats", ContentValues().apply { put("unread_count", 0); put("manual_unread", 0) }, "jid = ?", arrayOf(jid))
         notifyChange(jid)
     }
 
     fun markChatUnreadElsewhere(jid: String) {
-        db.update("chats", ContentValues().apply { put("unread_count", 1) }, "jid = ? AND unread_count = 0", arrayOf(jid))
+        db.update("chats", ContentValues().apply { put("unread_count", 1); put("manual_unread", 1) }, "jid = ? AND unread_count = 0", arrayOf(jid))
         notifyChange(jid)
+    }
+
+    /**
+     * Recalcula unread_count desde los mensajes recibidos que siguen sin leer (misma regla que app/db.py): el contador
+     * nunca supera lo realmente pendiente y un chat sin pendientes queda en 0, salvo el marcado como no leído a mano.
+     */
+    fun recomputeUnread(jids: Collection<String>? = null) {
+        val real = "(SELECT COUNT(*) FROM messages m WHERE m.chat_jid = chats.jid AND m.from_me = 0 AND m.status != 'read' AND m.media_type != 'revoked')"
+        val target = "CASE WHEN $real > 0 THEN MIN(unread_count, $real) WHEN manual_unread = 1 THEN 1 ELSE 0 END"
+        val where = if (jids.isNullOrEmpty()) "" else " AND jid IN (${jids.joinToString(",") { "?" }})"
+        val changed = db.compileStatement("UPDATE chats SET unread_count = $target WHERE unread_count != $target$where").use { st ->
+            jids?.forEachIndexed { i, j -> st.bindString(i + 1, j) }
+            st.executeUpdateDelete()
+        }
+        if (changed > 0) notifyChange()
+    }
+
+    fun getContactInfo(jid: String): ContactInfo? =
+        db.rawQuery("SELECT * FROM chats WHERE jid = ?", arrayOf(jid)).use { c ->
+            if (!c.moveToFirst()) return null
+            ContactInfo(jid, c.str("name").orEmpty(), c.str("custom_name").orEmpty(), c.str("notes").orEmpty(), c.str("phone"))
+        }
+
+    /** Nombre propio y notas del contacto: solo en este teléfono, prevalecen sobre el nombre de WhatsApp. */
+    fun setContactInfo(jid: String, customName: String, notes: String) {
+        db.update("chats", ContentValues().apply {
+            if (customName.isBlank()) putNull("custom_name") else put("custom_name", customName.trim())
+            if (notes.isBlank()) putNull("notes") else put("notes", notes.trim())
+        }, "jid = ?", arrayOf(jid))
+        notifyChange()
     }
 
     fun setPinned(jid: String, pinned: Boolean) {

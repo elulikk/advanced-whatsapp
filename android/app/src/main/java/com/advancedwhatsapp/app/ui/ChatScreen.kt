@@ -295,13 +295,18 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
         }
     }
 
+    var editingContact by remember { mutableStateOf(false) }
+    if (editingContact) ContactEditDialog(jid) { editingContact = false }
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
             TopAppBar(
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Volver") } },
                 title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        Modifier.clickable(enabled = chat?.isGroup == false) { editingContact = true },   // tocar el nombre: editar contacto
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
                         Avatar(chat?.name.orEmpty(), chat?.avatarPath, 38.dp)
                         Column(Modifier.padding(start = 10.dp)) {
                             Text(chat?.name.orEmpty(), fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)

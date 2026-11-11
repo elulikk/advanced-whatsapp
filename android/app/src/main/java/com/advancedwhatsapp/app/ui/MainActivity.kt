@@ -104,7 +104,12 @@ private fun AppNav(pendingChat: String?, onChatOpened: () -> Unit) {
         }
         composable("link") { LinkScreen(onBack = { nav.popBackStack() }) }
         composable("settings") { SettingsScreen(onBack = { nav.popBackStack() }) }
-        composable("statuses") { StatusListScreen(onBack = { nav.popBackStack() }) }
+        composable("statuses") {
+            StatusListScreen(onBack = { nav.popBackStack() }, onOpenChat = { jid ->
+                nav.popBackStack()
+                nav.navigate("chat/${Uri.encode(jid)}")
+            })
+        }
         composable("new") {
             NewChatScreen(onBack = { nav.popBackStack() }, onOpen = { jid ->
                 nav.popBackStack()

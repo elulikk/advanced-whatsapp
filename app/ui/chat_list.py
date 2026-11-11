@@ -25,7 +25,11 @@ MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
 
 
 def resolve_display_name(chat_data: dict) -> str:
-    """Resuelve un nombre amigable idéntico a WhatsApp Desktop, eliminando 'Usuario (...)'."""
+    """Resuelve un nombre amigable idéntico a WhatsApp Desktop, eliminando 'Usuario (...)'.
+    El nombre que puso el usuario (custom_name) prevalece sobre el de WhatsApp."""
+    custom = (chat_data.get("custom_name") or "").strip()
+    if custom:
+        return custom
     raw_name = (chat_data.get("name") or "").strip()
     phone = (chat_data.get("phone") or "").strip()
     jid = chat_data.get("jid") or ""

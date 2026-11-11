@@ -20,7 +20,7 @@ from app.config import (
 )
 from app import windows_integration
 from app.ui.theme import C, HEADER_H
-from app.ui.icons import icon, tool_button
+from app.ui.icons import icon, tool_button, flame_pixmap
 from app.ai.ai_service import AIService
 from app.gateway_manager import GatewayManager
 
@@ -482,7 +482,14 @@ class SettingsPanel(QWidget):
 
         lbl_app = QLabel(f"Advanced WhatsApp <span style='color: {C['text_2']}; font-weight: 400;'>· versión {APP_VERSION}</span>")
         lbl_app.setStyleSheet("font-size: 15px; font-weight: 600;")
-        layout.addWidget(lbl_app)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(10)
+        flame = QLabel()
+        flame.setPixmap(flame_pixmap(36))
+        title_row.addWidget(flame)
+        title_row.addWidget(lbl_app)
+        title_row.addStretch()
+        layout.addLayout(title_row)
         layout.addWidget(self._hint("Cliente de WhatsApp de escritorio · Mag Tecnología"))
 
         group = QGroupBox("Datos locales")

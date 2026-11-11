@@ -44,7 +44,7 @@ from app.media_service import (
 )
 from app.ui.chat_list import AvatarWidget, format_hour, format_day_label, resolve_display_name
 from app.ui.theme import C, HEADER_H, R_MD, R_LG, R_SM
-from app.ui.icons import icon, tool_button, image as icon_image, pixmap as icon_pixmap
+from app.ui.icons import icon, tool_button, image as icon_image, pixmap as icon_pixmap, flame_pixmap
 from app.ui.effects import HoverFade, overlay, menu_below, mix
 from app import tags as tagdb
 from app.ui.tag_widgets import HeaderTagList, tag_id_from_mime
@@ -425,7 +425,7 @@ class ChatViewPanel(QWidget):
         empty_layout.setSpacing(6)
 
         icon_lbl = QLabel()
-        icon_lbl.setPixmap(icon_pixmap("chats", C["ember_dim"], 56))
+        icon_lbl.setPixmap(flame_pixmap(72))
         empty_layout.addWidget(icon_lbl, alignment=Qt.AlignCenter)
 
         title_lbl = QLabel("Advanced WhatsApp")

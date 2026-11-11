@@ -231,6 +231,13 @@ def init_db():
                 cursor.execute(f"ALTER TABLE messages ADD COLUMN {column}")
             except Exception:
                 pass
+        # custom_name: nombre que puso el usuario; prevalece sobre el que manda WhatsApp o la agenda
+        # manual_unread: chat marcado como no leído a mano (sin mensajes sin leer reales)
+        for column in ("custom_name TEXT", "manual_unread INTEGER DEFAULT 0"):
+            try:
+                cursor.execute(f"ALTER TABLE chats ADD COLUMN {column}")
+            except Exception:
+                pass
         # muted_until: notificaciones silenciadas hasta ese momento (epoch); -1 = para siempre
         try:
             cursor.execute("ALTER TABLE chats ADD COLUMN muted_until INTEGER DEFAULT 0")
@@ -251,6 +258,9 @@ def init_db():
 
         # 3b. Unir chats duplicados LID / teléfono
         merge_lid_duplicates(conn)
+
+        # 3b2. El contador de no leídos se recalcula desde los mensajes reales (evita que se acumule)
+        recompute_unread_counts(conn)
 
         # 3c. Vistas previas y horas desde el mensaje más reciente de cada chat
         refresh_chat_previews(cursor, [r[0] for r in cursor.execute("SELECT jid FROM chats").fetchall()])
@@ -630,7 +640,9 @@ def save_or_update_contact(jid: str, name: str, phone: Optional[str] = None) -> 
                 updated_at = CURRENT_TIMESTAMP
         """, (jid, clean_name, clean_phone, clean_name))
 
-        # Actualizar en chats
+        # Actualizar en chats (y fijar el nombre propio: no lo pisa lo que mande WhatsApp después)
+        cursor.execute("UPDATE chats SET custom_name = ? WHERE jid = ? OR jid LIKE ?",
+                       (clean_name, jid, f"{jid.split('@')[0]}@%"))
         cursor.execute("""
             UPDATE chats 
             SET name = ?,
@@ -767,12 +779,52 @@ GROUP_CHAT_SQL = "jid LIKE '%@g.us'"
 VISIBLE_CHAT_SQL = f"({INDIVIDUAL_CHAT_SQL} OR {GROUP_CHAT_SQL})"
 
 
+def get_chat_custom_name(jid: str) -> str:
+    """Nombre que puso el usuario para el chat ('' si no hay)."""
+    with db_conn() as conn:
+        row = conn.execute("SELECT custom_name FROM chats WHERE jid = ?", (jid,)).fetchone()
+    return (row["custom_name"] or "") if row else ""
+
+
+def set_chat_custom_name(jid: str, name: str) -> None:
+    """Nombre propio del contacto: prevalece sobre el de WhatsApp/agenda. Vacío = volver al de WhatsApp."""
+    with db_conn() as conn:
+        conn.execute("UPDATE chats SET custom_name = ? WHERE jid = ?", ((name or "").strip() or None, jid))
+
+
 def get_chats_count() -> int:
     """Retorna la cantidad total de chats individuales registrados."""
     with db_conn() as conn:
         cursor = conn.cursor()
         cursor.execute(f"SELECT COUNT(*) FROM chats WHERE {INDIVIDUAL_CHAT_SQL}")
         return cursor.fetchone()[0]
+
+
+def recompute_unread_counts(conn: Optional[sqlite3.Connection] = None, jids: Optional[List[str]] = None) -> int:
+    """Recalcula chats.unread_count desde los mensajes recibidos que siguen sin leer: el contador nunca puede
+    superar lo realmente pendiente y un chat sin pendientes queda en 0 (salvo marcado como no leído a mano).
+    Devuelve cuántos chats cambiaron."""
+    if conn is None:
+        with db_conn() as own:
+            return recompute_unread_counts(own, jids)
+    where = ""
+    params: list = []
+    if jids:
+        where = f" AND c.jid IN ({','.join('?' * len(jids))})"
+        params = list(jids)
+    real = ("(SELECT COUNT(*) FROM messages m WHERE m.chat_jid = c.jid AND m.from_me = 0 "
+            "AND m.status != 'read' AND m.media_type != 'revoked')")
+    cur = conn.execute(f"""
+        UPDATE chats AS c SET unread_count = CASE
+            WHEN {real} > 0 THEN MIN(c.unread_count, {real})
+            WHEN c.manual_unread = 1 THEN 1
+            ELSE 0 END
+        WHERE c.unread_count != CASE
+            WHEN {real} > 0 THEN MIN(c.unread_count, {real})
+            WHEN c.manual_unread = 1 THEN 1
+            ELSE 0 END{where}
+    """, params)
+    return cur.rowcount
 
 
 def get_total_unread_count() -> int:
@@ -805,8 +857,8 @@ def get_chats(search: Optional[str] = None, filter_unread: bool = False, limit: 
 
         if search and search.strip():
             term = f"%{search.strip()}%"
-            query += " AND (name LIKE ? OR phone LIKE ? OR last_message_text LIKE ?)"
-            params.extend([term, term, term])
+            query += " AND (name LIKE ? OR custom_name LIKE ? OR phone LIKE ? OR last_message_text LIKE ?)"
+            params.extend([term, term, term, term])
 
         query += " ORDER BY is_pinned DESC, last_message_time DESC, updated_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
@@ -845,7 +897,7 @@ def mark_chat_as_read(chat_jid: str) -> List[tuple]:
                 "SELECT id, sender_jid FROM messages WHERE chat_jid = ? AND from_me = 0 AND status != 'read' "
                 "ORDER BY timestamp DESC LIMIT 200", (chat_jid,))
         ]
-        cursor.execute("UPDATE chats SET unread_count = 0 WHERE jid = ?", (chat_jid,))
+        cursor.execute("UPDATE chats SET unread_count = 0, manual_unread = 0 WHERE jid = ?", (chat_jid,))
         cursor.execute("UPDATE messages SET status = 'read' WHERE chat_jid = ? AND from_me = 0", (chat_jid,))
         conn.commit()
     return newly_read
@@ -874,6 +926,7 @@ def mark_messages_read_elsewhere(message_ids: List[str]) -> List[str]:
                 _stash_early_status(mid, "read")
         for chat_jid, count in newly.items():
             _settle_unread(conn, chat_jid, count)
+        recompute_unread_counts(conn, list(newly))
         conn.commit()
     return list(newly)
 
@@ -899,7 +952,7 @@ def mark_chat_read_elsewhere(chat_jid: str) -> bool:
         changed = conn.execute(
             "UPDATE messages SET status = 'read' WHERE chat_jid = ? AND from_me = 0 AND status != 'read'",
             (chat_jid,)).rowcount
-        conn.execute("UPDATE chats SET unread_count = 0 WHERE jid = ?", (chat_jid,))
+        conn.execute("UPDATE chats SET unread_count = 0, manual_unread = 0 WHERE jid = ?", (chat_jid,))
         conn.commit()
         return bool(row["unread_count"]) or changed > 0
 
@@ -907,7 +960,7 @@ def mark_chat_read_elsewhere(chat_jid: str) -> bool:
 def mark_chat_unread_elsewhere(chat_jid: str) -> bool:
     """El chat se marcó como no leído en el celular: se muestra con contador (como en WhatsApp)."""
     with db_conn() as conn:
-        changed = conn.execute("UPDATE chats SET unread_count = 1 WHERE jid = ? AND unread_count = 0",
+        changed = conn.execute("UPDATE chats SET unread_count = 1, manual_unread = 1 WHERE jid = ? AND unread_count = 0",
                                (chat_jid,)).rowcount
         conn.commit()
         return changed > 0

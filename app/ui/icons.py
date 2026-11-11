@@ -100,6 +100,21 @@ def _screen_ratio() -> float:
 
 
 @lru_cache(maxsize=512)
+@lru_cache(maxsize=8)
+def flame_pixmap(size: int = 32) -> QPixmap:
+    """Logo de la llama de la app (assets/advancedwhatsapp.png) a tamaño lógico, nítido en pantallas HiDPI."""
+    import os
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                        "assets", "advancedwhatsapp.png")
+    ratio = _screen_ratio()
+    pm = QPixmap(path)
+    if pm.isNull():
+        return QPixmap()
+    pm = pm.scaled(int(size * ratio), int(size * ratio), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    pm.setDevicePixelRatio(ratio)
+    return pm
+
+
 def pixmap(name: str, color: str = None, size: int = 18, stroke: float = None, ratio: float = None) -> QPixmap:
     """Pixmap del icono a `size` px lógicos y a la escala de pantalla (o `ratio`)."""
     color = color or C["text_2"]
