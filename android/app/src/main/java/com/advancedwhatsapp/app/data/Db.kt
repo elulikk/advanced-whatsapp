@@ -184,8 +184,16 @@ object Db {
         val where = StringBuilder(filterSql(filter, search.isNotBlank()))
         val args = mutableListOf<String>()
         if (search.isNotBlank()) {
-            where.append(" AND (name LIKE ? OR phone LIKE ? OR last_message_text LIKE ?)")
-            repeat(3) { args += "%${search.trim()}%" }
+            val lockedJids = ChatLock.locked.toList()
+            if (lockedJids.isEmpty()) {
+                where.append(" AND (name LIKE ? OR phone LIKE ? OR last_message_text LIKE ?)")
+                repeat(3) { args += "%${search.trim()}%" }
+            } else {
+                // El texto del último mensaje de un chat bloqueado no es buscable (se vería en los resultados)
+                where.append(" AND (name LIKE ? OR phone LIKE ? OR (last_message_text LIKE ? AND jid NOT IN (${lockedJids.joinToString(",") { "?" }})))")
+                repeat(3) { args += "%${search.trim()}%" }
+                args += lockedJids
+            }
         }
         return db.rawQuery(
             "SELECT * FROM chats WHERE $where ORDER BY is_pinned DESC, last_message_time DESC, updated_at DESC LIMIT $limit",

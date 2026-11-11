@@ -53,6 +53,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.material.icons.filled.Lock
+import com.advancedwhatsapp.app.data.ChatLock
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -355,20 +359,30 @@ private fun BatteryBanner() {
 @Composable
 private fun ChatRow(chat: Chat, tabs: List<ChatTab>, onClick: () -> Unit, onMarkRead: () -> Unit, onMove: (Long) -> Unit) {
     var menu by remember { mutableStateOf(false) }
+    var lockDialog by remember { mutableStateOf("") }   // "", "new" (crear contraseña y bloquear), "ask" (pedirla para desbloquear)
+    val locked = ChatLock.isLocked(chat.jid)
     Box {
         Row(
             Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = { menu = true })
+                .alpha(if (locked) 0.55f else 1f)   // chat bloqueado: fila apagada, como algo todavía no desbloqueado
                 .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Avatar(chat.name, chat.avatarPath)
+            Box(contentAlignment = Alignment.Center) {
+                Avatar(chat.name, chat.avatarPath)
+                if (locked) {
+                    Box(Modifier.size(48.dp).background(Color(0xAA000000), CircleShape), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Default.Lock, "Chat bloqueado", tint = Color.White, modifier = Modifier.size(22.dp))
+                    }
+                }
+            }
             Column(Modifier.padding(start = 12.dp).weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(chat.name, color = C.text, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                     Text(chatTime(chat.lastTime), color = if (chat.unread != 0) C.accent else C.text3, fontSize = 12.sp)
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(chat.lastText, color = C.text2, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    Text(if (locked) ChatLock.LOCKED_PREVIEW else chat.lastText, color = C.text2, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                     if (chat.isMuted) Icon(Icons.Default.NotificationsOff, "Silenciado", tint = C.text3, modifier = Modifier.size(16.dp).padding(start = 2.dp))
                     if (chat.pinned) Icon(Icons.Default.PushPin, "Fijado", tint = C.text3, modifier = Modifier.size(16.dp).padding(start = 2.dp))
                     if (chat.unread != 0) {
@@ -392,6 +406,12 @@ private fun ChatRow(chat: Chat, tabs: List<ChatTab>, onClick: () -> Unit, onMark
                     onMove(0)
                 })
             }
+            DropdownMenuItem(text = { Text(if (locked) "Desbloquear chat" else "Bloquear chat") }, onClick = {
+                menu = false
+                if (locked) lockDialog = "ask"
+                else if (ChatLock.hasPassword()) ChatLock.lock(chat.jid)
+                else lockDialog = "new"
+            })
             DropdownMenuItem(text = { Text(if (chat.pinned) "Desfijar" else "Fijar") }, onClick = {
                 menu = false
                 Db.setPinned(chat.jid, !chat.pinned)
@@ -416,6 +436,10 @@ private fun ChatRow(chat: Chat, tabs: List<ChatTab>, onClick: () -> Unit, onMark
                     onMarkRead()
                 })
             }
+        }
+        when (lockDialog) {
+            "new" -> NewPasswordDialog(onDone = { lockDialog = ""; ChatLock.lock(chat.jid) }, onDismiss = { lockDialog = "" })
+            "ask" -> AskPasswordDialog("Desbloquear chat", onOk = { lockDialog = ""; ChatLock.unlock(chat.jid) }, onDismiss = { lockDialog = "" })
         }
     }
 }
