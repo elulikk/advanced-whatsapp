@@ -227,8 +227,9 @@ def init_db():
         # pinned_at: momento (epoch) en que se fijó el mensaje en su chat; NULL = no fijado
         # summary: resumen e interpretación del mensaje hecho por la IA (modo resumen)
         # edited: el remitente editó el texto después de enviarlo
+        # transcript_failed: la transcripción automática falló; no se reintenta sola (queda el «Transcribir» manual)
         for column in ("media_raw TEXT", "transcript TEXT", "pinned_at INTEGER", "summary TEXT",
-                       "edited INTEGER DEFAULT 0"):
+                       "edited INTEGER DEFAULT 0", "transcript_failed INTEGER DEFAULT 0"):
             try:
                 cursor.execute(f"ALTER TABLE messages ADD COLUMN {column}")
             except Exception:
@@ -1213,8 +1214,32 @@ def set_message_media_path(msg_id: str, media_path: str):
 
 def set_message_transcript(msg_id: str, transcript: str):
     with db_conn() as conn:
-        conn.execute("UPDATE messages SET transcript = ? WHERE id = ?", (transcript, msg_id))
+        conn.execute("UPDATE messages SET transcript = ?, transcript_failed = 0 WHERE id = ?", (transcript, msg_id))
         conn.commit()
+
+
+def set_message_transcript_failed(msg_id: str):
+    """Marca que la transcripción automática falló: no se vuelve a intentar sola."""
+    with db_conn() as conn:
+        conn.execute("UPDATE messages SET transcript_failed = 1 WHERE id = ?", (msg_id,))
+        conn.commit()
+
+
+def is_message_transcript_failed(msg_id: str) -> bool:
+    with db_conn() as conn:
+        row = conn.execute("SELECT transcript_failed FROM messages WHERE id = ?", (msg_id,)).fetchone()
+        return bool(row and row["transcript_failed"])
+
+
+def get_audios_pending_transcript(since_ts: int, limit: int = 30) -> List[Dict[str, Any]]:
+    """Audios recientes (desde `since_ts`) sin transcripción y sin intento fallido, los más nuevos primero."""
+    with db_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, media_type, media_path, media_raw, from_me FROM messages "
+            "WHERE media_type = 'audio' AND timestamp >= ? AND COALESCE(transcript, '') = '' "
+            "AND COALESCE(transcript_failed, 0) = 0 AND (media_raw IS NOT NULL OR media_path IS NOT NULL) "
+            "ORDER BY timestamp DESC LIMIT ?", (since_ts, limit)).fetchall()
+        return [dict(r) for r in rows]
 
 
 def set_message_summary(msg_id: str, summary: Optional[str]):

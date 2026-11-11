@@ -4,6 +4,7 @@ import android.util.Log
 import com.advancedwhatsapp.app.App
 import com.advancedwhatsapp.app.AppState
 import com.advancedwhatsapp.app.Prefs
+import com.advancedwhatsapp.app.ai.AutoTranscriber
 import com.advancedwhatsapp.app.data.Db
 import com.advancedwhatsapp.app.notify.Notifier
 import org.json.JSONArray
@@ -136,7 +137,10 @@ class WebhookServer {
                     Db.setReaction(id, who, d.optString("emoji"), d.optLong("timestamp"), d.str("chat_jid"))
                 }
             }
-            "connection" -> AppState.updateConnection(d)
+            "connection" -> {
+                AppState.updateConnection(d)
+                if (d.optString("status") == "connected") AutoTranscriber.backlogOnce()
+            }
             "presence" -> AppState.updatePresence(d)
             "call" -> Notifier.call(d)
             "contact_status" -> AppState.statusChanged()
@@ -183,6 +187,7 @@ class WebhookServer {
         if (saved && isNew && !fromMe && d.optString("upsert_type") == "notify" && !d.optBoolean("already_read")) {
             Notifier.message(chat)
         }
+        if (saved && isNew && (d.str("media_type") ?: "text") == "audio") AutoTranscriber.enqueue(id)
     }
 
     private fun readElsewhere(chats: JSONArray?) {

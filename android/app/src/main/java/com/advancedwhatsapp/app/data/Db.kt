@@ -628,6 +628,13 @@ object Db {
         notifyChange(chat ?: "")
     }
 
+    /** Audios desde [since] (epoch seg.) sin transcripción y con archivo o clave para bajarlo; los más nuevos primero. */
+    fun audiosPendingTranscript(since: Long, limit: Int): List<Message> = db.rawQuery(
+        "SELECT * FROM messages WHERE media_type = 'audio' AND timestamp >= ? AND COALESCE(transcript, '') = '' " +
+            "AND (media_raw IS NOT NULL OR media_path IS NOT NULL) ORDER BY timestamp DESC LIMIT ?",
+        arrayOf(since.toString(), limit.toString()),
+    ).use { c -> buildList { while (c.moveToNext()) add(c.toMessage()) } }
+
     fun setMediaPath(id: String, path: String) = updateMessage(id) { put("media_path", path) }
     fun setTranscript(id: String, t: String) = updateMessage(id) { put("transcript", t); putNull("summary") }
     fun setSummary(id: String, s: String?) = updateMessage(id) { if (s == null) putNull("summary") else put("summary", s) }

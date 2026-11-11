@@ -46,6 +46,7 @@ import com.advancedwhatsapp.app.AppState
 import com.advancedwhatsapp.app.BuildConfig
 import com.advancedwhatsapp.app.Prefs
 import com.advancedwhatsapp.app.ai.AiService
+import com.advancedwhatsapp.app.ai.AutoTranscriber
 import com.advancedwhatsapp.app.data.Actions
 import com.advancedwhatsapp.app.data.ChatLock
 import com.advancedwhatsapp.app.gateway.GatewayService
@@ -65,6 +66,7 @@ fun SettingsScreen(onBack: () -> Unit) {
     var receipts by remember { mutableStateOf(Prefs.readReceipts) }
     var statusReceipts by remember { mutableStateOf(Prefs.statusReceipts) }
     var keepCpu by remember { mutableStateOf(Prefs.keepCpuAwake) }
+    var autoTranscribe by remember { mutableStateOf(Prefs.autoTranscribe) }
     var provider by remember { mutableStateOf(Prefs.provider) }
     var lockDialog by remember { mutableStateOf("") }   // "new", "change" (pide la actual y luego la nueva), "remove"
     var biometricOn by remember { mutableStateOf(ChatLock.biometric) }
@@ -125,6 +127,11 @@ fun SettingsScreen(onBack: () -> Unit) {
             Section("Inteligencia artificial")
             Selector("Proveedor preferido", provider, AiService.PROVIDERS, { provider = it; Prefs.provider = it })
             Text("El resumen de mensajes usa Claude Haiku si hay clave de Anthropic. Transcribir audios necesita clave de Groq u OpenAI.", color = C.text2, fontSize = 13.sp)
+            Toggle("Transcribir audios automáticamente", autoTranscribe) {
+                autoTranscribe = it
+                Prefs.autoTranscribe = it
+                if (it) AutoTranscriber.backlogOnce(force = true)
+            }
             AiService.PROVIDERS.forEach { ProviderCard(it) }
 
             Text("Versión ${BuildConfig.VERSION_NAME}", color = C.text3, fontSize = 12.sp)
