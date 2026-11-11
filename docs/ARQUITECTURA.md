@@ -134,3 +134,14 @@ descifra y escribe el archivo; la respuesta trae `media_path`.
 
 El mismo `gateway/server.js` corre dentro de la app con `nodejs-mobile` (`ADVANCEDWHATSAPP_DATA_DIR` apunta a la carpeta privada). El
 equivalente de `webhook_server.py` es `gateway/WebhookServer.kt` y el de `db.py` es `data/Db.kt`. Detalles en `android/README.md`.
+
+## Emojis y stickers
+
+- **Biblioteca** (`app/stickers.py`; Android: `data/Stickers.kt`): `~/.magsapp/media/stickers/<id>.webp` (512x512, el id es el hash del
+  contenido) + `index.json` (paquetes, favoritos, recientes, emojis recientes, mensajes ya importados), escrito de forma atómica.
+  Las imágenes se convierten a webp 512x512 con Pillow en PC y con `Bitmap` en Android; el gateway no convierte nada (sin sharp/jimp).
+- **Emojis**: `android/app/src/main/assets/emojis.txt` es la fuente; `app/emoji_data.py` es su copia embebida para PC (si se edita uno,
+  actualizar el otro). Se parsean la primera vez que se abre el selector.
+- **Envío**: `POST /send` con `sticker_path` (webp) y, si es animado, `sticker_animated: true`. Se copia a `media/enviados/` antes de enviar.
+- **Importación**: archivos/carpetas/.wastickers, historial de chats (baja con `/media/download` los que faltan) y, en Android, las carpetas
+  de WhatsApp (`Android/media/com.whatsapp/...`) con el selector de carpetas (SAF).

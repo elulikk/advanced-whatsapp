@@ -31,6 +31,7 @@ from app.ui.message_menu import (
     ReactionBar, MessageContextMenu, ForwardDialog, SHADOW, add_shadow
 )
 from app.gateway_manager import GatewayManager
+from app import stickers as stickerlib
 from app.config import (
     get_chat_font_scale, set_chat_font_scale, clamp_font_scale, get_polish_ai, set_polish_ai, load_app_config,
     get_polish_mode, set_polish_mode, get_polish_profile, set_polish_profile, MEDIA_DIR
@@ -340,6 +341,7 @@ class ChatViewPanel(QWidget):
     scheduled_total_changed = Signal(int)
     _att_result = Signal(int, dict)            # índice del adjunto, respuesta del gateway
     _att_finished = Signal()
+    _sticker_result = Signal(str, dict, str, int, str, str)   # jid, respuesta, ruta enviada, hora programada, cita, autor de la cita
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -402,6 +404,7 @@ class ChatViewPanel(QWidget):
         self._init_ui()
 
         self._scheduled_counts_ready.connect(self._on_scheduled_counts)
+        self._sticker_result.connect(self._on_sticker_result)
 
         self._recorder.level.connect(self.voice_meter.push)
         self._recorder.failed.connect(self._on_recorder_failed)
@@ -824,6 +827,9 @@ class ChatViewPanel(QWidget):
                                         size=btn, icon_size=20)
         self.btn_schedule.clicked.connect(self._choose_schedule_time)
         composer_layout.addWidget(self.btn_schedule, alignment=Qt.AlignBottom)
+        self.btn_emoji = tool_button("smile", "Emojis y stickers", size=btn, icon_size=20)
+        self.btn_emoji.clicked.connect(self._toggle_emoji_panel)
+        composer_layout.addWidget(self.btn_emoji, alignment=Qt.AlignBottom)
         composer_layout.addSpacing(4)
 
         self.input_text = MessageInputEdit(placeholder="Escribe un mensaje  (Enter envía, Shift+Enter salto de línea)",
@@ -1628,6 +1634,7 @@ class ChatViewPanel(QWidget):
 
             media_html = ""
             transcript_html = ""
+            sticker_url = None
             if media_type == "image" and has_file:
                 img_url = "file:///" + os.path.abspath(media_path).replace("\\", "/")
                 media_html = (f'<a href="advancedwhatsapp://open/{msg.get("id")}"><img src="{img_url}" border="0" '
@@ -1673,8 +1680,12 @@ class ChatViewPanel(QWidget):
             elif media_type == "video":
                 action_html = f" · {open_link}" if has_file else " · " + self._media_placeholder(msg, "")
                 media_html = panel(f'🎥 <b>Video</b>{action_html}')
+            elif media_type == "sticker" and has_file:
+                sticker_url = "file:///" + os.path.abspath(media_path).replace("\\", "/")
+                media_html = f'<img src="{sticker_url}" width="150" height="150" border="0"/>'
             elif media_type == "sticker":
-                media_html = f'<div style="padding: 2px; margin-bottom: 3px; color: {C["text_2"]};"><i>Sticker</i></div>'
+                request_media(msg)    # son livianos: se bajan al verlos (la descarga está deduplicada)
+                media_html = panel(self._media_placeholder(msg, "🎨 Sticker"))
             elif media_type == "location":
                 loc_txt = raw_text or "Ubicación compartida"
                 media_html = panel(f'📍 <b>{html.escape(loc_txt)}</b>')
@@ -1717,6 +1728,19 @@ class ChatViewPanel(QWidget):
 
             def row(cell: str) -> str:
                 return f"{sel_cell}{gutter}{cell}" if from_me else f"{sel_cell}{cell}{gutter}"
+
+            if sticker_url and not quote_html:
+                # Los stickers van sueltos, sin burbuja, como en WhatsApp
+                push(mid, f"""
+                    <table width="100%" border="0" cellpadding="0" cellspacing="0" style="margin-bottom: 4px;">
+                      <tr>{row(f'''<td align="{align}">{anchor}{sender_html}
+                        {media_html}
+                        <div style="text-align: {align};">{meta}</div>
+                        {self._reactions_html(mid, reactions, align)}
+                      </td>''')}</tr>
+                    </table>
+                """)
+                continue
 
             if media_type == "text" and not quote_html and _is_emoji_only(raw_text):
                 # Emojis sueltos: grandes y sin burbuja, como WhatsApp
@@ -1995,6 +2019,8 @@ class ChatViewPanel(QWidget):
         ]
         if has_file:
             actions.append(("save", "download", "Guardar como…", True))
+        if mt == "sticker" and has_file:
+            actions.append(("addsticker", "smile", "Agregar a mis stickers", True))
         if message_summary.can_summarize(msg):
             shown = bool(msg.get("summary")) and msg["id"] not in self._summary_hidden
             actions.append(("summarize", "sparkle", "Ocultar resumen" if shown else "Resumir con IA",
@@ -2022,6 +2048,8 @@ class ChatViewPanel(QWidget):
             self._forward_messages([msg])
         elif key == "save":
             self._save_media_as(msg)
+        elif key == "addsticker":
+            self._add_sticker_from_msg(msg)
         elif key == "summarize":
             self._toggle_summary(msg)
         elif key == "pin":
@@ -2436,6 +2464,90 @@ class ChatViewPanel(QWidget):
             title, what = ("No se pudo programar", "programar") if at else ("Error al enviar", "enviar")
             QMessageBox.critical(self, title, f"No se pudo {what} el mensaje:\n{res.get('error', 'Desconocido')}")
 
+    # ── Emojis y stickers ──
+    def _toggle_emoji_panel(self):
+        if not self.current_chat:
+            return
+        if getattr(self, "_emoji_panel", None) is None:
+            from app.ui.emoji_panel import EmojiStickerPanel
+            self._emoji_panel = EmojiStickerPanel(self)
+            self._emoji_panel.emoji_chosen.connect(self._insert_emoji)
+            self._emoji_panel.sticker_chosen.connect(self._send_sticker)
+        self._emoji_panel.show_above(self.btn_emoji)
+
+    def _insert_emoji(self, emoji: str):
+        """Escribe el emoji donde está el cursor del campo de mensaje (reemplaza la selección)."""
+        if self.input_text.isVisible():
+            self.input_text.insertPlainText(emoji)
+
+    def _send_sticker(self, path: str, sid: str):
+        """Manda un sticker de la biblioteca al chat abierto; la subida corre en un hilo."""
+        if not self.current_chat or self._att_sending or not os.path.exists(path):
+            return
+        at = self._schedule_at
+        if at and self._schedule_is_past():
+            return
+        if not at and self.gateway.get_status().get("status") != "connected":
+            QMessageBox.warning(self, "WhatsApp no conectado",
+                                "WhatsApp no está vinculado o está desconectado.\n"
+                                "Ve a Configuración → WhatsApp para vincularlo.")
+            return
+        chat_jid = self.current_chat.get("jid")
+        quoted_text, quoted_sender = self._quote_fields()
+        quoted = self._quoted_payload()
+        extra = self._schedule_kwargs(at, quoted_text, quoted_sender)
+        animated = bool((stickerlib.get(sid) or {}).get("animated"))
+        gateway = self.gateway
+
+        def work():
+            sent = path
+            if not at:
+                # El mensaje enviado conserva su archivo aunque después se borre el sticker de la biblioteca
+                try:
+                    folder = os.path.join(MEDIA_DIR, "enviados")
+                    os.makedirs(folder, exist_ok=True)
+                    sent = os.path.join(folder, f"sticker_{sid}.webp")
+                    if not os.path.exists(sent):
+                        shutil.copyfile(path, sent)
+                except OSError:
+                    sent = path
+            res = gateway.send_message(to=chat_jid, sticker_path=path, sticker_animated=animated, quoted=quoted, **extra)
+            if res.get("success"):
+                try:
+                    stickerlib.mark_used(sid)
+                except Exception:
+                    pass
+            try:
+                self._sticker_result.emit(chat_jid, res, sent, int(at or 0), quoted_text or "", quoted_sender or "")
+            except RuntimeError:   # la ventana se cerró antes de terminar
+                pass
+
+        threading.Thread(target=work, daemon=True, name="advancedwhatsapp-sticker").start()
+
+    def _on_sticker_result(self, chat_jid: str, res: dict, sent_path: str, at: int, quoted_text: str, quoted_sender: str):
+        if not res.get("success"):
+            QMessageBox.critical(self, "No se pudo programar" if at else "Error al enviar",
+                                 f"No se pudo enviar el sticker:\n{res.get('error', 'Desconocido')}")
+            return
+        self._cancel_reply()
+        if at:
+            self._on_scheduled(at)
+            return
+        self._store_sent(res, chat_jid, "", sent_path, "sticker", quoted_text or None, quoted_sender or None)
+        if self.current_chat and self.current_chat.get("jid") == chat_jid:
+            self.refresh_messages()
+        self.message_sent.emit({"chat_jid": chat_jid, "text": ""})
+
+    def _add_sticker_from_msg(self, msg: dict):
+        rec = stickerlib.add_from_message(msg)
+        if rec is None:
+            text = "No se pudo agregar el sticker."
+        elif rec.get("existing"):
+            text = "Ese sticker ya estaba en tus stickers."
+        else:
+            text = "Agregado a tus stickers."
+        QToolTip.showText(QCursor.pos(), text, self)
+
     # ── Programar envío ──
     def _choose_schedule_time(self):
         from app.ui.scheduled_messages import ScheduleTimeDialog
@@ -2547,7 +2659,7 @@ class ChatViewPanel(QWidget):
         self.attachment_bar.set_state(paths[0], "sending")
         self.attachment_bar.show_progress(True)
         self.attachment_bar.set_progress(0.0, f"Enviando 1 de {len(paths)}…")
-        for w in (self.input_text, self.btn_attach, self.btn_polish, self.btn_action):
+        for w in (self.input_text, self.btn_attach, self.btn_polish, self.btn_emoji, self.btn_action):
             w.setEnabled(False)
         self._att_timer.start()
 
@@ -2616,7 +2728,7 @@ class ChatViewPanel(QWidget):
         st, self._att_state = self._att_state, None
         self._att_timer.stop()
         self._att_sending = False
-        for w in (self.input_text, self.btn_attach, self.btn_polish, self.btn_action):
+        for w in (self.input_text, self.btn_attach, self.btn_polish, self.btn_emoji, self.btn_action):
             w.setEnabled(True)
         if not st:
             return
@@ -2692,7 +2804,7 @@ class ChatViewPanel(QWidget):
         recording = self._recorder.active
         sending = self._voice_sending_here() and not recording
         show = recording or sending
-        for w in (self.btn_attach, self.btn_polish, self.input_text, self.btn_dictate):
+        for w in (self.btn_attach, self.btn_polish, self.btn_emoji, self.input_text, self.btn_dictate):
             w.setVisible(not show)
         self.voice_panel.setVisible(show)
         for w in (self.btn_voice_cancel, self.btn_voice_pause, self.voice_meter):

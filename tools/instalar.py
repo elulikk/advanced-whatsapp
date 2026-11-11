@@ -20,7 +20,7 @@ if BASE_DIR not in sys.path:
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-REQUIRED = [("PySide6", "PySide6"), ("requests", "requests"), ("win32com.shell", "pywin32")]
+REQUIRED = [("PySide6", "PySide6"), ("requests", "requests"), ("PIL", "Pillow"), ("win32com.shell", "pywin32")]
 OPTIONAL = [("google.generativeai", "google-generativeai (IA con Gemini)")]
 
 
