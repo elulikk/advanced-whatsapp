@@ -16,6 +16,8 @@ from app.ui.theme import C, HEADER_H, R_LG, unread_badge_qss
 from app.ui.icons import icon, tool_button, pixmap
 from app.ui.effects import HoverFade, mix, overlay, menu_below
 from app import tags as tagdb
+from app import chat_lock
+from app.ui import lock_dialogs
 from app.ui.tag_widgets import (TagPalettePanel, TagManagerDialog, paint_avatar_tags, tags_tooltip, tag_pixmap,
                                 tag_id_from_mime, paint_row_effect)
 
@@ -115,6 +117,7 @@ class AvatarWidget(QWidget):
         self.avatar_path = avatar_path
         self._pix_cache = (None, None)   # (ruta, pixmap escalado)
         self._fade = None
+        self.locked = False              # chat bloqueado: se oscurece y lleva un candado encima
         self.tags = []                   # tags del chat que se dibujan encima (en orden de prioridad)
         self.tag_ring = C["panel"]       # color del anillo de los tags (el fondo sobre el que está el avatar)
         self.setFixedSize(size, size)
@@ -123,6 +126,11 @@ class AvatarWidget(QWidget):
         tags = list(tags or [])
         if tags != self.tags:
             self.tags = tags
+            self.update()
+
+    def set_locked(self, locked: bool):
+        if locked != self.locked:
+            self.locked = locked
             self.update()
 
     def set_clickable(self, tooltip: str = ""):
@@ -189,6 +197,14 @@ class AvatarWidget(QWidget):
         if self._fade is not None and self._fade.value > 0.002:
             painter.fillPath(path, overlay(0.14 * self._fade.value))
 
+        if self.locked:
+            # "Todavía no desbloqueado": avatar apagado con un candado en el centro
+            painter.fillPath(path, QColor(0, 0, 0, 165))
+            side = max(14, round(self.size_px * 0.46))
+            painter.setClipping(False)
+            painter.drawPixmap((self.size_px - side) // 2, (self.size_px - side) // 2,
+                               pixmap("lock", "#e9edef", side))
+
         if self.tags:
             painter.setClipping(False)
             paint_avatar_tags(painter, self.size_px, self.tags, self.tag_ring)
@@ -220,6 +236,8 @@ class ElidedLabel(QLabel):
 
 
 def _preview_text(chat_data: dict) -> str:
+    if chat_lock.is_locked(chat_data.get("jid")):
+        return chat_lock.LOCKED_PREVIEW
     last_msg = (chat_data.get("last_message_text") or "").strip()
     if last_msg:
         return last_msg
@@ -341,10 +359,15 @@ class ChatItemWidget(QWidget):
 
     def _apply(self, chat_data: dict):
         unread = chat_data.get("unread_count", 0) or 0
-        name_color = self._row_fx.get("name") or C["text"]
+        locked = chat_lock.is_locked(chat_data.get("jid"))
+        self.avatar.set_locked(locked)
+        name_color = C["text_3"] if locked else (self._row_fx.get("name") or C["text"])
         self.lbl_name.setStyleSheet(
-            f"font-size: 13px; color: {name_color}; font-weight: {'600' if unread else '400'};")
-        if self.ai_state in AI_PREVIEW:
+            f"font-size: 13px; color: {name_color}; font-weight: {'600' if unread and not locked else '400'};")
+        if locked:
+            self.lbl_preview.setText(chat_lock.LOCKED_PREVIEW)
+            self.lbl_preview.setStyleSheet(f"font-size: 12px; color: {C['text_3']}; font-style: italic;")
+        elif self.ai_state in AI_PREVIEW:
             txt, color = AI_PREVIEW[self.ai_state]
             self.lbl_preview.setText(txt)
             self.lbl_preview.setStyleSheet(f"font-size: 12px; color: {C[color]}; font-style: italic;")
@@ -451,6 +474,7 @@ class ChatListWidget(QListWidget):
 class ChatListPanel(QWidget):
     """Panel lateral con barra de búsqueda, filtros y lista de chats."""
     chat_selected = Signal(dict)
+    chat_lock_changed = Signal(str)   # se bloqueó o desbloqueó un chat (jid)
     open_qr_requested = Signal()
     new_chat_requested = Signal()
     refresh_requested = Signal()
@@ -916,6 +940,8 @@ class ChatListPanel(QWidget):
             for label, secs in (("8 horas", 8 * 3600), ("1 semana", 7 * 86400), ("Siempre", -1)):
                 mute_actions[mute_menu.addAction(label)] = secs
         act_edit = menu.addAction(icon("user"), "Guardar / editar contacto")
+        is_locked = chat_lock.is_locked(chat_data.get("jid"))
+        act_lock = menu.addAction(icon("lock"), "Desbloquear chat" if is_locked else "Bloquear chat")
         tag_actions, act_untag_all, act_tags_cfg = self._add_tag_menu(menu, chat_data.get("jid"))
         menu.addSeparator()
         act_clear = menu.addAction(icon("eraser", C["danger"], active_color=C["danger"]), "Vaciar chat…")
@@ -955,12 +981,27 @@ class ChatListPanel(QWidget):
             set_chat_muted(jid, -1 if secs < 0 else int(time.time()) + secs)
             self.reload_chats(select_jid=self._current_jid())
             self.chat_marked_read.emit(jid)
+        elif act == act_lock:
+            self._toggle_chat_lock(chat_data, is_locked)
         elif act == act_edit:
             self._open_edit_contact_dialog(chat_data)
         elif act == act_clear:
             self._confirm_clear_chat(chat_data)
         elif act == act_delete:
             self._confirm_delete_chat(chat_data)
+
+    def _toggle_chat_lock(self, chat_data: dict, is_locked: bool):
+        jid = chat_data.get("jid")
+        if is_locked:
+            # Para sacar el bloqueo hay que demostrar que sos vos
+            if not (chat_lock.is_open(jid) or lock_dialogs.ask_current_password(self, "Ingresá la contraseña para desbloquear el chat:")):
+                return
+            chat_lock.unlock_chat(jid)
+        else:
+            if not lock_dialogs.ensure_password(self) or not chat_lock.lock_chat(jid):
+                return
+        self.chat_lock_changed.emit(jid)
+        self.reload_chats(select_jid=self._current_jid())
 
     # ── Tags ──
 
