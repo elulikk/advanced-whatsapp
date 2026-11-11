@@ -58,6 +58,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
@@ -86,6 +87,16 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.runtime.MutableState
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
+import androidx.compose.foundation.content.MediaType
+import androidx.compose.foundation.content.consume
+import androidx.compose.foundation.content.contentReceiver
+import androidx.compose.foundation.content.hasMediaType
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.material.icons.filled.EmojiEmotions
 import androidx.compose.material.icons.filled.Keyboard
 import com.advancedwhatsapp.app.data.Sticker
@@ -363,11 +374,8 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
         clipHasImage = false
     }
 
-    /** Pega la imagen del portapapeles: abre la misma vista previa que una foto recién sacada. */
-    fun pasteClipImage() {
-        val cm = ContextCompat.getSystemService(context, ClipboardManager::class.java)
-        val uri = runCatching { cm?.primaryClip?.getItemAt(0)?.uri }.getOrNull()
-        dismissClipImage()
+    /** Imagen pegada (portapapeles o la sugerencia "Pegar" del teclado): misma vista previa que una foto recién sacada. */
+    fun pasteImageUri(uri: Uri?) {
         if (uri == null) {
             notifyError("No se pudo leer la imagen del portapapeles.")
             return
@@ -382,6 +390,14 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
             }
             withContext(Dispatchers.Main) { photoToSend = file.path }
         }
+    }
+
+    /** Pega la imagen del portapapeles: abre la misma vista previa que una foto recién sacada. */
+    fun pasteClipImage() {
+        val cm = ContextCompat.getSystemService(context, ClipboardManager::class.java)
+        val uri = runCatching { cm?.primaryClip?.getItemAt(0)?.uri }.getOrNull()
+        dismissClipImage()
+        pasteImageUri(uri)
     }
 
     /** Dictado: transcribe la grabación, la emprolija si se pidió y deja el texto en el campo, sin enviar. */
@@ -599,6 +615,10 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
                 onChooseSchedule = { chooseScheduleTime() }, scheduleIsPast = { scheduleIsPast() },
                 onToggleAi = { showAi = !showAi },
                 onCamera = { openCamera() },
+                onPasteImage = { uri ->
+                    dismissClipImage()
+                    pasteImageUri(uri)
+                },
                 onPickMedia = { pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) },
                 onPickDocument = { pickDocument.launch(arrayOf("*/*")) },
                 onSend = onSend@{
@@ -728,12 +748,30 @@ private fun PhotoPreview(
 private fun Composer(
     draft: TextFieldValue, onDraft: (TextFieldValue) -> Unit, emojiOpen: Boolean, onToggleEmoji: () -> Unit, onFieldTap: () -> Unit,
     scope: CoroutineScope, scheduled: Boolean, onChooseSchedule: () -> Unit,
-    scheduleIsPast: () -> Boolean, onToggleAi: () -> Unit, onCamera: () -> Unit, onPickMedia: () -> Unit,
+    scheduleIsPast: () -> Boolean, onToggleAi: () -> Unit, onCamera: () -> Unit, onPasteImage: (Uri) -> Unit, onPickMedia: () -> Unit,
     onPickDocument: () -> Unit, onSend: () -> Unit, onSendVoice: (Recording) -> Unit, onDictate: (Recording, Boolean) -> Unit, onRecordingState: (Boolean) -> Unit,
     onError: (String) -> Unit,
 ) {
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
+    // El campo usa TextFieldState: es el único que acepta imágenes del teclado (la sugerencia "Pegar" con la miniatura).
+    // Se sincroniza en los dos sentidos con `draft`, que sigue siendo lo que usa el resto de la pantalla.
+    val fieldState = remember { TextFieldState(draft.text, draft.selection) }
+    val currentDraft by rememberUpdatedState(draft)
+    val currentOnDraft by rememberUpdatedState(onDraft)
+    LaunchedEffect(draft) {
+        if (fieldState.text.toString() != draft.text || fieldState.selection != draft.selection) {
+            fieldState.edit {
+                replace(0, length, draft.text)
+                selection = draft.selection
+            }
+        }
+    }
+    LaunchedEffect(fieldState) {
+        snapshotFlow { TextFieldValue(fieldState.text.toString(), fieldState.selection) }.collect {
+            if (it.text != currentDraft.text || it.selection != currentDraft.selection) currentOnDraft(it)
+        }
+    }
     var recorder by remember { mutableStateOf<VoiceRecorder?>(null) }
     // Dictado: la grabación no se manda, se transcribe y el texto va al campo de mensaje
     var dictation by remember { mutableStateOf(false) }
@@ -829,13 +867,30 @@ private fun Composer(
         LaunchedEffect(fieldSource) {
             fieldSource.interactions.collect { if (it is PressInteraction.Release) onFieldTap() }
         }
-        TextField(
-            value = draft, onValueChange = onDraft, interactionSource = fieldSource, placeholder = { Text("Mensaje") },
-            modifier = Modifier.weight(1f).heightIn(max = 160.dp), shape = RoundedCornerShape(22.dp),
-            colors = TextFieldDefaults.colors(
-                focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent,
-                focusedContainerColor = C.raised, unfocusedContainerColor = C.raised,
-            ),
+        BasicTextField(
+            state = fieldState,
+            interactionSource = fieldSource,
+            lineLimits = TextFieldLineLimits.MultiLine(maxHeightInLines = 6),
+            textStyle = LocalTextStyle.current.copy(color = C.text, fontSize = 16.sp),
+            cursorBrush = SolidColor(C.accent),
+            modifier = Modifier.weight(1f).heightIn(min = 48.dp, max = 160.dp)
+                .background(C.raised, RoundedCornerShape(22.dp))
+                .contentReceiver { content ->
+                    if (!content.hasMediaType(MediaType.Image)) return@contentReceiver content
+                    var image: Uri? = null
+                    val rest = content.consume { item ->
+                        val u = item.uri
+                        if (u != null && image == null) { image = u; true } else false
+                    }
+                    image?.let(onPasteImage)
+                    rest
+                },
+            decorator = { inner ->
+                Box(Modifier.padding(horizontal = 16.dp, vertical = 13.dp), contentAlignment = Alignment.CenterStart) {
+                    if (fieldState.text.isEmpty()) Text("Mensaje", color = C.text3, fontSize = 16.sp)
+                    inner()
+                }
+            },
         )
         Box {
             IconButton(onClick = { attachMenu = true }) { Icon(Icons.Default.AttachFile, "Adjuntar") }

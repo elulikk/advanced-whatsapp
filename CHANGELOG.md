@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-11 — Android 0.3.1
+
+### Arreglos
+- Sacar una foto y enviarla fallaba con `ENOENT ... /tmp/...-enc`: en Android Node no tomaba la carpeta temporal
+  de la app; ahora el gateway usa siempre una carpeta propia (y la vuelve a crear si Android vacía la caché).
+
+### Nuevo
+- La sugerencia **"Pegar"** del teclado (con la miniatura de la imagen copiada) funciona en el campo de mensaje:
+  abre la vista previa de envío como una foto recién sacada.
+
 ## 2026-11-10 — Android 0.3.0 / PC
 
 ### Nuevo
@@ -30,6 +40,3 @@
   suma los chats silenciados.
 - Android: la pantalla ya no se apaga mientras grabás o escuchás un audio.
 - Android: los APK y documentos recibidos se abren al tocarlos (con permiso para instalar APKs).
-
-### Pendiente
-- Android: pegar imágenes que manda el teclado (sí funciona "Pegar" desde el portapapeles).
