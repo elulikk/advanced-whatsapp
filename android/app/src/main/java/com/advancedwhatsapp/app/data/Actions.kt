@@ -69,6 +69,18 @@ object Actions {
         saveSent(to, body, "", "audio", file.path, quoted, at)
     }
 
+    /** Manda un sticker de la biblioteca (webp 512x512). Se copia a enviados: el mensaje conserva su archivo aunque se borre de la biblioteca. */
+    fun sendSticker(to: String, sticker: Sticker, quoted: Message?, at: Long? = null) {
+        val name = if (at != null) "sticker_${sticker.id}_${System.currentTimeMillis()}.webp" else "sticker_${sticker.id}.webp"
+        val copy = File(App.sentDir, name)
+        if (!copy.exists()) sticker.file.copyTo(copy, overwrite = true)
+        val body = JSONObject().put("to", to).put("sticker_path", copy.path)
+        if (sticker.animated) body.put("sticker_animated", true)
+        quotedJson(quoted)?.let { body.put("quoted", it) }
+        saveSent(to, body, "", "sticker", copy.path, quoted, at)
+        StickerLibrary.markUsed(sticker.id)
+    }
+
     fun markRead(jid: String) {
         val ids = Db.markChatRead(jid)
         com.advancedwhatsapp.app.notify.Notifier.cancel(jid)   // leído: que la notificación (y el globo del ícono) baje

@@ -2359,7 +2359,11 @@ async function sendWhatsApp(body, extraOpts = {}) {
         }
         result = await sock.sendMessage(jid, audioMsg, sendOpts);
     } else if (sticker_path) {
-        result = await sock.sendMessage(jid, { sticker: mediaFile(sticker_path, 'Sticker no encontrado') }, sendOpts);
+        result = await sock.sendMessage(jid, {
+            sticker: mediaFile(sticker_path, 'Sticker no encontrado'),
+            // webp 512x512; si es animado la app lo avisa (no hay sharp/jimp para detectarlo acá)
+            ...(body.sticker_animated ? { isAnimated: true } : {})
+        }, sendOpts);
     } else if (image_url) {
         result = await sock.sendMessage(jid, {
             image: { url: image_url },

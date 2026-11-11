@@ -280,6 +280,11 @@ object Db {
         return withReactions(rows).reversed()
     }
 
+    /** Todos los stickers del historial (recibidos y enviados), del más nuevo al más viejo. */
+    fun stickerMessages(): List<Message> =
+        db.rawQuery("SELECT * FROM messages WHERE media_type = 'sticker' ORDER BY timestamp DESC", null)
+            .use { c -> buildList { while (c.moveToNext()) add(c.toMessage()) } }
+
     fun getMessage(id: String): Message? =
         db.rawQuery("SELECT * FROM messages WHERE id = ?", arrayOf(id)).use { if (it.moveToFirst()) it.toMessage() else null }
 

@@ -80,6 +80,17 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.runtime.MutableState
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
+import androidx.compose.material.icons.filled.EmojiEmotions
+import androidx.compose.material.icons.filled.Keyboard
+import com.advancedwhatsapp.app.data.Sticker
+import com.advancedwhatsapp.app.data.StickerLibrary
+import kotlin.reflect.KProperty
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -126,7 +137,11 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
     var messages by remember { mutableStateOf(emptyList<Message>()) }
     var limit by remember { mutableIntStateOf(PAGE) }
     var replyTo by remember { mutableStateOf<Message?>(null) }
-    var draft by remember { mutableStateOf("") }
+    // El borrador guarda también el cursor: los emojis se insertan donde está. `draft` es solo su texto.
+    val draftState = remember { mutableStateOf(TextFieldValue("")) }
+    var draft by remember { DraftText(draftState) }
+    var emojiOpen by rememberSaveable { mutableStateOf(false) }
+    val keyboard = LocalSoftwareKeyboardController.current
     var showAi by remember { mutableStateOf(false) }
     // Con hora elegida, lo próximo que se mande queda programado en vez de salir ya
     var scheduleAt by rememberSaveable { mutableStateOf<Long?>(null) }
@@ -170,6 +185,45 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
     }
 
     fun nowSec() = System.currentTimeMillis() / 1000
+
+    fun toggleEmojiPanel() {
+        if (emojiOpen) {
+            emojiOpen = false
+            keyboard?.show()
+        } else {
+            keyboard?.hide()   // el panel ocupa el lugar del teclado
+            emojiOpen = true
+        }
+    }
+
+    fun insertEmoji(e: String) {
+        val v = draftState.value
+        val a = v.selection.min.coerceIn(0, v.text.length)
+        val b = v.selection.max.coerceIn(a, v.text.length)
+        draftState.value = TextFieldValue(v.text.replaceRange(a, b, e), TextRange(a + e.length))
+    }
+
+    BackHandler(enabled = emojiOpen) { emojiOpen = false }
+
+    fun sendSticker(s: Sticker) {
+        if (scheduleIsPast()) return
+        val at = scheduleAt
+        val quoted = replyTo
+        replyTo = null
+        scheduleAt = null
+        scope.launch(Dispatchers.IO) {
+            try {
+                Actions.sendSticker(jid, s, quoted, at)
+                confirmScheduled(at)
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    replyTo = quoted
+                    scheduleAt = at
+                    notifyError(e.message)
+                }
+            }
+        }
+    }
 
     fun chooseScheduleTime() = pickDateTime(context, scheduleAt) { at ->
         if (at > nowSec()) scheduleAt = at else notifyError("Elegí una fecha y hora futuras.")
@@ -455,6 +509,19 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
                             summaryOpen = openSummaries[m.id] == true,
                             onSetSummaryOpen = { openSummaries[m.id] = it },
                             onReact = { emoji -> runTask { Actions.react(m, emoji) } },
+                            onAutoDownload = { scope.launch(Dispatchers.IO) { runCatching { Actions.downloadMedia(m) } } },
+                            onSaveSticker = {
+                                scope.launch(Dispatchers.IO) {
+                                    val r = runCatching { StickerLibrary.addFromMessage(m) }.getOrNull()
+                                    snackbar.showSnackbar(
+                                        when {
+                                            r == null -> "No se pudo agregar el sticker."
+                                            r.second -> "Ese sticker ya estaba en tus stickers."
+                                            else -> "Agregado a tus stickers."
+                                        },
+                                    )
+                                }
+                            },
                             onDelete = { runTask { Actions.deleteForEveryone(m) } },
                             onOpenMedia = {
                                 withBusy(m.id) {
@@ -520,7 +587,14 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
             }
             ScheduleBar(scheduleAt, scheduledCount, onChange = { chooseScheduleTime() }, onClear = { scheduleAt = null }, onOpenList = onScheduled)
             Composer(
-                draft = draft, onDraft = { draft = it }, scope = scope, scheduled = scheduleAt != null,
+                draft = draftState.value, onDraft = { draftState.value = it }, scope = scope, scheduled = scheduleAt != null,
+                emojiOpen = emojiOpen, onToggleEmoji = { toggleEmojiPanel() },
+                onFieldTap = {
+                    if (emojiOpen) {
+                        emojiOpen = false
+                        keyboard?.show()
+                    }
+                },
                 onChooseSchedule = { chooseScheduleTime() }, scheduleIsPast = { scheduleIsPast() },
                 onToggleAi = { showAi = !showAi },
                 onCamera = { openCamera() },
@@ -561,6 +635,12 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
                 onRecordingState = { runTask { Actions.chatPresence(jid, state = if (it) "recording" else "paused") } },
                 onError = { notifyError(it) },
             )
+            if (emojiOpen) {
+                EmojiStickerPanel(
+                    onEmoji = { insertEmoji(it) }, onSticker = { sendSticker(it) },
+                    onMessage = { text -> scope.launch { snackbar.showSnackbar(text) } },
+                )
+            }
         }
     }
     viewerImage?.let { ImageViewer(it) { viewerImage = null } }
@@ -645,7 +725,8 @@ private fun PhotoPreview(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun Composer(
-    draft: String, onDraft: (String) -> Unit, scope: CoroutineScope, scheduled: Boolean, onChooseSchedule: () -> Unit,
+    draft: TextFieldValue, onDraft: (TextFieldValue) -> Unit, emojiOpen: Boolean, onToggleEmoji: () -> Unit, onFieldTap: () -> Unit,
+    scope: CoroutineScope, scheduled: Boolean, onChooseSchedule: () -> Unit,
     scheduleIsPast: () -> Boolean, onToggleAi: () -> Unit, onCamera: () -> Unit, onPickMedia: () -> Unit,
     onPickDocument: () -> Unit, onSend: () -> Unit, onSendVoice: (Recording) -> Unit, onDictate: (Recording, Boolean) -> Unit, onRecordingState: (Boolean) -> Unit,
     onError: (String) -> Unit,
@@ -739,8 +820,16 @@ private fun Composer(
 
     Row(Modifier.fillMaxWidth().background(C.surface).padding(4.dp), verticalAlignment = Alignment.Bottom) {
         IconButton(onClick = onToggleAi) { Icon(Icons.Default.AutoAwesome, "Redactor con IA", tint = C.ember) }
+        IconButton(onClick = onToggleEmoji) {
+            Icon(if (emojiOpen) Icons.Default.Keyboard else Icons.Default.EmojiEmotions, if (emojiOpen) "Teclado" else "Emojis y stickers", tint = C.text2)
+        }
+        // Tocar el campo con el panel abierto lo cierra y vuelve el teclado
+        val fieldSource = remember { MutableInteractionSource() }
+        LaunchedEffect(fieldSource) {
+            fieldSource.interactions.collect { if (it is PressInteraction.Release) onFieldTap() }
+        }
         TextField(
-            value = draft, onValueChange = onDraft, placeholder = { Text("Mensaje") },
+            value = draft, onValueChange = onDraft, interactionSource = fieldSource, placeholder = { Text("Mensaje") },
             modifier = Modifier.weight(1f).heightIn(max = 160.dp), shape = RoundedCornerShape(22.dp),
             colors = TextFieldDefaults.colors(
                 focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent,
@@ -772,7 +861,7 @@ private fun Composer(
                 })
             }
         }
-        if (draft.isBlank()) {
+        if (draft.text.isBlank()) {
             IconButton(onClick = onCamera) { Icon(Icons.Default.PhotoCamera, "Sacar una foto") }
             // Toque: nota de voz. Mantener apretado: dictar a texto.
             Box(
@@ -844,5 +933,13 @@ private fun AiPanel(jid: String, contact: String, draft: String, onResult: (Stri
             if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
             else Text(if (draft.isNotBlank()) "Reformular mi borrador" else "Sugerir una respuesta")
         }
+    }
+}
+
+/** `draft` como texto plano sobre un TextFieldValue (que además guarda el cursor). Escribir el texto deja el cursor al final. */
+private class DraftText(val state: MutableState<TextFieldValue>) {
+    operator fun getValue(thisRef: Any?, property: KProperty<*>): String = state.value.text
+    operator fun setValue(thisRef: Any?, property: KProperty<*>, value: String) {
+        state.value = TextFieldValue(value, TextRange(value.length))
     }
 }

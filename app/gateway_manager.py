@@ -341,6 +341,7 @@ class GatewayManager:
         video_path: Optional[str] = None,
         audio_path: Optional[str] = None,
         sticker_path: Optional[str] = None,
+        sticker_animated: bool = False,
         quoted: Optional[Dict[str, Any]] = None,
         audio_seconds: Optional[float] = None,
         audio_waveform: Optional[list] = None,
@@ -367,6 +368,8 @@ class GatewayManager:
                 payload["audio_waveform"] = audio_waveform
         if sticker_path:
             payload["sticker_path"] = sticker_path
+            if sticker_animated:
+                payload["sticker_animated"] = True
         if image_path:
             payload["image_path"] = image_path
         if document_path:

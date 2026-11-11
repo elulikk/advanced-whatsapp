@@ -72,7 +72,11 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil.ImageLoader
 import coil.compose.AsyncImage
+import coil.decode.ImageDecoderDecoder
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalContext
 import com.advancedwhatsapp.app.ai.MessageSummary
 import com.advancedwhatsapp.app.data.Message
 import kotlinx.coroutines.CoroutineScope
@@ -99,15 +103,19 @@ fun MessageBubble(
     m: Message, busy: Boolean, scope: CoroutineScope, showSender: Boolean, onReply: () -> Unit, onReact: (String) -> Unit, onDelete: () -> Unit,
     onOpenMedia: () -> Unit, onTranscribe: () -> Unit, onSummarize: (redo: Boolean) -> Unit,
     transcriptOpen: Boolean, onToggleTranscript: () -> Unit, summaryOpen: Boolean, onSetSummaryOpen: (Boolean) -> Unit,
+    onAutoDownload: () -> Unit = {}, onSaveSticker: () -> Unit = {},
 ) {
     var menu by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
     val revoked = m.mediaType == "revoked"
+    val stickerFile = if (m.mediaType == "sticker") m.mediaPath?.let { File(it) }?.takeIf { it.exists() } else null
+    // Un sticker va suelto, sin burbuja, como en WhatsApp (con una cita sí lleva fondo)
+    val bare = stickerFile != null && m.quotedText.isNullOrBlank()
 
     Box(Modifier.fillMaxWidth(), contentAlignment = if (m.fromMe) Alignment.CenterEnd else Alignment.CenterStart) {
         Column(
             Modifier.widthIn(max = 310.dp)
-                .background(if (m.fromMe) C.bubbleOut else C.bubbleIn, RoundedCornerShape(10.dp))
+                .background(if (bare) Color.Transparent else if (m.fromMe) C.bubbleOut else C.bubbleIn, RoundedCornerShape(10.dp))
                 .combinedClickable(onClick = {}, onLongClick = { menu = true })
                 .padding(horizontal = 9.dp, vertical = 5.dp),
         ) {
@@ -121,7 +129,8 @@ fun MessageBubble(
                 }
             }
             when (m.mediaType) {
-                "image", "sticker" -> ImageContent(m, busy, onOpenMedia)
+                "image" -> ImageContent(m, busy, onOpenMedia)
+                "sticker" -> StickerContent(m, stickerFile, busy, onOpenMedia, onAutoDownload)
                 "audio" -> VoiceContent(m, busy, scope, onOpenMedia, onTranscribe, transcriptOpen, onToggleTranscript)
                 "video" -> FileRow(Icons.Default.Videocam, "Video", m, busy, onOpenMedia, showCaptionAsName = false)
                 "document" -> FileRow(Icons.Default.Description, m.text.ifEmpty { "Documento" }, m, busy, onOpenMedia, showCaptionAsName = true)
@@ -185,6 +194,12 @@ fun MessageBubble(
                         menu = false
                         onSetSummaryOpen(true)
                         if (m.summary == null) onSummarize(false)
+                    })
+                }
+                if (stickerFile != null) {
+                    DropdownMenuItem(text = { Text("Agregar a mis stickers") }, onClick = {
+                        menu = false
+                        onSaveSticker()
                     })
                 }
                 if (m.mediaType == "audio") {
@@ -260,6 +275,40 @@ private fun SummaryPanel(m: Message, busy: Boolean, open: Boolean, onToggle: () 
             else -> Text("Sin resumen. Mantené apretado el mensaje para pedirlo de nuevo.", color = C.text2, fontSize = 13.sp)
         }
     }
+}
+
+/** Los stickers que llegan se bajan solos (pesan poco), una sola vez por sesión; los animados se mueven. */
+private val autoTried: MutableSet<String> = java.util.Collections.synchronizedSet(HashSet())
+
+@Composable
+private fun StickerContent(m: Message, file: File?, busy: Boolean, onOpen: () -> Unit, onAutoDownload: () -> Unit) {
+    LaunchedEffect(m.id, file == null) {
+        if (file == null && m.mediaRaw != null && autoTried.add(m.id)) onAutoDownload()
+    }
+    if (file != null) {
+        AsyncImage(
+            model = file, imageLoader = animatedImageLoader(), contentDescription = "Sticker", contentScale = ContentScale.Fit,
+            modifier = Modifier.size(150.dp).clickable(onClick = onOpen),
+        )
+    } else {
+        Row(
+            Modifier.size(width = 150.dp, height = 90.dp).background(C.raised, RoundedCornerShape(6.dp)).clickable(enabled = !busy, onClick = onOpen),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center,
+        ) {
+            if (busy) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+            else Text("🎨 Sticker", color = C.text2, fontSize = 13.sp)
+        }
+    }
+}
+
+private var animatedLoader: ImageLoader? = null
+
+/** Cargador de Coil que anima los .webp animados (API 28+; la app pide 29). Se crea una vez. */
+@Composable
+private fun animatedImageLoader(): ImageLoader {
+    val ctx = LocalContext.current
+    return animatedLoader ?: ImageLoader.Builder(ctx.applicationContext)
+        .components { add(ImageDecoderDecoder.Factory()) }.build().also { animatedLoader = it }
 }
 
 @Composable
