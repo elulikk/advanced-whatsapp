@@ -199,6 +199,22 @@ def build_suggest_prompt(context: str, mode: str = DEFAULT_MODE, extra: str = ""
     return "\n\n".join(parts)
 
 
+_DICTATION_RULES = (
+    "Te paso la transcripción literal de algo que dicté por voz para escribir un mensaje de WhatsApp. "
+    "Emprolíjala: agrega puntuación y mayúsculas, corrige errores de transcripción evidentes, quita muletillas "
+    "(eh, mmm, este, o sea), titubeos y repeticiones, y separa en párrafos cortos si es largo.\n"
+    "Reglas:\n"
+    "- NO cambies lo que digo, mi postura, mi tono ni mi forma de hablar (tratamiento tú/vos/usted, "
+    "modismos): solo la dejas prolija. No agregues ni quites ideas.\n"
+    "- Conserva nombres, números, precios, fechas y horarios tal cual.\n"
+    "- Responde ÚNICAMENTE con el texto final, sin comillas, sin explicaciones ni alternativas."
+)
+
+
+def build_dictation_prompt(text: str) -> str:
+    return f"{_DICTATION_RULES}\n\n=== DICTADO ===\n{(text or '').strip()}\n=== FIN ==="
+
+
 def clean_reply(text: str) -> str:
     """Quita vallas de código y comillas que a veces agrega el modelo alrededor del mensaje."""
     t = (text or "").strip()
@@ -219,6 +235,14 @@ def polish(draft: str, messages: List[Dict], contact_name: str, provider: str, m
     Bloqueante: usar en un hilo."""
     prompt = build_polish_prompt(draft, format_recent_context(messages, contact_name), mode, extra or "", profile or "")
     return _ask(prompt, provider, model)
+
+
+def polish_dictation(text: str, provider: str, model: str) -> str:
+    """Emprolija un texto dictado (puntuación, muletillas) sin reformularlo. Devuelve el texto o un texto de
+    error (ver AIService.is_error_response). Bloqueante: usar en un hilo."""
+    if not (text or "").strip():
+        return "Error: no hay nada que emprolijar."
+    return _ask(build_dictation_prompt(text), provider, model)
 
 
 def suggest(messages: List[Dict], contact_name: str, provider: str, model: str,

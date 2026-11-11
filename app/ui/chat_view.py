@@ -3,6 +3,7 @@ import re
 import html
 import json
 import shutil
+import tempfile
 from datetime import datetime
 import threading
 import time
@@ -38,6 +39,7 @@ from app.ai import psych_analysis as pa
 from app.ai import reply_polisher
 from app.ai import message_summary
 from app.ai.ai_service import AIService
+from app.ai.transcription import transcribe_audio, pcm_to_wav, merge_dictation
 from app.ai.reply_polisher import CONTEXT_MESSAGES, MODES, DEFAULT_MODE
 from app.media_service import (
     media_signals, request_media, request_transcript, is_pending, get_error, unavailable_reason
@@ -213,12 +215,12 @@ class ContactChip(QWidget):
 
 class MessageInputEdit(QTextEdit):
     """QTextEdit que envía con Enter y agrega salto de línea con Shift+Enter.
-    Con accept_media=True, pegar (Ctrl+V) una imagen o un archivo copiado lo emite como adjunto.
+    Con accept_media=True, pegar (Ctrl+V o «Pegar» del menú) una imagen o archivos copiados los emite como adjuntos.
     Con `line_height`, una sola línea ocupa exactamente ese alto (alineada con los botones de al lado)."""
     send_requested = Signal()
     has_text_changed = Signal(bool)
     image_pasted = Signal(QImage)
-    file_pasted = Signal(str)
+    files_pasted = Signal(list)
 
     def __init__(self, parent=None, placeholder: str = "Escribe un mensaje", min_lines: int = 1, max_lines: int = 6,
                  accept_media: bool = False, radius: int = R_MD, line_height: int = 0):
@@ -296,13 +298,13 @@ class MessageInputEdit(QTextEdit):
             super().keyPressEvent(event)
 
     def _pasted_media(self, source):
-        """('file', ruta) | ('image', QImage) | None. Si el portapapeles trae texto, se pega el texto."""
+        """('files', [rutas]) | ('image', QImage) | None. Si el portapapeles trae texto, se pega el texto."""
         if not self._accept_media or source is None:
             return None
         if source.hasUrls():
             files = [u.toLocalFile() for u in source.urls() if u.isLocalFile() and os.path.isfile(u.toLocalFile())]
             if files:
-                return ("file", files[0])
+                return ("files", files)
         if source.hasImage() and not (source.hasText() and source.text().strip()):
             img = source.imageData()
             if isinstance(img, QImage) and not img.isNull():
@@ -316,8 +318,8 @@ class MessageInputEdit(QTextEdit):
         media = self._pasted_media(source)
         if media is None:
             super().insertFromMimeData(source)
-        elif media[0] == "file":
-            self.file_pasted.emit(media[1])
+        elif media[0] == "files":
+            self.files_pasted.emit(media[1])
         else:
             self.image_pasted.emit(media[1])
 
@@ -333,6 +335,7 @@ class ChatViewPanel(QWidget):
     _polish_done = Signal(int, str, str)       # id de petición, jid, texto (respuesta o error)
     _polish_models_ready = Signal(str, list)   # proveedor, modelos
     _voice_done = Signal(dict)                 # nota de voz convertida y enviada (o con error)
+    _dictation_done = Signal(str, str, str)    # jid, texto dictado, aviso (error o IA no disponible)
     _scheduled_counts_ready = Signal(dict)     # jid -> mensajes programados pendientes
     scheduled_total_changed = Signal(int)
     _att_result = Signal(int, dict)            # índice del adjunto, respuesta del gateway
@@ -371,6 +374,7 @@ class ChatViewPanel(QWidget):
         media_signals.job_failed.connect(self._on_media_event)
         message_summary.summary_signals.summary_ready.connect(self._on_media_event)
         self._summary_hidden: set = set()   # mensajes cuyo resumen se ocultó (solo en esta sesión)
+        self._expanded_folds: set = set()   # transcripciones («t/<id>») y síntesis («s/<id>») desplegadas; por defecto, plegadas
 
         # Notas de voz: reproductor interno; la imagen de cada nota se redibuja al sonar
         self._voice_msgs: dict = {}      # msg_id -> (path, from_me)
@@ -385,7 +389,9 @@ class ChatViewPanel(QWidget):
         # Grabación de notas de voz: el micrófono graba a memoria y al enviar se convierte a OGG/Opus
         self._recorder = VoiceRecorder(self)
         self._voice_chat_jid = None      # chat en el que empezó la grabación en curso
-        self._voice_sending: set = set() # chats con una nota convirtiéndose / subiendo
+        self._voice_sending: set = set() # chats con una nota convirtiéndose / subiendo (o un dictado transcribiéndose)
+        self._dictation = None           # None | 'plain' | 'polish': la grabación en curso es un dictado a texto
+        self._dictating: set = set()     # chats con un dictado transcribiéndose
         self._voice_blink = False
 
         # Programar envío: con hora elegida, lo próximo que se mande en este chat queda en la cola del gateway
@@ -783,6 +789,7 @@ class ChatViewPanel(QWidget):
         self.chat_layout.addWidget(self.polish_bar)
 
         self._polish_done.connect(self._on_polish_done)
+        self._dictation_done.connect(self._on_dictation_done)
         self._polish_models_ready.connect(self._fill_polish_models)
         prov, model = get_polish_ai()
         if prov not in pa.PROVIDERS:
@@ -824,7 +831,7 @@ class ChatViewPanel(QWidget):
         self.input_text.send_requested.connect(self._send_message)
         self.input_text.has_text_changed.connect(self._on_composer_text_changed)
         self.input_text.image_pasted.connect(self._attach_pasted_image)
-        self.input_text.file_pasted.connect(self._attach_pasted_file)
+        self.input_text.files_pasted.connect(self._attach_pasted_files)
         self.input_text.installEventFilter(self)
         self.input_text.viewport().installEventFilter(self)
         composer_layout.addWidget(self.input_text, stretch=1)
@@ -857,6 +864,11 @@ class ChatViewPanel(QWidget):
         vp_lay.addWidget(self.btn_voice_pause)
         composer_layout.addWidget(self.voice_panel, stretch=1)
         composer_layout.addSpacing(4)
+
+        self.btn_dictate = tool_button("dictate", "Dictar: habla y el texto aparece en el campo para revisarlo (no se envía nada)",
+                                       size=btn, icon_size=20)
+        self.btn_dictate.clicked.connect(self._show_dictate_menu)
+        composer_layout.addWidget(self.btn_dictate, alignment=Qt.AlignBottom)
 
         self.btn_action = QToolButton()
         self.btn_action.setObjectName("sendButton")
@@ -1227,6 +1239,9 @@ class ChatViewPanel(QWidget):
             if action == "select":
                 self._toggle_selected(url.path().lstrip("/"))
                 return
+            if action == "fold":
+                self._toggle_fold(url.path().lstrip("/"))
+                return
             msg = get_message(url.path().lstrip("/"))
             if not msg:
                 return
@@ -1396,7 +1411,11 @@ class ChatViewPanel(QWidget):
         summary = msg.get("summary")
         if not summary or mid in self._summary_hidden:
             return ""
-        rows = []
+        key = f"s/{mid}"
+        header = self._fold_header(key, "SÍNTESIS IA", key in self._expanded_folds)
+        if key not in self._expanded_folds:
+            return '<div style="margin-top: 4px;"></div>' + self._panel_html(header, accent=C["accent"])
+        rows = [header]
         for title, text in message_summary.parse_summary(summary):
             rows.append(f'<span style="color: {C["accent_hi"]}; font-size: 10px; font-weight: 600;">'
                         f'{html.escape(title.upper())}</span><br>'
@@ -1404,6 +1423,22 @@ class ChatViewPanel(QWidget):
         rows.append(f'<span style="font-size: 10px;"><a href="advancedwhatsapp://resummarize/{mid}" style="{link}">Rehacer</a>'
                     f' · <a href="advancedwhatsapp://summarize/{mid}" style="{link}">Ocultar</a></span>')
         return '<div style="margin-top: 4px;"></div>' + self._panel_html('<br>'.join(rows), accent=C["accent"])
+
+    @staticmethod
+    def _fold_header(key: str, title: str, expanded: bool) -> str:
+        """Encabezado clickeable de una sección plegable de la burbuja (flecha + título)."""
+        return (f'<a href="advancedwhatsapp://fold/{key}" style="text-decoration: none; color: {C["accent_hi"]}; '
+                f'font-size: 10px; font-weight: 600;">{"▾" if expanded else "▸"} {title}</a>')
+
+    def _toggle_fold(self, key: str):
+        """Despliega o pliega una transcripción / síntesis. Se repinta el chat entero (un solo setHtml) conservando
+        el scroll: el alto de las burbujas lo recalcula el documento, no hay alturas fijas que se desacomoden."""
+        if key in self._expanded_folds:
+            self._expanded_folds.discard(key)
+        else:
+            self._expanded_folds.add(key)
+        self._follow_bottom = False   # que el repintado conserve la posición en vez de saltar al final
+        self.refresh_messages(scroll_to_bottom=False)
 
     def _toggle_summary(self, msg: dict):
         mid = msg["id"]
@@ -1617,9 +1652,11 @@ class ChatViewPanel(QWidget):
                     media_html = panel(self._media_placeholder(msg, "🎵 Nota de voz"))
                 transcript = msg.get("transcript")
                 if transcript:
+                    fold_key = f"t/{mid}"
+                    open_ = fold_key in self._expanded_folds
                     transcript_html = panel(
-                        f'<span style="color: {C["accent_hi"]}; font-size: 10px; font-weight: 600;">TRANSCRIPCIÓN</span><br>'
-                        f'<span style="color: {C["text"]};">{html.escape(transcript)}</span>',
+                        self._fold_header(fold_key, "TRANSCRIPCIÓN", open_) +
+                        (f'<br><span style="color: {C["text"]};">{html.escape(transcript)}</span>' if open_ else ""),
                         accent=C["accent"])
                 elif is_pending("transcribe", msg.get("id")):
                     transcript_html = f'<div style="color: {C["text_2"]}; font-size: 11px; margin-bottom: 3px;"><i>Transcribiendo…</i></div>'
@@ -2262,7 +2299,7 @@ class ChatViewPanel(QWidget):
             if event.key() == Qt.Key_Escape:
                 self._cancel_voice()
             else:
-                self._send_voice()
+                self._commit_recording()
             return
         if event.key() == Qt.Key_Escape:
             if self._select_mode:
@@ -2328,15 +2365,15 @@ class ChatViewPanel(QWidget):
             QMessageBox.information(self, "Adjuntos", f"Puedes enviar hasta {MAX_ATTACHMENTS} archivos a la vez.")
         self.input_text.setFocus()
 
-    def _attach_pasted_file(self, file_path: str):
+    def _attach_pasted_files(self, paths: list):
         if self.current_chat:
-            self._set_attachment(file_path)
+            self._add_attachments(paths)
 
     def _attach_pasted_image(self, img: QImage):
         """Ctrl+V con una imagen en el portapapeles (captura, 'Copiar imagen'): se guarda como PNG y se adjunta."""
         if not self.current_chat:
             return
-        folder = os.path.join(MEDIA_DIR, "pegadas")
+        folder = os.path.join(MEDIA_DIR, "enviados")
         os.makedirs(folder, exist_ok=True)
         path = os.path.join(folder, f"imagen_{datetime.now():%Y%m%d_%H%M%S_%f}.png")
         if img.save(path, "PNG"):
@@ -2631,7 +2668,9 @@ class ChatViewPanel(QWidget):
 
     def _update_action_button(self):
         """Con texto o adjunto el botón envía; con el campo vacío graba una nota de voz, como en WhatsApp."""
-        if self._recorder.active or self._composer_has_content():
+        if self._recorder.active and self._dictation:
+            name, tip = "check", "Terminar el dictado y pasarlo a texto  (Enter)"
+        elif self._recorder.active or self._composer_has_content():
             verb, name = ("Programar", "clock") if self._schedule_at else ("Enviar", "send")
             tip = f"{verb} nota de voz  (Enter)" if self._recorder.active else f"{verb}  (Enter)"
         else:
@@ -2642,7 +2681,7 @@ class ChatViewPanel(QWidget):
 
     def _on_action_clicked(self):
         if self._recorder.active:
-            self._send_voice()
+            self._commit_recording()
         elif self._composer_has_content():
             self._send_message()
         else:
@@ -2653,14 +2692,15 @@ class ChatViewPanel(QWidget):
         recording = self._recorder.active
         sending = self._voice_sending_here() and not recording
         show = recording or sending
-        for w in (self.btn_attach, self.btn_polish, self.input_text):
+        for w in (self.btn_attach, self.btn_polish, self.input_text, self.btn_dictate):
             w.setVisible(not show)
         self.voice_panel.setVisible(show)
         for w in (self.btn_voice_cancel, self.btn_voice_pause, self.voice_meter):
             w.setVisible(recording)
         if sending:
             self.lbl_voice_dot.setVisible(False)
-            self.lbl_voice_time.setText("Enviando nota de voz…")
+            dictating = self.current_chat.get("jid") in self._dictating
+            self.lbl_voice_time.setText("Transcribiendo el dictado…" if dictating else "Enviando nota de voz…")
         self._update_action_button()
 
     def _set_voice_paused_ui(self, paused: bool):
@@ -2669,10 +2709,12 @@ class ChatViewPanel(QWidget):
         self.lbl_voice_dot.setVisible(True)
         self.lbl_voice_dot.setStyleSheet(f"color: {C['text_3'] if paused else C['danger']}; font-size: 12px;")
 
-    def _start_voice(self):
+    def _start_voice(self, dictate=None):
+        """Empieza a grabar. Con `dictate` ('plain' | 'polish') es un dictado: al terminar se transcribe y el texto
+        va al campo de mensaje en vez de enviarse como nota de voz."""
         if not self.current_chat or self._voice_sending_here():
             return
-        if not self._schedule_at and self.gateway.get_status().get("status") != "connected":
+        if not dictate and not self._schedule_at and self.gateway.get_status().get("status") != "connected":
             QMessageBox.warning(self, "WhatsApp no conectado", "No se pueden enviar notas de voz sin conexión a WhatsApp.")
             return
         err = self._recorder.start()
@@ -2680,6 +2722,7 @@ class ChatViewPanel(QWidget):
             QMessageBox.warning(self, "Nota de voz", err)
             return
         voice_player().stop()   # que no se grabe una nota que esté sonando
+        self._dictation = dictate
         self._voice_chat_jid = self.current_chat.get("jid")
         self.voice_meter.clear()
         self.lbl_voice_time.setText("0:00")
@@ -2713,6 +2756,7 @@ class ChatViewPanel(QWidget):
         self._voice_clock.stop()
         self._recorder.cancel()
         self._voice_chat_jid = None
+        self._dictation = None
         self._refresh_voice_ui()
         if self.input_text.isVisible():
             self.input_text.setFocus()
@@ -2726,6 +2770,9 @@ class ChatViewPanel(QWidget):
         if self._recorder.seconds() < MIN_SECONDS:
             self._cancel_voice()
             return
+        if self._dictation:   # un dictado no se envía: se transcribe y queda en el borrador de su chat
+            self._finish_dictation()
+            return
         self._recorder.pause()
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Question)
@@ -2738,6 +2785,100 @@ class ChatViewPanel(QWidget):
             self._send_voice(leaving=True)
         else:
             self._cancel_voice()
+
+    def _commit_recording(self):
+        if self._dictation:
+            self._finish_dictation()
+        else:
+            self._send_voice()
+
+    def _show_dictate_menu(self):
+        if not self.current_chat or self._recorder.active or self._voice_sending_here():
+            return
+        menu = QMenu(self)
+        act_plain = menu.addAction(icon("dictate"), "Dictar a texto")
+        act_polish = menu.addAction(icon("sparkle"), "Dictar y emprolijar con IA")
+        act = menu.exec(menu_below(menu, self.btn_dictate))
+        if act == act_plain:
+            self._start_voice("plain")
+        elif act == act_polish:
+            self._start_voice("polish")
+
+    def _finish_dictation(self):
+        """Termina el dictado: la conversión y la transcripción (y el emprolijado) corren en segundo plano y el
+        texto aparece en el campo de mensaje, sin enviarse."""
+        if not self._recorder.active or not self.current_chat:
+            return
+        secs = self._recorder.seconds()
+        if secs < MIN_SECONDS:
+            self._cancel_voice()
+            QToolTip.showText(self.btn_action.mapToGlobal(QPoint(0, -34)), "Dictado demasiado corto", self.btn_action)
+            return
+        polish = self._dictation == "polish"
+        pcm = self._recorder.stop()
+        self._voice_clock.stop()
+        chat_jid = self._voice_chat_jid or self.current_chat.get("jid")
+        self._voice_chat_jid = None
+        self._dictation = None
+        if peak_level(pcm) == 0:
+            self._refresh_voice_ui()
+            QMessageBox.warning(self, "Dictado",
+                                f"La grabación salió en silencio total. Revisa que el micrófono no esté silenciado.\n"
+                                f"{MIC_PRIVACY_HINT}")
+            return
+        prov, model = message_summary.summary_ai(self.cmb_polish_provider.currentText(),
+                                                 self.cmb_polish_model.currentText().strip())
+        self._voice_sending.add(chat_jid)
+        self._dictating.add(chat_jid)
+        self._refresh_voice_ui()
+
+        def run():
+            base = os.path.join(tempfile.gettempdir(), f"dictado_{datetime.now():%Y%m%d_%H%M%S_%f}")
+            files = []
+            text, note = "", ""
+            try:   # nunca dejar la barra en «Transcribiendo…»
+                path = base + ".ogg"
+                files.append(path)
+                if encode_ogg_opus(pcm, path):   # sin FFmpeg: WAV, que Whisper también acepta
+                    path = base + ".wav"
+                    files.append(path)
+                    pcm_to_wav(pcm, path)
+                text = transcribe_audio(path)
+                if not text:
+                    note = "No se entendió nada en el dictado."
+                elif polish:
+                    out = reply_polisher.polish_dictation(text, prov, model)
+                    if AIService.is_error_response(out):
+                        note = f"No se pudo emprolijar con la IA ({out.strip()[:160]}); quedó el texto tal cual se dictó."
+                    else:
+                        text = out
+            except Exception as e:
+                note = f"No se pudo transcribir el dictado: {e}"
+            for f in files:
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+            try:
+                self._dictation_done.emit(chat_jid, text, note)
+            except RuntimeError:   # la ventana se cerró antes de terminar
+                pass
+        threading.Thread(target=run, daemon=True).start()
+
+    def _on_dictation_done(self, jid: str, text: str, note: str):
+        self._voice_sending.discard(jid)
+        self._dictating.discard(jid)
+        if text:
+            if self.current_chat and self.current_chat.get("jid") == jid:
+                self.input_text.setPlainText(merge_dictation(self.input_text.toPlainText(), text))
+                self.input_text.moveCursor(QTextCursor.End)
+            else:   # se cambió de chat mientras se transcribía: queda en el borrador de ese chat
+                self._drafts[jid] = merge_dictation(self._drafts.get(jid, ""), text)
+        self._refresh_voice_ui()
+        if text and self.input_text.isVisible() and self.current_chat and self.current_chat.get("jid") == jid:
+            self.input_text.setFocus()
+        if note:
+            QMessageBox.warning(self, "Dictado", note)
 
     def _send_voice(self, leaving: bool = False):
         """Termina la grabación; la conversión a OGG/Opus y la subida corren en segundo plano."""
