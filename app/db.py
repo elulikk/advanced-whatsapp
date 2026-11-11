@@ -103,6 +103,8 @@ def merge_lid_duplicates(conn: Optional[sqlite3.Connection] = None, only_jid: Op
         try:
             conn.execute("UPDATE OR IGNORE chat_tags SET chat_jid = ? WHERE chat_jid = ?", (target, lid_jid))
             conn.execute("DELETE FROM chat_tags WHERE chat_jid = ?", (lid_jid,))
+            conn.execute("UPDATE OR IGNORE chat_locks SET chat_jid = ? WHERE chat_jid = ?", (target, lid_jid))
+            conn.execute("DELETE FROM chat_locks WHERE chat_jid = ?", (lid_jid,))
         except sqlite3.OperationalError:
             pass
         conn.execute("DELETE FROM chats WHERE jid = ?", (lid_jid,))
@@ -240,6 +242,10 @@ def init_db():
         # Tags visuales de los chats (definiciones y asignaciones)
         from app.tags import ensure_tables as _ensure_tag_tables
         _ensure_tag_tables(conn)
+
+        # Bloqueo de chats con contraseña (chat_locks / lock_meta)
+        from app.chat_lock import ensure_tables as _ensure_lock_tables
+        _ensure_lock_tables(conn)
 
         # Migración puntual de datos heredados (antes se ejecutaba en cada arranque)
         if cursor.execute("PRAGMA user_version").fetchone()[0] < 1:
@@ -805,7 +811,9 @@ def get_chats(search: Optional[str] = None, filter_unread: bool = False, limit: 
 
         if search and search.strip():
             term = f"%{search.strip()}%"
-            query += " AND (name LIKE ? OR phone LIKE ? OR last_message_text LIKE ?)"
+            # El texto del último mensaje de un chat bloqueado no es buscable (se vería en los resultados)
+            query += (" AND (name LIKE ? OR phone LIKE ? OR (last_message_text LIKE ? "
+                      "AND jid NOT IN (SELECT chat_jid FROM chat_locks)))")
             params.extend([term, term, term])
 
         query += " ORDER BY is_pinned DESC, last_message_time DESC, updated_at DESC LIMIT ? OFFSET ?"
@@ -971,6 +979,7 @@ def delete_chat(chat_jid: str):
         cursor.execute("DELETE FROM chats WHERE jid = ?", (chat_jid,))
         try:
             cursor.execute("DELETE FROM chat_tags WHERE chat_jid = ?", (chat_jid,))
+            cursor.execute("DELETE FROM chat_locks WHERE chat_jid = ?", (chat_jid,))
         except sqlite3.OperationalError:
             pass
         conn.commit()

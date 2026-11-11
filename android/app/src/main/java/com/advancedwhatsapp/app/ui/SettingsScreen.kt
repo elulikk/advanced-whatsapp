@@ -47,6 +47,7 @@ import com.advancedwhatsapp.app.BuildConfig
 import com.advancedwhatsapp.app.Prefs
 import com.advancedwhatsapp.app.ai.AiService
 import com.advancedwhatsapp.app.data.Actions
+import com.advancedwhatsapp.app.data.ChatLock
 import com.advancedwhatsapp.app.gateway.GatewayService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -65,6 +66,8 @@ fun SettingsScreen(onBack: () -> Unit) {
     var statusReceipts by remember { mutableStateOf(Prefs.statusReceipts) }
     var keepCpu by remember { mutableStateOf(Prefs.keepCpuAwake) }
     var provider by remember { mutableStateOf(Prefs.provider) }
+    var lockDialog by remember { mutableStateOf("") }   // "new", "change" (pide la actual y luego la nueva), "remove"
+    var biometricOn by remember { mutableStateOf(ChatLock.biometric) }
 
     Scaffold(topBar = {
         TopAppBar(title = { Text("Ajustes") }, navigationIcon = {
@@ -89,6 +92,23 @@ fun SettingsScreen(onBack: () -> Unit) {
             Toggle("Enviar confirmación de lectura (tildes azules)", receipts) { receipts = it; Prefs.readReceipts = it }
             Toggle("Al ver un estado, avisar al contacto que lo viste", statusReceipts) { statusReceipts = it; Prefs.statusReceipts = it }
 
+            Section("Chats bloqueados")
+            Text(
+                "Mantené apretado un chat de la lista para bloquearlo. Se ve apagado, sin vista previa, pide la contraseña (o la huella) para abrirse y sus notificaciones no muestran el mensaje.",
+                color = C.text2, fontSize = 13.sp,
+            )
+            OutlinedButton(onClick = { lockDialog = if (ChatLock.hasPassword()) "change" else "new" }, modifier = Modifier.fillMaxWidth()) {
+                Text(if (ChatLock.hasPassword()) "Cambiar contraseña de bloqueo" else "Crear contraseña de bloqueo")
+            }
+            if (ChatLock.hasPassword()) {
+                if (biometricAvailable(c) || !ChatLock.biometric) {
+                    Toggle("Abrir con huella", biometricOn) { biometricOn = it; ChatLock.biometric = it }
+                }
+                OutlinedButton(onClick = { lockDialog = "remove" }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Quitar contraseña y desbloquear todo", color = C.danger)
+                }
+            }
+
             Section("Segundo plano")
             Toggle("Mantener la conexión siempre activa (mensajes al instante, usa más batería)", keepCpu) {
                 keepCpu = it
@@ -109,6 +129,12 @@ fun SettingsScreen(onBack: () -> Unit) {
 
             Text("Versión ${BuildConfig.VERSION_NAME}", color = C.text3, fontSize = 12.sp)
         }
+    }
+
+    when (lockDialog) {
+        "new" -> NewPasswordDialog(onDone = { lockDialog = "" }, onDismiss = { lockDialog = "" })
+        "change" -> AskPasswordDialog("Contraseña actual", onOk = { lockDialog = "new" }, onDismiss = { lockDialog = "" })
+        "remove" -> AskPasswordDialog("Ingresá la contraseña para quitarla", onOk = { ChatLock.removePassword(); lockDialog = "" }, onDismiss = { lockDialog = "" })
     }
 
     if (confirmUnlink) {

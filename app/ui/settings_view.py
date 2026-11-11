@@ -18,7 +18,8 @@ from app.config import (
     FONT_SCALE_MIN, FONT_SCALE_MAX, get_chat_font_scale, APP_VERSION, get_pref, set_pref,
     GATEWAY_PORT, WEBHOOK_PORT,
 )
-from app import windows_integration
+from app import windows_integration, chat_lock
+from app.ui import lock_dialogs
 from app.ui.theme import C, HEADER_H
 from app.ui.icons import icon, tool_button
 from app.ai.ai_service import AIService
@@ -82,6 +83,7 @@ class SettingsPanel(QWidget):
     config_saved = Signal()
     font_scale_changed = Signal(int)
     test_notification_requested = Signal()
+    locks_cleared = Signal()   # se quitó la contraseña: todos los chats quedaron desbloqueados
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -356,9 +358,41 @@ class SettingsPanel(QWidget):
         l3.addWidget(self._hint("Advanced WhatsApp figura \"en línea\" solo mientras la ventana está al frente, como WhatsApp "
                                 "Desktop; en segundo plano tu celular sigue recibiendo sus notificaciones."))
         layout.addWidget(g3)
+
+        g4 = QGroupBox("Chats bloqueados")
+        l4 = QVBoxLayout(g4)
+        l4.setSpacing(6)
+        l4.addWidget(self._hint("Un chat bloqueado se ve apagado en la lista, sin vista previa, pide la contraseña para abrirlo "
+                                "y sus notificaciones no muestran el mensaje. Para bloquear uno: clic derecho sobre el chat."))
+        row4 = QHBoxLayout()
+        self.btn_lock_pw = QPushButton()
+        self.btn_lock_pw.clicked.connect(self._on_lock_password)
+        row4.addWidget(self.btn_lock_pw)
+        self.btn_lock_remove = QPushButton("Quitar contraseña y desbloquear todo")
+        self.btn_lock_remove.clicked.connect(self._on_lock_remove)
+        row4.addWidget(self.btn_lock_remove)
+        row4.addStretch()
+        l4.addLayout(row4)
+        layout.addWidget(g4)
+        self._refresh_lock_buttons()
         layout.addStretch()
         self.load_prefs()
         return tab
+
+    def _refresh_lock_buttons(self):
+        has = chat_lock.has_password()
+        self.btn_lock_pw.setText("Cambiar contraseña de bloqueo" if has else "Crear contraseña de bloqueo")
+        self.btn_lock_remove.setVisible(has)
+
+    def _on_lock_password(self):
+        lock_dialogs.change_password(self)
+        self._refresh_lock_buttons()
+
+    def _on_lock_remove(self):
+        if lock_dialogs.remove_password(self):
+            QMessageBox.information(self, "Chats bloqueados", "Se quitó la contraseña y todos los chats quedaron desbloqueados.")
+            self.locks_cleared.emit()
+        self._refresh_lock_buttons()
 
     def load_prefs(self):
         for key, cb in getattr(self, "_pref_checks", {}).items():

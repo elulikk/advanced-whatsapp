@@ -25,6 +25,7 @@ import com.advancedwhatsapp.app.Prefs
 import com.advancedwhatsapp.app.R
 import com.advancedwhatsapp.app.data.Actions
 import com.advancedwhatsapp.app.data.Chat
+import com.advancedwhatsapp.app.data.ChatLock
 import com.advancedwhatsapp.app.data.Db
 import com.advancedwhatsapp.app.data.Photos
 import com.advancedwhatsapp.app.ui.MainActivity
@@ -54,8 +55,9 @@ object Notifier {
         val style = Notification.MessagingStyle(me)
         if (chat.isGroup) style.setConversationTitle(chat.name).setGroupConversation(true)
         val members = HashMap<String, Person>()
-        for (m in pending) {
-            val text = Db.preview(m.mediaType, m.text).ifEmpty { "Mensaje" }
+        val locked = ChatLock.isLocked(jid)
+        for (m in if (locked) pending.takeLast(1) else pending) {
+            val text = if (locked) ChatLock.LOCKED_NOTIFICATION else Db.preview(m.mediaType, m.text).ifEmpty { "Mensaje" }
             val sender = if (!chat.isGroup) person else members.getOrPut(m.senderJid ?: m.senderName.orEmpty()) {
                 Person.Builder().setName(m.senderName?.ifEmpty { null } ?: "Alguien").setKey(m.senderJid).build()
             }

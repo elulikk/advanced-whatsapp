@@ -19,6 +19,7 @@ from PySide6.QtCore import QObject, QUrl, Signal
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
 from app.config import get_pref
+from app import chat_lock
 from app.db import get_chat, is_chat_muted, find_chat_avatar, _preview_for, get_message
 from app.windows_integration import Toaster, thumbnail_from_media_raw, ICON_PNG
 
@@ -107,16 +108,18 @@ class NotificationCenter(QObject):
         self._counts[chat_jid] = count
         title = _display_name(chat, data)
         media_type = data.get("media_type") or "text"
-        if get_pref("notify_preview"):
+        locked = chat_lock.is_locked(chat_jid)   # chat bloqueado: nunca se muestra el contenido
+        show_preview = get_pref("notify_preview") and not locked
+        if show_preview:
             body = _preview_for(media_type, (data.get("text") or "").strip()) or "Mensaje nuevo"
         else:
-            body = "Mensaje nuevo"
+            body = chat_lock.LOCKED_NOTIFICATION if locked else "Mensaje nuevo"
         attribution = f"{count} mensajes nuevos" if count > 1 else ""
         avatar = (chat or {}).get("avatar_path")
         if not avatar or not os.path.exists(avatar):
             avatar = find_chat_avatar(chat_jid)
         hero = None
-        if get_pref("notify_preview") and media_type in ("image", "video"):
+        if show_preview and media_type in ("image", "video"):
             raw = data.get("media_raw")
             if not raw:
                 msg = get_message(data.get("message_id") or "")

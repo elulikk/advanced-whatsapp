@@ -107,6 +107,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
     implementation("androidx.navigation:navigation-compose:2.8.2")
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.biometric:biometric:1.1.0")   // huella para abrir chats bloqueados
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
