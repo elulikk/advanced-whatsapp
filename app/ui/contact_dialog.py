@@ -114,6 +114,7 @@ class ContactEditDialog(QDialog):
             pass
 
         self.chat_data["name"] = name
+        self.chat_data["custom_name"] = name   # prevalece sobre el nombre que mande WhatsApp
         if phone:
             self.chat_data["phone"] = phone
 

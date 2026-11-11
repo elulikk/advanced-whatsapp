@@ -150,7 +150,15 @@ fun ChatListScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Advanced WhatsApp", color = C.ember, fontWeight = FontWeight.SemiBold) },
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        androidx.compose.foundation.Image(
+                            painter = androidx.compose.ui.res.painterResource(com.advancedwhatsapp.app.R.mipmap.ic_launcher),
+                            contentDescription = "Logo", modifier = Modifier.size(30.dp),
+                        )
+                        Text("Advanced WhatsApp", color = C.ember, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(start = 8.dp))
+                    }
+                },
                 actions = {
                     IconButton(onClick = { searching = !searching; if (!searching) search = "" }) { Icon(Icons.Default.Search, "Buscar") }
                     IconButton(onClick = onScheduled) { Icon(Icons.Default.Schedule, "Mensajes programados") }
@@ -361,6 +369,8 @@ private fun ChatRow(chat: Chat, tabs: List<ChatTab>, onClick: () -> Unit, onMark
     var menu by remember { mutableStateOf(false) }
     var lockDialog by remember { mutableStateOf("") }   // "", "new" (crear contraseña y bloquear), "ask" (pedirla para desbloquear)
     val locked = ChatLock.isLocked(chat.jid)
+    var editing by remember { mutableStateOf(false) }
+    if (editing) ContactEditDialog(chat.jid) { editing = false }
     Box {
         Row(
             Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = { menu = true })
@@ -394,6 +404,12 @@ private fun ChatRow(chat: Chat, tabs: List<ChatTab>, onClick: () -> Unit, onMark
             }
         }
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            if (!chat.isGroup) {
+                DropdownMenuItem(text = { Text("Editar contacto") }, onClick = {
+                    menu = false
+                    editing = true
+                })
+            }
             tabs.filter { it.id != chat.tabId }.forEach { t ->
                 DropdownMenuItem(text = { Text("Mover a ${t.name}") }, onClick = {
                     menu = false

@@ -211,6 +211,20 @@ object Notifier {
 
     fun cancel(jid: String) = nm.cancel(idFor(jid))
 
+    /**
+     * El globo del ícono sale de las notificaciones que siguen puestas: se quitan las de los chats ya leídos y se
+     * actualiza el número de las demás. Va al abrir la app, al leer un chat y al leer desde el teléfono.
+     */
+    fun sync() {
+        runCatching {
+            for (sbn in nm.activeNotifications) {
+                if (sbn.notification.channelId != App.CH_MESSAGES) continue
+                val jid = sbn.notification.shortcutId ?: continue   // las de aviso de falla no llevan atajo: se dejan
+                refresh(jid)
+            }
+        }
+    }
+
     private fun openChat(jid: String): PendingIntent = PendingIntent.getActivity(
         ctx, idFor(jid),
         Intent(ctx, MainActivity::class.java).putExtra(EXTRA_CHAT, jid).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),

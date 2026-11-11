@@ -18,6 +18,7 @@ import com.advancedwhatsapp.app.App
 import com.advancedwhatsapp.app.AppState
 import com.advancedwhatsapp.app.Prefs
 import com.advancedwhatsapp.app.R
+import com.advancedwhatsapp.app.data.Db
 import com.advancedwhatsapp.app.notify.Notifier
 import com.advancedwhatsapp.app.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
@@ -53,6 +54,8 @@ class GatewayService : Service() {
             NOTIFICATION_ID, buildNotification("Conectando…"),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
         )
+        // Al iniciar: el globo del ícono se recalcula desde lo realmente sin leer
+        scope.launch { runCatching { Db.recomputeUnread(); Notifier.sync() } }
         runCatching { webhook.start() }.onFailure { Log.e(TAG, "No se pudo abrir el webhook", it) }
         bindNode()
         applyWakeLock()

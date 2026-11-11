@@ -109,6 +109,24 @@ class _ScaledImage(QLabel):
         self.setPixmap(scaled)
 
 
+class _ClickBox(QWidget):
+    """Zona clicable (avatar + nombre de quien subió el estado): abre el chat con esa persona."""
+    clicked = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("Abrir el chat")
+
+    def mousePressEvent(self, e):
+        e.accept()   # no llega al diálogo (que pausaría el estado)
+
+    def mouseReleaseEvent(self, e):
+        e.accept()
+        if self.rect().contains(e.position().toPoint()):
+            self.clicked.emit()
+
+
 class StatusViewerDialog(QDialog):
     open_chat = Signal(str)      # jid del contacto (botón "Responder")
     seen_changed = Signal()
@@ -121,6 +139,7 @@ class StatusViewerDialog(QDialog):
         self.elapsed = 0.0
         self.duration = IMAGE_SECONDS
         self.paused = False
+        self.muted = True            # videos y audios de estados arrancan en silencio
         self.loading = False
         self._last_tick = time.monotonic()
         self._fetcher = _Fetcher()
@@ -167,8 +186,13 @@ class StatusViewerDialog(QDialog):
 
         head = QHBoxLayout()
         head.setSpacing(10)
+        who = _ClickBox()
+        who.clicked.connect(self._reply)
+        who_lay = QHBoxLayout(who)
+        who_lay.setContentsMargins(0, 0, 0, 0)
+        who_lay.setSpacing(10)
         self.avatar = AvatarWidget("?", size=38)
-        head.addWidget(self.avatar)
+        who_lay.addWidget(self.avatar)
         names = QVBoxLayout()
         names.setSpacing(0)
         self.lbl_name = QLabel()
@@ -177,7 +201,17 @@ class StatusViewerDialog(QDialog):
         self.lbl_when.setStyleSheet("font-size: 12px; color: rgba(255,255,255,0.7);")
         names.addWidget(self.lbl_name)
         names.addWidget(self.lbl_when)
-        head.addLayout(names, stretch=1)
+        who_lay.addLayout(names, stretch=1)
+        head.addWidget(who, stretch=1)
+        self.btn_mute = QPushButton("🔇")
+        self.btn_mute.setFlat(True)
+        self.btn_mute.setCursor(Qt.PointingHandCursor)
+        self.btn_mute.setFixedSize(34, 34)
+        self.btn_mute.setStyleSheet("QPushButton { font-size: 18px; color: #ffffff; border: none; background: transparent; }")
+        self.btn_mute.setToolTip("Activar sonido")
+        self.btn_mute.clicked.connect(self.toggle_mute)
+        self.btn_mute.hide()   # solo se muestra en videos y audios
+        head.addWidget(self.btn_mute)
         self.btn_pause = tool_button("pause", "Pausar  (barra espaciadora)", color="#ffffff")
         self.btn_pause.clicked.connect(self.toggle_pause)
         head.addWidget(self.btn_pause)
@@ -272,6 +306,13 @@ class StatusViewerDialog(QDialog):
         if self._player is not None:
             (self._player.pause if self.paused else self._player.play)()
 
+    def toggle_mute(self):
+        self.muted = not self.muted
+        if self._audio is not None:
+            self._audio.setMuted(self.muted)
+        self.btn_mute.setText("🔇" if self.muted else "🔊")
+        self.btn_mute.setToolTip("Activar sonido" if self.muted else "Silenciar")
+
     def mousePressEvent(self, e):
         # Mantener apretado pausa (como en el celular); un clic corto en los costados pasa
         self._press_at = time.monotonic()
@@ -307,6 +348,7 @@ class StatusViewerDialog(QDialog):
         if not item:
             return
         self._stop_media()
+        self.btn_mute.setVisible(item.get("type") in ("video", "audio"))
         self.elapsed = 0.0
         self.loading = False
         self.duration = IMAGE_SECONDS
@@ -404,6 +446,7 @@ class StatusViewerDialog(QDialog):
             return False
         self._player = QMediaPlayer(self)
         self._audio = QAudioOutput(self)
+        self._audio.setMuted(self.muted)
         self._player.setAudioOutput(self._audio)
         self._video_widget = QVideoWidget()
         self._video_widget.setStyleSheet("background-color: #000;")

@@ -187,11 +187,13 @@ class WebhookServer {
 
     private fun readElsewhere(chats: JSONArray?) {
         if (chats == null) return
+        var changed = false
         for (i in 0 until chats.length()) {
             val ch = chats.getJSONObject(i)
             val ids = ch.optJSONArray("message_ids")
             if (ids != null && ids.length() > 0) {
                 Db.markMessagesReadElsewhere(List(ids.length()) { ids.getString(it) })
+                changed = true
             }
             for (jid in listOfNotNull(ch.str("chat_jid"), ch.str("alt_jid"))) {
                 if (ch.optBoolean("all")) {
@@ -202,6 +204,7 @@ class WebhookServer {
                 }
             }
         }
+        if (changed) Notifier.sync()   // leíste desde el teléfono: bajan las notificaciones y el globo del ícono
     }
 
     private fun JSONObject.str(k: String): String? = if (isNull(k)) null else optString(k).ifEmpty { null }
