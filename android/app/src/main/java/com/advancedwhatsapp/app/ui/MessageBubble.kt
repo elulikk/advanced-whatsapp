@@ -1,9 +1,12 @@
 package com.advancedwhatsapp.app.ui
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -24,6 +27,8 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -34,7 +39,6 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -45,7 +49,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -92,9 +98,9 @@ private fun linkify(text: String): AnnotatedString = buildAnnotatedString {
 fun MessageBubble(
     m: Message, busy: Boolean, scope: CoroutineScope, showSender: Boolean, onReply: () -> Unit, onReact: (String) -> Unit, onDelete: () -> Unit,
     onOpenMedia: () -> Unit, onTranscribe: () -> Unit, onSummarize: (redo: Boolean) -> Unit,
+    transcriptOpen: Boolean, onToggleTranscript: () -> Unit, summaryOpen: Boolean, onSetSummaryOpen: (Boolean) -> Unit,
 ) {
     var menu by remember { mutableStateOf(false) }
-    var showSummary by remember(m.id) { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
     val revoked = m.mediaType == "revoked"
 
@@ -116,7 +122,7 @@ fun MessageBubble(
             }
             when (m.mediaType) {
                 "image", "sticker" -> ImageContent(m, busy, onOpenMedia)
-                "audio" -> VoiceContent(m, busy, scope, onOpenMedia, onTranscribe)
+                "audio" -> VoiceContent(m, busy, scope, onOpenMedia, onTranscribe, transcriptOpen, onToggleTranscript)
                 "video" -> FileRow(Icons.Default.Videocam, "Video", m, busy, onOpenMedia, showCaptionAsName = false)
                 "document" -> FileRow(Icons.Default.Description, m.text.ifEmpty { "Documento" }, m, busy, onOpenMedia, showCaptionAsName = true)
             }
@@ -137,8 +143,12 @@ fun MessageBubble(
                     Icon(
                         Icons.Default.AutoAwesome, "Resumir con IA", tint = if (m.summary != null) C.ember else C.text3,
                         modifier = Modifier.size(22.dp).clickable {
-                            showSummary = !showSummary
-                            if (showSummary && m.summary == null) onSummarize(false)
+                            if (m.summary == null) {
+                                onSetSummaryOpen(true)
+                                onSummarize(false)
+                            } else {
+                                onSetSummaryOpen(!summaryOpen)
+                            }
                         }.padding(3.dp),
                     )
                 }
@@ -146,7 +156,9 @@ fun MessageBubble(
                 Text(timeOf(m.timestamp), color = C.text2, fontSize = 11.sp)
                 if (m.fromMe && !revoked) StatusTicks(m.status)
             }
-            if (showSummary) SummaryPanel(m, busy, onRedo = { onSummarize(true) })
+            if (summaryOpen || m.summary != null) {
+                SummaryPanel(m, busy, summaryOpen, onToggle = { onSetSummaryOpen(!summaryOpen) }, onRedo = { onSummarize(true) })
+            }
         }
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
             if (!revoked) {
@@ -171,7 +183,7 @@ fun MessageBubble(
                 if (MessageSummary.canSummarize(m)) {
                     DropdownMenuItem(text = { Text("Resumir con IA") }, onClick = {
                         menu = false
-                        showSummary = true
+                        onSetSummaryOpen(true)
                         if (m.summary == null) onSummarize(false)
                     })
                 }
@@ -215,18 +227,26 @@ private fun StatusTicks(status: String) {
     }
 }
 
+/** Síntesis IA plegable: encabezado con flecha y, plegada, una línea de adelanto. */
 @Composable
-private fun SummaryPanel(m: Message, busy: Boolean, onRedo: () -> Unit) {
+private fun SummaryPanel(m: Message, busy: Boolean, open: Boolean, onToggle: () -> Unit, onRedo: () -> Unit) {
+    val sections = remember(m.summary) { m.summary?.let { MessageSummary.parse(it) }.orEmpty() }
     Column(Modifier.fillMaxWidth().padding(top = 4.dp).background(Color(0x33000000), RoundedCornerShape(6.dp)).padding(7.dp)) {
+        Row(Modifier.fillMaxWidth().clickable(onClick = onToggle), verticalAlignment = Alignment.CenterVertically) {
+            Text("Síntesis IA", color = C.ember, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            Icon(if (open) Icons.Default.ExpandLess else Icons.Default.ExpandMore, if (open) "Plegar" else "Desplegar", tint = C.text3, modifier = Modifier.size(18.dp))
+        }
         when {
-            busy -> Row(verticalAlignment = Alignment.CenterVertically) {
+            busy -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 3.dp)) {
                 CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
                 Text("Analizando…", color = C.text2, fontSize = 13.sp, modifier = Modifier.padding(start = 8.dp))
             }
+            m.summary != null && !open ->
+                Text(sections.firstOrNull()?.second.orEmpty(), color = C.text2, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             m.summary != null -> {
                 SelectionContainer {
                     Column {
-                        MessageSummary.parse(m.summary).forEach { (title, body) ->
+                        sections.forEach { (title, body) ->
                             Text(title, color = C.ember, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                             Text(body, color = C.text, fontSize = 14.sp, modifier = Modifier.padding(bottom = 4.dp))
                         }
@@ -281,14 +301,19 @@ private fun FileRow(icon: androidx.compose.ui.graphics.vector.ImageVector, title
 }
 
 @Composable
-private fun VoiceContent(m: Message, busy: Boolean, scope: CoroutineScope, onDownload: () -> Unit, onTranscribe: () -> Unit) {
+private fun VoiceContent(
+    m: Message, busy: Boolean, scope: CoroutineScope, onDownload: () -> Unit, onTranscribe: () -> Unit,
+    transcriptOpen: Boolean, onToggleTranscript: () -> Unit,
+) {
+    // Solo cambia al empezar/pausar; el progreso lo lee únicamente la burbuja que está sonando
     val playing by VoicePlayer.playingId.collectAsStateWithLifecycle()
-    val progress by VoicePlayer.progress.collectAsStateWithLifecycle()
-    val position by VoicePlayer.positionMs.collectAsStateWithLifecycle()
-    val speed by VoicePlayer.speed.collectAsStateWithLifecycle()
     val isThis = VoicePlayer.currentIdOf() == m.id
     val file = m.mediaPath?.takeIf { File(it).exists() }
-    var seek by remember(m.id) { mutableFloatStateOf(0f) }
+    val totalSec = remember(m.id) { audioSeconds(m) }
+    val barColor = if (m.fromMe) BAR_OUT else C.accent
+
+    // La pantalla no se apaga mientras suena este audio
+    KeepScreenOn(playing == m.id)
 
     Row(verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = {
@@ -301,27 +326,121 @@ private fun VoiceContent(m: Message, busy: Boolean, scope: CoroutineScope, onDow
                 else -> Icon(Icons.Default.PlayArrow, "Reproducir")
             }
         }
-        Slider(
-            value = if (isThis) progress else seek,
-            onValueChange = {
-                seek = it
-                if (isThis) VoicePlayer.seek(m.id, it)
-            },
-            enabled = file != null, modifier = Modifier.weight(1f),
-        )
         if (isThis) {
-            Text(
-                "${speed}x".replace(".0x", "x"), color = C.text2, fontSize = 12.sp,
-                modifier = Modifier.clickable { VoicePlayer.nextSpeed() }.padding(6.dp),
-            )
-            Text(formatSeconds(position / 1000), color = C.text2, fontSize = 12.sp)
+            LiveAudioBar(m.id, barColor, totalSec, Modifier.weight(1f))
+        } else {
+            Column(Modifier.weight(1f)) {
+                AudioBar(0f, enabled = false, active = barColor, onSeek = {})
+                AudioTimes("0:00", if (totalSec > 0) formatSeconds(totalSec) else null)
+            }
         }
     }
     val t = m.transcript?.trim().orEmpty()
     if (t.isNotEmpty()) {
-        SelectionContainer { Text(t, color = C.text2, fontSize = 14.sp, fontStyle = FontStyle.Italic) }
+        TranscriptBlock(t, transcriptOpen, onToggleTranscript)
     } else {
         TextButton(onClick = onTranscribe, enabled = !busy) { Text("Transcribir", fontSize = 12.sp) }
+    }
+}
+
+private val BAR_OUT = Color(0xFF8FE9CF)
+
+/** Duración declarada por WhatsApp en el audio recibido; 0 si no se conoce (por ejemplo, los que mandé yo). */
+private fun audioSeconds(m: Message): Int {
+    val raw = m.mediaRaw ?: return 0
+    return runCatching {
+        JSONObject(raw).optJSONObject("message")?.optJSONObject("audioMessage")?.optInt("seconds") ?: 0
+    }.getOrDefault(0)
+}
+
+/** La barra del audio que está sonando: lee el progreso, así los demás audios no se redibujan cada 120 ms. */
+@Composable
+private fun LiveAudioBar(id: String, active: Color, totalSec: Int, modifier: Modifier) {
+    val progress by VoicePlayer.progress.collectAsStateWithLifecycle()
+    val position by VoicePlayer.positionMs.collectAsStateWithLifecycle()
+    val duration by VoicePlayer.durationMs.collectAsStateWithLifecycle()
+    val speed by VoicePlayer.speed.collectAsStateWithLifecycle()
+    val total = if (duration > 0) duration / 1000 else totalSec
+    Column(modifier) {
+        AudioBar(progress, enabled = true, active = active, onSeek = { VoicePlayer.seek(id, it) })
+        AudioTimes(formatSeconds(position / 1000), if (total > 0) formatSeconds(total) else null) {
+            Text(
+                "${speed}x".replace(".0x", "x"), color = C.text2, fontSize = 12.sp,
+                modifier = Modifier.clickable { VoicePlayer.nextSpeed() }.padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun AudioTimes(elapsed: String, total: String?, trailing: @Composable () -> Unit = {}) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(if (total != null) "$elapsed / $total" else elapsed, color = C.text2, fontSize = 11.sp, modifier = Modifier.weight(1f))
+        trailing()
+    }
+}
+
+private val THUMB_RADIUS = 8.dp
+
+/**
+ * Barra de reproducción: riel fino, tramo ya escuchado con el color de acento y un punto en la posición actual.
+ * Se toca para saltar y se arrastra para buscar; el audio salta recién al soltar.
+ */
+@Composable
+private fun AudioBar(progress: Float, enabled: Boolean, active: Color, onSeek: (Float) -> Unit, modifier: Modifier = Modifier) {
+    var drag by remember { mutableStateOf<Float?>(null) }
+    val shown = (drag ?: progress).coerceIn(0f, 1f)
+    val track = C.text3.copy(alpha = 0.45f)
+    val color = if (enabled) active else C.text3
+    Canvas(
+        modifier.fillMaxWidth().height(28.dp)
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                val pad = THUMB_RADIUS.toPx()
+                detectTapGestures { o -> onSeek(((o.x - pad) / (size.width - 2 * pad)).coerceIn(0f, 1f)) }
+            }
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                val pad = THUMB_RADIUS.toPx()
+                fun at(x: Float) = ((x - pad) / (size.width - 2 * pad)).coerceIn(0f, 1f)
+                detectHorizontalDragGestures(
+                    onDragStart = { o -> drag = at(o.x) },
+                    onDragEnd = {
+                        drag?.let(onSeek)
+                        drag = null
+                    },
+                    onDragCancel = { drag = null },
+                    onHorizontalDrag = { change, _ ->
+                        change.consume()
+                        drag = at(change.position.x)
+                    },
+                )
+            },
+    ) {
+        val h = 4.dp.toPx()
+        val pad = THUMB_RADIUS.toPx()
+        val w = size.width - 2 * pad
+        val cy = size.height / 2
+        drawRoundRect(track, Offset(pad, cy - h / 2), Size(w, h), CornerRadius(h / 2, h / 2))
+        if (shown > 0f) drawRoundRect(color, Offset(pad, cy - h / 2), Size(w * shown, h), CornerRadius(h / 2, h / 2))
+        drawCircle(color, if (drag != null) pad else pad * 0.8f, Offset(pad + w * shown, cy))
+    }
+}
+
+/** Transcripción plegable: 2 líneas hasta que se toca; las cortas se muestran enteras. */
+@Composable
+private fun TranscriptBlock(text: String, open: Boolean, onToggle: () -> Unit) {
+    if (text.length <= 70 && '\n' !in text) {
+        SelectionContainer { Text(text, color = C.text2, fontSize = 14.sp, fontStyle = FontStyle.Italic) }
+        return
+    }
+    Column(Modifier.fillMaxWidth().clickable(onClick = onToggle)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Transcripción", color = C.text3, fontSize = 12.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+            Icon(if (open) Icons.Default.ExpandLess else Icons.Default.ExpandMore, if (open) "Plegar" else "Desplegar", tint = C.text3, modifier = Modifier.size(18.dp))
+        }
+        if (open) SelectionContainer { Text(text, color = C.text2, fontSize = 14.sp, fontStyle = FontStyle.Italic) }
+        else Text(text, color = C.text2, fontSize = 14.sp, fontStyle = FontStyle.Italic, maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
 }
 
