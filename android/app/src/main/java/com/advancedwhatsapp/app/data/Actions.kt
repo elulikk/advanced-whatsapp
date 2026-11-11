@@ -4,6 +4,7 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import com.advancedwhatsapp.app.App
 import com.advancedwhatsapp.app.Prefs
+import com.advancedwhatsapp.app.ai.AutoTranscriber
 import com.advancedwhatsapp.app.gateway.GatewayClient
 import com.advancedwhatsapp.app.gateway.GatewayException
 import org.json.JSONArray
@@ -38,6 +39,7 @@ object Actions {
             quotedText = quoted?.let { Db.preview(it.mediaType, it.text) },
             quotedSender = quoted?.let { if (it.fromMe) "Yo" else it.senderName },
         )
+        if (mediaType == "audio") AutoTranscriber.enqueue(id)
     }
 
     fun sendText(to: String, text: String, quoted: Message? = null, at: Long? = null) {

@@ -13,6 +13,7 @@ from app import chat_lock
 from app.config import APP_NAME, get_pref, set_pref
 from app.db import get_or_create_chat, get_chats, get_chat, mark_chat_as_read
 from app.gateway_manager import GatewayManager
+from app.media_service import auto_transcribe, auto_transcribe_backlog
 from app.webhook_server import signals, WebhookServer
 from app.notifications import NotificationCenter
 from app.windows_integration import TaskbarBadge
@@ -197,6 +198,8 @@ class MainWindow(QMainWindow):
             self.show()
         self.raise_()
         self.activateWindow()
+
+    _backlog_transcribed = False
 
     def after_startup(self):
         self._update_unread_ui(self._unread_total)
@@ -466,6 +469,10 @@ class MainWindow(QMainWindow):
 
     def _on_incoming_message(self, data: dict):
         chat_jid = data.get("chat_jid")
+        if data.get("is_new") and data.get("media_type") == "audio":
+            # Audio nuevo (recibido o enviado por mí): se baja y transcribe solo, en segundo plano
+            auto_transcribe({"id": data.get("message_id"), "media_type": "audio",
+                             "media_path": data.get("media_path"), "media_raw": data.get("media_raw")})
         active_chat = self.chat_view_panel.current_chat
 
         if active_chat and (active_chat.get("jid") == chat_jid or (chat_jid and chat_jid.startswith(active_chat.get("jid").split("@")[0]))):
@@ -498,6 +505,12 @@ class MainWindow(QMainWindow):
             self.notifications.chat_opened(jid)
         self._chat_reload_timer.start()
 
+    def _transcribe_backlog(self):
+        try:
+            auto_transcribe_backlog()
+        except Exception as e:
+            print(f"[Advanced WhatsApp] transcripción automática pendiente: {e}")
+
     def _on_history_synced(self):
         self._history_sync_timer.start()
 
@@ -520,6 +533,9 @@ class MainWindow(QMainWindow):
         status = data.get("status")
         self.chat_list_panel.set_connection_state(status)
         if status == "connected":
+            if not self._backlog_transcribed:
+                self._backlog_transcribed = True   # una sola vez por arranque
+                QTimer.singleShot(5000, self._transcribe_backlog)
             self._presence_sent = None
             self._presence_timer.start()
             self.chat_view_panel.refresh_scheduled()

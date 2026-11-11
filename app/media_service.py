@@ -7,14 +7,17 @@ se abre, y las notas de voz se transcriben a demanda. Todo corre en un hilo, sin
 
 import json
 import os
+import itertools
 import queue
 import threading
+import time
 from typing import Dict, Optional, Tuple
 
 from PySide6.QtCore import QObject, Signal
 
 from app import db
-from app.ai.transcription import transcribe_audio
+from app.ai.transcription import transcribe_audio, has_transcription_key
+from app.config import get_pref
 from app.gateway_manager import GatewayManager
 
 
@@ -26,7 +29,11 @@ class MediaSignals(QObject):
 
 media_signals = MediaSignals()
 
-_jobs: "queue.Queue[Tuple[str, dict]]" = queue.Queue()
+# Cola con prioridad: lo que pide el usuario (0) pasa antes que la transcripción automática (1)
+_jobs: "queue.PriorityQueue" = queue.PriorityQueue()
+_seq = itertools.count()
+AUTO_BACKLOG_DAYS = 3        # al conectar se procesan los audios de los últimos días...
+AUTO_BACKLOG_LIMIT = 20      # ...hasta esta cantidad, de a uno
 _lock = threading.Lock()
 _pending: set = set()                # (kind, message_id) en cola o en curso
 _errors: Dict[Tuple[str, str], str] = {}   # (kind, message_id) -> último error
@@ -41,7 +48,7 @@ def _ensure_worker():
             _worker.start()
 
 
-def _enqueue(kind: str, msg: dict):
+def _enqueue(kind: str, msg: dict, auto: bool = False):
     key = (kind, msg["id"])
     with _lock:
         if key in _pending:
@@ -51,7 +58,7 @@ def _enqueue(kind: str, msg: dict):
             return
         _pending.add(key)
     _ensure_worker()
-    _jobs.put((kind, dict(msg)))
+    _jobs.put((1 if auto else 0, next(_seq), kind, dict(msg), auto))
 
 
 _WRAPPER_KEYS = ("viewOnceMessage", "viewOnceMessageV2", "viewOnceMessageV2Extension",
@@ -115,6 +122,43 @@ def request_transcript(msg: dict):
     _enqueue("transcribe", msg)
 
 
+def auto_transcribe_enabled() -> bool:
+    return get_pref("auto_transcribe")
+
+
+def auto_transcribe(msg: dict) -> bool:
+    """Encola la transcripción automática de un audio (recibido o enviado). No hace nada si el ajuste está
+    apagado, si no hay API key, si ya tiene texto, si falló antes o si ya está en cola. True si se encoló."""
+    if msg.get("media_type") != "audio" or not msg.get("id") or msg.get("transcript"):
+        return False
+    if not auto_transcribe_enabled() or not has_transcription_key():
+        return False
+    if not msg.get("media_path") and not msg.get("media_raw"):
+        return False
+    if unavailable_reason(msg):
+        return False
+    msg_id = msg["id"]
+    with _lock:
+        if ("transcribe", msg_id) in _pending or ("transcribe", msg_id) in _errors:
+            return False
+    if db.is_message_transcript_failed(msg_id):
+        return False
+    _enqueue("transcribe", msg, auto=True)
+    return True
+
+
+def auto_transcribe_backlog(now: Optional[int] = None) -> int:
+    """Encola los audios recientes que quedaron sin transcribir (sin los que ya fallaron). Devuelve cuántos."""
+    if not auto_transcribe_enabled() or not has_transcription_key():
+        return 0
+    since = int(now if now is not None else time.time()) - AUTO_BACKLOG_DAYS * 86400
+    count = 0
+    for row in db.get_audios_pending_transcript(since, AUTO_BACKLOG_LIMIT):
+        if auto_transcribe(row):
+            count += 1
+    return count
+
+
 def is_pending(kind: str, msg_id: str) -> bool:
     with _lock:
         return (kind, msg_id) in _pending
@@ -135,7 +179,7 @@ def _download(msg: dict) -> str:
 
 def _run():
     while True:
-        kind, msg = _jobs.get()
+        _prio, _n, kind, msg, auto = _jobs.get()
         msg_id = msg["id"]
         try:
             if kind == "download":
@@ -156,6 +200,11 @@ def _run():
             print(f"[Advanced WhatsApp Media] {kind} {msg_id} falló: {e}")
             with _lock:
                 _errors[(kind, msg_id)] = str(e)
+            if auto and kind == "transcribe":
+                try:
+                    db.set_message_transcript_failed(msg_id)   # no se reintenta sola, ni al reabrir la app
+                except Exception:
+                    pass
             media_signals.job_failed.emit(msg_id)
         finally:
             with _lock:

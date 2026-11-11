@@ -46,6 +46,12 @@ def merge_dictation(existing: str, dictated: str) -> str:
     return existing + sep + new
 
 
+def has_transcription_key(config=None) -> bool:
+    """True si hay una API key (Groq u OpenAI) con la que se pueda transcribir."""
+    cfg = config if config is not None else load_app_config()
+    return bool(cfg.get("GROQ", "api_key", fallback="").strip() or cfg.get("OPENAI", "api_key", fallback="").strip())
+
+
 def transcribe_audio(path: str, config=None) -> str:
     """Devuelve el texto de un audio. Lanza RuntimeError si ningún proveedor pudo transcribirlo."""
     if not os.path.isfile(path):

@@ -175,6 +175,15 @@ class SettingsPanel(QWidget):
         self.check_ai_enabled = QCheckBox("Habilitar funciones de inteligencia artificial")
         c_layout.addWidget(self.check_ai_enabled)
 
+        # Transcripción automática de audios (get_pref/set_pref; la cola vive en media_service)
+        self.check_auto_transcribe = QCheckBox("Transcribir audios automáticamente")
+        self.check_auto_transcribe.setChecked(get_pref("auto_transcribe"))
+        self.check_auto_transcribe.toggled.connect(lambda on: set_pref("auto_transcribe", on))
+        c_layout.addWidget(self.check_auto_transcribe)
+        c_layout.addWidget(self._hint(
+            "Las notas de voz que llegan (y las que mandás) se transcriben solas en segundo plano. "
+            "Necesita una clave de Groq u OpenAI. Si falla alguna, queda el botón «Transcribir» en el mensaje."))
+
         # Proveedor y modelo principal
         group_active = QGroupBox("Proveedor y modelo principal")
         grid = QGridLayout(group_active)

@@ -52,6 +52,11 @@ object Prefs {
         get() = p.getBoolean("keep_cpu", true)
         set(v) = p.edit().putBoolean("keep_cpu", v).apply()
 
+    /** Transcribir solas las notas de voz que llegan y las que mando (necesita clave de Groq u OpenAI). */
+    var autoTranscribe: Boolean
+        get() = p.getBoolean("auto_transcribe", true)
+        set(v) = p.edit().putBoolean("auto_transcribe", v).apply()
+
     var useProfileInReplies: Boolean
         get() = p.getBoolean("use_profile", true)
         set(v) = p.edit().putBoolean("use_profile", v).apply()

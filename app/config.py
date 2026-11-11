@@ -222,7 +222,8 @@ PREF_DEFAULTS = {
     "close_to_tray": True,       # la X deja Advanced WhatsApp en la bandeja (sigue avisando)
     "status_receipts": True,     # al ver un estado, el contacto ve que lo viste
     "typing_indicator": True,    # mandar "escribiendo…" mientras escribo
-    "tags_palette_open": True,   # panel de tags abierto debajo de los filtros de la lista de chats
+    "auto_transcribe": True,     # transcribir solos los audios que llegan (y los que mando)
+    "tags_palette_open": True,  # panel de tags abierto debajo de los filtros de la lista de chats
 }
 
 _pref_cache = {}
