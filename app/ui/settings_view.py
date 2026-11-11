@@ -322,6 +322,8 @@ class SettingsPanel(QWidget):
         check(l1, "notify_preview", "Mostrar el texto del mensaje en la notificación")
         check(l1, "notify_sound", "Reproducir sonido",
               "Con la ventana abierta en otro chat suena un aviso suave, sin notificación.")
+        check(l1, "notify_groups", "Notificar mensajes de grupos",
+              "Apagado: los grupos no avisan ni suman en el contador del ícono (se siguen viendo en la pestaña Grupos).")
         check(l1, "notify_calls", "Avisar de llamadas entrantes (se atienden desde el celular)")
         row = QHBoxLayout()
         btn_test = QPushButton("Probar notificación")

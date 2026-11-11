@@ -33,6 +33,11 @@ object Prefs {
         get() = p.getBoolean("notifications", true)
         set(v) = p.edit().putBoolean("notifications", v).apply()
 
+    /** Grupos: apagado no avisan ni suman en el número del ícono (se ven igual en la pestaña Grupos). */
+    var notifyGroups: Boolean
+        get() = p.getBoolean("notify_groups", false)
+        set(v) = p.edit().putBoolean("notify_groups", v).apply()
+
     var readReceipts: Boolean
         get() = p.getBoolean("read_receipts", true)
         set(v) = p.edit().putBoolean("read_receipts", v).apply()

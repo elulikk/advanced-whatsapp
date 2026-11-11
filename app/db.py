@@ -833,11 +833,18 @@ def recompute_unread_counts(conn: Optional[sqlite3.Connection] = None, jids: Opt
     return cur.rowcount
 
 
-def get_total_unread_count() -> int:
-    """Retorna la cantidad total de mensajes no leídos sumados en los chats individuales y los grupos."""
+def get_total_unread_count(include_muted: bool = True, include_groups: bool = True) -> int:
+    """Retorna la cantidad total de mensajes no leídos sumados en los chats individuales y los grupos.
+    include_muted=False deja afuera los chats silenciados (como WhatsApp en el ícono de la app);
+    include_groups=False cuenta solo los chats individuales."""
+    where = VISIBLE_CHAT_SQL if include_groups else INDIVIDUAL_CHAT_SQL
+    params: list = []
+    if not include_muted:
+        where += " AND NOT (COALESCE(muted_until, 0) = -1 OR COALESCE(muted_until, 0) > ?)"
+        params.append(int(time.time()))
     with db_conn() as conn:
         cursor = conn.cursor()
-        cursor.execute(f"SELECT COALESCE(SUM(unread_count), 0) FROM chats WHERE {VISIBLE_CHAT_SQL}")
+        cursor.execute(f"SELECT COALESCE(SUM(unread_count), 0) FROM chats WHERE {where}", params)
         row = cursor.fetchone()
         return int(row[0]) if row else 0
 

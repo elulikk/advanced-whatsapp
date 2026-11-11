@@ -62,6 +62,7 @@ fun SettingsScreen(onBack: () -> Unit) {
     val conn by AppState.connection.collectAsStateWithLifecycle()
     var confirmUnlink by remember { mutableStateOf(false) }
     var notifications by remember { mutableStateOf(Prefs.notifications) }
+    var notifyGroups by remember { mutableStateOf(Prefs.notifyGroups) }
     var receipts by remember { mutableStateOf(Prefs.readReceipts) }
     var statusReceipts by remember { mutableStateOf(Prefs.statusReceipts) }
     var keepCpu by remember { mutableStateOf(Prefs.keepCpuAwake) }
@@ -89,6 +90,7 @@ fun SettingsScreen(onBack: () -> Unit) {
 
             Section("Notificaciones y lectura")
             Toggle("Avisar de mensajes y llamadas", notifications) { notifications = it; Prefs.notifications = it }
+            Toggle("Avisar de mensajes de grupos", notifyGroups) { notifyGroups = it; Prefs.notifyGroups = it }
             Toggle("Enviar confirmación de lectura (tildes azules)", receipts) { receipts = it; Prefs.readReceipts = it }
             Toggle("Al ver un estado, avisar al contacto que lo viste", statusReceipts) { statusReceipts = it; Prefs.statusReceipts = it }
 

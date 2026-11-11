@@ -11,6 +11,7 @@ import time
 
 from app.db import (get_chats, get_total_unread_count, clear_chat_messages, delete_chat, mark_chat_as_read,
                     mark_all_chats_as_read, set_chat_muted, is_chat_muted, db_conn)
+from app.config import get_pref
 from app.gateway_manager import GatewayManager
 from app.ui.theme import C, HEADER_H, R_LG, unread_badge_qss
 from app.ui.icons import icon, tool_button, pixmap
@@ -810,9 +811,10 @@ class ChatListPanel(QWidget):
             tagdb.purge_expired()
         tag_map = tagdb.tags_for_chats([c.get("jid") for c in chats])
 
-        unread_total = get_total_unread_count()
-        self.btn_read_all.setVisible(unread_total > 0)
-        self.unread_total_changed.emit(unread_total)
+        self.btn_read_all.setVisible(get_total_unread_count() > 0)
+        # Ícono, título y bandeja: los chats silenciados no suman (igual que WhatsApp), y los grupos solo si se avisan
+        self.unread_total_changed.emit(get_total_unread_count(include_muted=False,
+                                                              include_groups=get_pref("notify_groups")))
 
         # Conservar la posición del scroll: al vaciar la lista se volvía arriba
         sb = self.list_widget.verticalScrollBar()

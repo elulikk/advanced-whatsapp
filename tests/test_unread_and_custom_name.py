@@ -80,6 +80,22 @@ def test_read_elsewhere_lowers_badge():
     assert db.get_total_unread_count() == 0
 
 
+def test_muted_chats_do_not_count_in_app_badge():
+    _in("m1"); _in("a1", OTRO); _in("a2", OTRO, ts=101)
+    db.set_chat_muted(OTRO, -1)
+    assert db.get_total_unread_count() == 3
+    assert db.get_total_unread_count(include_muted=False) == 1
+    db.set_chat_muted(OTRO, 1)  # silencio vencido: vuelve a contar
+    assert db.get_total_unread_count(include_muted=False) == 3
+
+
+def test_groups_can_be_left_out_of_app_badge():
+    grupo = "120363000000000000@g.us"
+    _in("m1"); _in("g1", grupo); _in("g2", grupo, ts=101)
+    assert db.get_total_unread_count() == 3
+    assert db.get_total_unread_count(include_groups=False) == 1
+
+
 def test_init_db_recomputes_on_start():
     _in("m1")
     with db.db_conn() as c:

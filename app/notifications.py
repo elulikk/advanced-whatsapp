@@ -95,6 +95,8 @@ class NotificationCenter(QObject):
         now = time.time()
         if ts and (ts < self.started_at - BACKLOG_GRACE or now - ts > MAX_AGE):
             return
+        if chat_jid.endswith("@g.us") and not get_pref("notify_groups"):
+            return
         chat = get_chat(chat_jid)
         if is_chat_muted(chat):
             return

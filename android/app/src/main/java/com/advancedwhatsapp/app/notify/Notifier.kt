@@ -43,6 +43,7 @@ object Notifier {
     fun message(jid: String, alert: Boolean = true) {
         if (!Prefs.notifications) return
         if (AppState.inForeground && AppState.activeChat == jid) return
+        if (jid.endsWith("@g.us") && !Prefs.notifyGroups) return
         val chat = Db.getChat(jid) ?: return
         if (chat.isMuted) return
         val pending = Db.unreadMessages(jid).filter { it.mediaType != "revoked" }

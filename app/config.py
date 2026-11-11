@@ -218,6 +218,7 @@ PREF_DEFAULTS = {
     "notify_sound": True,        # sonido de la notificación (y aviso suave con la ventana abierta)
     "notify_preview": True,      # mostrar el texto del mensaje en la notificación
     "notify_calls": True,        # aviso de llamada entrante
+    "notify_groups": False,      # notificaciones de grupos (y que sumen en el contador del ícono)
     "close_to_tray": True,       # la X deja Advanced WhatsApp en la bandeja (sigue avisando)
     "status_receipts": True,     # al ver un estado, el contacto ve que lo viste
     "typing_indicator": True,    # mandar "escribiendo…" mientras escribo
