@@ -139,7 +139,8 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
     var replyTo by remember { mutableStateOf<Message?>(null) }
     // El borrador guarda también el cursor: los emojis se insertan donde está. `draft` es solo su texto.
     val draftState = remember { mutableStateOf(TextFieldValue("")) }
-    var draft by remember { DraftText(draftState) }
+    val draftText = remember { DraftText(draftState) }
+    var draft by draftText
     var emojiOpen by rememberSaveable { mutableStateOf(false) }
     val keyboard = LocalSoftwareKeyboardController.current
     var showAi by remember { mutableStateOf(false) }
@@ -205,6 +206,22 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
 
     BackHandler(enabled = emojiOpen) { emojiOpen = false }
 
+    fun chooseScheduleTime() = pickDateTime(context, scheduleAt) { at ->
+        if (at > nowSec()) scheduleAt = at else notifyError("Elegí una fecha y hora futuras.")
+    }
+
+    /** La hora elegida ya pasó: se avisa en vez de mandar el mensaje a destiempo. */
+    fun scheduleIsPast(): Boolean {
+        val at = scheduleAt ?: return false
+        if (at > nowSec()) return false
+        notifyError("La hora que elegiste ya pasó. Elegí otra para programar el envío.")
+        return true
+    }
+
+    fun confirmScheduled(at: Long?) {
+        if (at != null) scope.launch { snackbar.showSnackbar("Programado: ${scheduleLabel(at)}") }
+    }
+
     fun sendSticker(s: Sticker) {
         if (scheduleIsPast()) return
         val at = scheduleAt
@@ -223,22 +240,6 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
                 }
             }
         }
-    }
-
-    fun chooseScheduleTime() = pickDateTime(context, scheduleAt) { at ->
-        if (at > nowSec()) scheduleAt = at else notifyError("Elegí una fecha y hora futuras.")
-    }
-
-    /** La hora elegida ya pasó: se avisa en vez de mandar el mensaje a destiempo. */
-    fun scheduleIsPast(): Boolean {
-        val at = scheduleAt ?: return false
-        if (at > nowSec()) return false
-        notifyError("La hora que elegiste ya pasó. Elegí otra para programar el envío.")
-        return true
-    }
-
-    fun confirmScheduled(at: Long?) {
-        if (at != null) scope.launch { snackbar.showSnackbar("Programado: ${scheduleLabel(at)}") }
     }
 
     suspend fun reload() {
