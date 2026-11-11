@@ -2,6 +2,7 @@ package com.advancedwhatsapp.app.ui
 
 import android.Manifest
 import android.content.ActivityNotFoundException
+import android.content.ClipboardManager
 import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.activity.compose.BackHandler
@@ -9,7 +10,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,7 +34,9 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Pause
@@ -40,6 +45,7 @@ import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -59,6 +65,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -67,15 +74,19 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
@@ -89,6 +100,7 @@ import com.advancedwhatsapp.app.ai.ReplyPolisher
 import com.advancedwhatsapp.app.data.Actions
 import com.advancedwhatsapp.app.data.Chat
 import com.advancedwhatsapp.app.data.Db
+import com.advancedwhatsapp.app.data.Downloads
 import com.advancedwhatsapp.app.data.Message
 import com.advancedwhatsapp.app.data.Photos
 import com.advancedwhatsapp.app.data.Scheduled
@@ -121,6 +133,12 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
     var scheduledCount by remember { mutableIntStateOf(0) }
     var viewerImage by remember { mutableStateOf<String?>(null) }
     val busyIds = remember { mutableStateOf(setOf<String>()) }
+    // Transcripciones y síntesis desplegadas: por mensaje, mientras dure esta pantalla (la lista recicla las burbujas)
+    val openTranscripts = remember { mutableStateMapOf<String, Boolean>() }
+    val openSummaries = remember { mutableStateMapOf<String, Boolean>() }
+    var transcribing by remember { mutableStateOf(false) }
+    var clipHasImage by remember { mutableStateOf(false) }
+    var clipDismissed by remember { mutableStateOf(0L) }
     val listState = rememberLazyListState()
     val presences by AppState.presence.collectAsStateWithLifecycle()
     val presence = presences[jid]
@@ -239,6 +257,24 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
     val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { sendPicked(it, null) }
     val pickDocument = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { sendPicked(it, "document") }
 
+    // Imagen en el portapapeles: se ofrece pegarla como si se hubiera adjuntado
+    DisposableEffect(owner) {
+        val cm = ContextCompat.getSystemService(context, ClipboardManager::class.java)
+        fun check() {
+            val d = runCatching { cm?.primaryClipDescription }.getOrNull()
+            clipHasImage = d != null && d.hasMimeType("image/*") && d.timestamp != clipDismissed
+        }
+        check()
+        val listener = ClipboardManager.OnPrimaryClipChangedListener { check() }
+        cm?.addPrimaryClipChangedListener(listener)
+        val observer = LifecycleEventObserver { _, e -> if (e == Lifecycle.Event.ON_RESUME) check() }
+        owner.lifecycle.addObserver(observer)
+        onDispose {
+            cm?.removePrimaryClipChangedListener(listener)
+            owner.lifecycle.removeObserver(observer)
+        }
+    }
+
     // Cámara: Android puede cerrar esta pantalla mientras la cámara está abierta, por eso las rutas se guardan
     var cameraFile by rememberSaveable { mutableStateOf<String?>(null) }
     var photoToSend by rememberSaveable { mutableStateOf<String?>(null) }
@@ -263,6 +299,66 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
         } catch (e: ActivityNotFoundException) {
             cameraFile = null
             notifyError("No hay ninguna app de cámara en este celular.")
+        }
+    }
+
+    fun dismissClipImage() {
+        val cm = ContextCompat.getSystemService(context, ClipboardManager::class.java)
+        clipDismissed = runCatching { cm?.primaryClipDescription?.timestamp }.getOrNull() ?: 0L
+        clipHasImage = false
+    }
+
+    /** Pega la imagen del portapapeles: abre la misma vista previa que una foto recién sacada. */
+    fun pasteClipImage() {
+        val cm = ContextCompat.getSystemService(context, ClipboardManager::class.java)
+        val uri = runCatching { cm?.primaryClip?.getItemAt(0)?.uri }.getOrNull()
+        dismissClipImage()
+        if (uri == null) {
+            notifyError("No se pudo leer la imagen del portapapeles.")
+            return
+        }
+        runTask {
+            val (file, _) = Actions.importUri(uri)
+            try {
+                Photos.prepare(file)
+            } catch (e: Exception) {
+                file.delete()
+                throw e
+            }
+            withContext(Dispatchers.Main) { photoToSend = file.path }
+        }
+    }
+
+    /** Dictado: transcribe la grabación, la emprolija si se pidió y deja el texto en el campo, sin enviar. */
+    fun dictate(rec: Recording, polish: Boolean) {
+        transcribing = true
+        val contact = chat?.name.orEmpty()
+        scope.launch(Dispatchers.IO) {
+            try {
+                var text = AiService.transcribe(rec.file).trim()
+                if (text.isEmpty()) throw IllegalStateException("No se reconoció voz en la grabación.")
+                var polishError: String? = null
+                if (polish) {
+                    val provider = Prefs.provider
+                    val mode = Prefs.getString("polish_mode", ReplyPolisher.DEFAULT_MODE)
+                    val recent = Db.getMessages(jid, ReplyPolisher.CONTEXT_MESSAGES)
+                    val profile = if (Prefs.useProfileInReplies) AnalysisStore.replyProfile(jid) else ""
+                    val prompt = ReplyPolisher.buildPolishPrompt(text, ReplyPolisher.formatContext(recent, contact), mode, "", profile)
+                    val out = AiService.ask(prompt, provider, AiService.defaultModel(provider))
+                    if (AiService.isError(out)) polishError = out else text = ReplyPolisher.cleanReply(out)
+                }
+                val result = text
+                val failed = polishError?.lines()?.first()
+                withContext(Dispatchers.Main) {
+                    draft = if (draft.isBlank()) result else draft.trimEnd() + " " + result
+                    if (failed != null) notifyError("No se pudo emprolijar, queda el dictado tal cual: $failed")
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { notifyError(e.message) }
+            } finally {
+                rec.file.delete()
+                withContext(Dispatchers.Main) { transcribing = false }
+            }
         }
     }
 
@@ -349,14 +445,22 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
                             // En un grupo, el nombre va solo en el primero de varios mensajes seguidos de la misma persona
                             showSender = chat?.isGroup == true && !m.fromMe && (older == null || older.fromMe || older.senderJid != m.senderJid),
                             onReply = { replyTo = m },
+                            transcriptOpen = openTranscripts[m.id] == true,
+                            onToggleTranscript = { openTranscripts[m.id] = openTranscripts[m.id] != true },
+                            summaryOpen = openSummaries[m.id] == true,
+                            onSetSummaryOpen = { openSummaries[m.id] = it },
                             onReact = { emoji -> runTask { Actions.react(m, emoji) } },
                             onDelete = { runTask { Actions.deleteForEveryone(m) } },
                             onOpenMedia = {
                                 withBusy(m.id) {
                                     val path = Actions.downloadMedia(m)
+                                    // Lo descargado también queda en la carpeta pública Descargas del teléfono
+                                    if (m.mediaType == "document" || m.mediaType == "video") {
+                                        Downloads.saveCopy(File(path), Downloads.displayName(m.text, File(path)))
+                                    }
                                     withContext(Dispatchers.Main) {
                                         if (m.mediaType == "image" || m.mediaType == "sticker") viewerImage = path
-                                        else if (m.mediaType != "audio") openFile(context, path)
+                                        else if (m.mediaType != "audio") openFile(context, path, m.text)
                                     }
                                 }
                             },
@@ -392,6 +496,22 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
             replyTo?.let { q -> ReplyPreview(q) { replyTo = null } }
             if (showAi) {
                 AiPanel(jid, chat?.name.orEmpty(), draft, onResult = { draft = it }, onError = { notifyError(it) })
+            }
+            if (transcribing) {
+                Row(Modifier.fillMaxWidth().background(C.surface).padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Text("Transcribiendo el dictado…", color = C.text2, fontSize = 13.sp, modifier = Modifier.padding(start = 8.dp))
+                }
+            }
+            if (clipHasImage && photoToSend == null) {
+                Row(Modifier.fillMaxWidth().background(C.surface).padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.ContentPaste, null, tint = C.accent, modifier = Modifier.size(18.dp))
+                    Text(
+                        "Pegar imagen del portapapeles", color = C.text, fontSize = 13.sp,
+                        modifier = Modifier.weight(1f).clickable { pasteClipImage() }.padding(start = 8.dp, top = 12.dp, bottom = 12.dp),
+                    )
+                    IconButton(onClick = { dismissClipImage() }) { Icon(Icons.Default.Close, "Ignorar") }
+                }
             }
             ScheduleBar(scheduleAt, scheduledCount, onChange = { chooseScheduleTime() }, onClear = { scheduleAt = null }, onOpenList = onScheduled)
             Composer(
@@ -432,6 +552,7 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
                         confirmScheduled(at)
                     }
                 },
+                onDictate = { rec, polish -> dictate(rec, polish) },
                 onRecordingState = { runTask { Actions.chatPresence(jid, state = if (it) "recording" else "paused") } },
                 onError = { notifyError(it) },
             )
@@ -516,31 +637,49 @@ private fun PhotoPreview(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun Composer(
     draft: String, onDraft: (String) -> Unit, scope: CoroutineScope, scheduled: Boolean, onChooseSchedule: () -> Unit,
     scheduleIsPast: () -> Boolean, onToggleAi: () -> Unit, onCamera: () -> Unit, onPickMedia: () -> Unit,
-    onPickDocument: () -> Unit, onSend: () -> Unit, onSendVoice: (Recording) -> Unit, onRecordingState: (Boolean) -> Unit,
+    onPickDocument: () -> Unit, onSend: () -> Unit, onSendVoice: (Recording) -> Unit, onDictate: (Recording, Boolean) -> Unit, onRecordingState: (Boolean) -> Unit,
     onError: (String) -> Unit,
 ) {
     val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
     var recorder by remember { mutableStateOf<VoiceRecorder?>(null) }
+    // Dictado: la grabación no se manda, se transcribe y el texto va al campo de mensaje
+    var dictation by remember { mutableStateOf(false) }
+    var pendingDictation by remember { mutableStateOf(false) }
+    var polish by remember { mutableStateOf(Prefs.getString("dictate_polish") == "1") }
     var attachMenu by remember { mutableStateOf(false) }
 
-    fun startRecording() {
+    fun startRecording(dict: Boolean) {
         try {
             VoicePlayer.release()
             recorder = VoiceRecorder().also { it.start(scope) }
-            onRecordingState(true)
+            dictation = dict
+            if (!dict) onRecordingState(true)
         } catch (e: Exception) {
             recorder = null
             onError("No se pudo grabar: ${e.message}")
         }
     }
     val askMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) startRecording() else onError("Hace falta el permiso de micrófono para grabar notas de voz.")
+        if (granted) startRecording(pendingDictation) else onError("Hace falta el permiso de micrófono para grabar notas de voz.")
     }
     DisposableEffect(Unit) { onDispose { recorder?.cancel() } }
+
+    fun beginRecording(dict: Boolean) {
+        val ok = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        if (ok) startRecording(dict) else {
+            pendingDictation = dict
+            askMic.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    // La pantalla no se apaga mientras se graba
+    KeepScreenOn(recorder != null)
 
     val rec = recorder
     if (rec != null) {
@@ -550,15 +689,33 @@ private fun Composer(
             IconButton(onClick = {
                 rec.cancel()
                 recorder = null
-                onRecordingState(false)
+                if (!dictation) onRecordingState(false)
             }) { Icon(Icons.Default.Delete, "Descartar", tint = C.danger) }
             Box(Modifier.size(10.dp).background(if (paused) C.text3 else C.danger, CircleShape))
             Text(formatSeconds(seconds), color = C.text, modifier = Modifier.padding(start = 8.dp).weight(1f))
+            if (dictation) {
+                Row(
+                    Modifier.clickable {
+                        polish = !polish
+                        Prefs.putString("dictate_polish", if (polish) "1" else "0")
+                    },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Checkbox(checked = polish, onCheckedChange = null, modifier = Modifier.padding(horizontal = 6.dp))
+                    Text("Emprolijar", color = C.text2, fontSize = 13.sp)
+                }
+            }
             IconButton(onClick = { rec.togglePause() }) {
                 Icon(if (paused) Icons.Default.Mic else Icons.Default.Pause, if (paused) "Seguir" else "Pausar")
             }
             IconButton(
                 onClick = onSendRecording@{
+                    if (dictation) {
+                        val r = rec.stop()
+                        recorder = null
+                        if (r != null) onDictate(r, polish) else onError("La grabación fue demasiado corta.")
+                        return@onSendRecording
+                    }
                     if (scheduleIsPast()) return@onSendRecording   // sigue grabando: la nota no se pierde mientras se elige otra hora
                     val r = rec.stop()
                     recorder = null
@@ -567,7 +724,8 @@ private fun Composer(
                 },
                 modifier = Modifier.background(C.accent, CircleShape),
             ) {
-                if (scheduled) Icon(Icons.Default.Schedule, "Programar nota de voz", tint = C.onAccent)
+                if (dictation) Icon(Icons.Default.Check, "Transcribir dictado", tint = C.onAccent)
+                else if (scheduled) Icon(Icons.Default.Schedule, "Programar nota de voz", tint = C.onAccent)
                 else Icon(Icons.AutoMirrored.Filled.Send, "Enviar nota de voz", tint = C.onAccent)
             }
         }
@@ -599,6 +757,10 @@ private fun Composer(
                     attachMenu = false
                     onPickDocument()
                 })
+                DropdownMenuItem(text = { Text("Dictar a texto") }, onClick = {
+                    attachMenu = false
+                    beginRecording(true)
+                })
                 DropdownMenuItem(text = { Text("Programar envío") }, onClick = {
                     attachMenu = false
                     onChooseSchedule()
@@ -607,13 +769,17 @@ private fun Composer(
         }
         if (draft.isBlank()) {
             IconButton(onClick = onCamera) { Icon(Icons.Default.PhotoCamera, "Sacar una foto") }
-            IconButton(
-                onClick = {
-                    val ok = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-                    if (ok) startRecording() else askMic.launch(Manifest.permission.RECORD_AUDIO)
-                },
-                modifier = Modifier.background(C.accent, CircleShape),
-            ) { Icon(Icons.Default.Mic, "Grabar nota de voz", tint = C.onAccent) }
+            // Toque: nota de voz. Mantener apretado: dictar a texto.
+            Box(
+                Modifier.size(48.dp).clip(CircleShape).background(C.accent).combinedClickable(
+                    onClick = { beginRecording(false) },
+                    onLongClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        beginRecording(true)
+                    },
+                ),
+                contentAlignment = Alignment.Center,
+            ) { Icon(Icons.Default.Mic, "Grabar nota de voz (mantené apretado para dictar)", tint = C.onAccent) }
         } else {
             IconButton(onClick = onSend, modifier = Modifier.background(C.accent, CircleShape)) {
                 if (scheduled) Icon(Icons.Default.Schedule, "Programar", tint = C.onAccent)

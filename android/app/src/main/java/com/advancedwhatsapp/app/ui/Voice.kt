@@ -3,6 +3,9 @@ package com.advancedwhatsapp.app.ui
 import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.os.Build
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.platform.LocalView
 import com.advancedwhatsapp.app.App
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -106,6 +109,7 @@ object VoicePlayer {
     val playingId = MutableStateFlow<String?>(null)
     val progress = MutableStateFlow(0f)
     val positionMs = MutableStateFlow(0)
+    val durationMs = MutableStateFlow(0)
     val speed = MutableStateFlow(1f)
     private var player: MediaPlayer? = null
     private var ticker: Job? = null
@@ -128,10 +132,12 @@ object VoicePlayer {
         currentId = id
         progress.value = 0f
         positionMs.value = 0
+        durationMs.value = 0
         player = MediaPlayer().apply {
             setDataSource(path)
             setOnCompletionListener { release() }
             prepare()
+            durationMs.value = duration
             applySpeed(this)
             start()
         }
@@ -184,6 +190,27 @@ object VoicePlayer {
         playingId.value = null
         progress.value = 0f
         positionMs.value = 0
+        durationMs.value = 0
+    }
+}
+
+private var keepAwakeUsers = 0
+
+/** Mantiene la pantalla encendida mientras [active] (grabando o reproduciendo un audio); se saca sola al terminar. */
+@Composable
+fun KeepScreenOn(active: Boolean) {
+    val view = LocalView.current
+    DisposableEffect(active, view) {
+        if (active) {
+            keepAwakeUsers++
+            view.keepScreenOn = true
+        }
+        onDispose {
+            if (active) {
+                keepAwakeUsers = (keepAwakeUsers - 1).coerceAtLeast(0)
+                if (keepAwakeUsers == 0) view.keepScreenOn = false
+            }
+        }
     }
 }
 
