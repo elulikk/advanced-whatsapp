@@ -111,7 +111,7 @@ def downloads_dir() -> str:
 
 
 def save_to_downloads(path: str) -> Optional[str]:
-    """Copia un archivo descargado a Descargas\AdvancedWhatsapp sin pisar otro. Devuelve la ruta o None; nunca lanza."""
+    """Copia un archivo descargado a Descargas/AdvancedWhatsapp sin pisar otro. Devuelve la ruta o None; nunca lanza."""
     try:
         folder = downloads_dir()
         os.makedirs(folder, exist_ok=True)
