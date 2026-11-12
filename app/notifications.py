@@ -91,6 +91,8 @@ class NotificationCenter(QObject):
         if data.get("upsert_type") not in (None, "notify"):
             return   # "append": historial o copias de otros dispositivos
         chat_jid = data.get("chat_jid") or ""
+        if chat_lock.is_hidden(chat_jid):
+            return   # chat oculto: ninguna notificación, ni siquiera "Nuevo mensaje"
         ts = int(data.get("timestamp") or 0)
         now = time.time()
         if ts and (ts < self.started_at - BACKLOG_GRACE or now - ts > MAX_AGE):

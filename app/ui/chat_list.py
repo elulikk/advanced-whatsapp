@@ -2,7 +2,7 @@ import os
 from datetime import datetime
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QFrame, QMenu, QMessageBox, QToolButton, QButtonGroup
+    QListWidget, QListWidgetItem, QFrame, QMenu, QMessageBox, QToolButton, QButtonGroup, QScrollArea
 )
 from PySide6.QtCore import Qt, Signal, QSize, QTimer, QRectF
 from PySide6.QtGui import QPainter, QBrush, QColor, QFont, QPainterPath, QPixmap, QPen, QIcon
@@ -18,6 +18,7 @@ from app.ui.icons import icon, tool_button, pixmap
 from app.ui.effects import HoverFade, mix, overlay, menu_below
 from app import tags as tagdb
 from app import chat_lock
+from app import organization as org
 from app.ui import lock_dialogs
 from app.ui.tag_widgets import (TagPalettePanel, TagManagerDialog, paint_avatar_tags, tags_tooltip, tag_pixmap,
                                 tag_id_from_mime, paint_row_effect)
@@ -476,6 +477,24 @@ class ChatListWidget(QListWidget):
             e.ignore()
 
 
+class ChipScrollArea(QScrollArea):
+    """Fila de píldoras que se desplaza en horizontal (rueda del mouse) cuando no entran todas."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setFixedHeight(34)
+        self.setStyleSheet("QScrollArea { background: transparent; } QScrollArea > QWidget > QWidget { background: transparent; }")
+
+    def wheelEvent(self, e):
+        sb = self.horizontalScrollBar()
+        sb.setValue(sb.value() - (e.angleDelta().y() or e.angleDelta().x()) // 2)
+        e.accept()
+
+
 class ChatListPanel(QWidget):
     """Panel lateral con barra de búsqueda, filtros y lista de chats."""
     chat_selected = Signal(dict)
@@ -494,7 +513,8 @@ class ChatListPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.all_chats = []
-        self._filter = "all"       # "all", "unread" o "groups"
+        self._filter = "all"       # "all", "unread", "groups", "archived" o "folder:<id>"
+        self._secret_miss = ""     # último texto del buscador que no era el código secreto (evita recalcular el hash)
         self._page_size = 40
         self._current_offset = 0
         self._has_more = True
@@ -516,6 +536,13 @@ class ChatListPanel(QWidget):
         self._tag_timer.setInterval(60000)
         self._tag_timer.timeout.connect(self._purge_expired_tags)
         self._tag_timer.start()
+
+        # Archivado automático: al abrir y cada media hora (apagado por defecto)
+        self._archive_timer = QTimer(self)
+        self._archive_timer.setInterval(30 * 60 * 1000)
+        self._archive_timer.timeout.connect(self.run_auto_archive)
+        self._archive_timer.start()
+        QTimer.singleShot(4000, self.run_auto_archive)
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -596,7 +623,7 @@ class ChatListPanel(QWidget):
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(220)
-        self._search_timer.timeout.connect(lambda: self.reload_chats())
+        self._search_timer.timeout.connect(self._on_search_timeout)
         self.txt_search.textChanged.connect(self._on_search_changed)
         self.txt_search.returnPressed.connect(self._open_first_result)
         search_layout.addWidget(self.txt_search)
@@ -620,7 +647,21 @@ class ChatListPanel(QWidget):
         self.btn_read_all.clicked.connect(self.mark_all_read)
         self.btn_read_all.hide()
         chips.addWidget(self.btn_read_all)
+        self.btn_folders = tool_button("folder", "Carpetas inteligentes: crear, editar y ordenar", size=28, icon_size=16)
+        self.btn_folders.clicked.connect(self.open_folder_manager)
+        chips.addWidget(self.btn_folders)
         search_layout.addLayout(chips)
+
+        # Carpetas inteligentes y Archivados: una fila de píldoras aparte (se oculta si no hay nada)
+        self.folder_bar = ChipScrollArea()
+        self._folder_holder = QWidget()
+        self._folder_row = QHBoxLayout(self._folder_holder)
+        self._folder_row.setContentsMargins(0, 0, 0, 0)
+        self._folder_row.setSpacing(6)
+        self.folder_bar.setWidget(self._folder_holder)
+        self.folder_bar.setVisible(False)
+        search_layout.addWidget(self.folder_bar)
+        self._folder_buttons = {}
 
         # Panel de tags: se arrastran sobre un chat para marcarlo
         self.tag_panel = TagPalettePanel()
@@ -768,11 +809,77 @@ class ChatListPanel(QWidget):
         self.reload_chats(select_jid=self._current_jid())
 
     def _fetch_chats(self, search: str, offset: int) -> list:
+        extra = None
+        archived = "only" if self._filter == "archived" else "hide"
+        if self._filter.startswith("folder:"):
+            folder = org.get_folder(int(self._filter[7:] or 0))
+            extra = org.rules_where(folder["rules"]) if folder else org.rules_where(None)
         return get_chats(search=search, filter_unread=self._filter == "unread", groups_only=self._filter == "groups",
-                         limit=self._page_size, offset=offset)
+                         limit=self._page_size, offset=offset, extra_where=extra, archived=archived,
+                         show_secret=chat_lock.is_revealed())
 
     def _on_search_changed(self, text: str):
         self._search_timer.start()
+
+    def _on_search_timeout(self):
+        """Pasó el debounce del buscador: si lo escrito es el código secreto, muestra u oculta los chats ocultos."""
+        text = self.txt_search.text().strip()
+        if text and text != self._secret_miss:
+            res = chat_lock.try_secret(text)
+            if res:
+                self.txt_search.clear()   # no deja rastro del código en pantalla
+                self._secret_miss = ""
+                self.lbl_title.setText("Chats (ocultos visibles)" if res == "revealed" else "Chats")
+                self.reload_chats()
+                return
+            self._secret_miss = text
+        self.reload_chats()
+
+    # ── Carpetas inteligentes y Archivados ──
+
+    def _rebuild_folder_bar(self):
+        """Vuelve a armar las píldoras de las carpetas y de Archivados según lo que haya."""
+        while self._folder_row.count():
+            item = self._folder_row.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                if isinstance(w, QToolButton):
+                    self._filter_group.removeButton(w)
+                w.deleteLater()
+        self._folder_buttons = {}
+        folders = org.list_folders()
+        for f in folders:
+            n = org.folder_unread_count(f["id"])
+            self._add_folder_chip(f"folder:{f['id']}", f["name"] + (f"  {n}" if n else ""), f["name"])
+        arch = org.archived_count()
+        if arch or self._filter == "archived":
+            self._add_folder_chip("archived", f"Archivados  {arch}" if arch else "Archivados", "Chats archivados")
+        self._folder_row.addStretch(1)
+        self.folder_bar.setVisible(bool(folders) or bool(arch) or self._filter == "archived")
+        # Si la carpeta activa se borró, se vuelve a Todos
+        if self._filter.startswith("folder:") and self._filter not in self._folder_buttons:
+            self._filter = "all"
+            self.btn_filter_all.setChecked(True)
+
+    def _add_folder_chip(self, key: str, text: str, tooltip: str):
+        b = self._make_filter(text, self._filter == key)
+        b.setToolTip(tooltip)
+        b.clicked.connect(lambda _=False, k=key: self._set_filter(k))
+        self._folder_row.addWidget(b)
+        self._folder_buttons[key] = b
+
+    def open_folder_manager(self):
+        from app.ui.folder_dialogs import FolderManagerDialog
+        FolderManagerDialog(parent=self.window()).exec()
+        self.reload_chats(select_jid=self._current_jid())
+
+    def run_auto_archive(self):
+        """Archiva los chats sin actividad (si el ajuste está prendido) y repinta si cambió algo."""
+        try:
+            if org.auto_archive():
+                self.reload_chats(select_jid=self._current_jid())
+        except Exception as e:
+            print(f"[Advanced WhatsApp] archivado automático: {e}")
 
     def _add_chat_item(self, chat: dict, tags: list = None):
         item = QListWidgetItem(self.list_widget)
@@ -810,6 +917,7 @@ class ChatListPanel(QWidget):
             self._last_purge = time.time()
             tagdb.purge_expired()
         tag_map = tagdb.tags_for_chats([c.get("jid") for c in chats])
+        self._rebuild_folder_bar()
 
         self.btn_read_all.setVisible(get_total_unread_count() > 0)
         # Ícono, título y bandeja: los chats silenciados no suman (igual que WhatsApp), y los grupos solo si se avisan
@@ -845,8 +953,10 @@ class ChatListPanel(QWidget):
         if empty:
             self.lbl_no_results.setText(
                 "No hay chats que coincidan." if search else
-                {"unread": "No tienes chats sin leer.", "groups": "Todavía no hay grupos."}.get(
-                    self._filter, "Todavía no hay chats."))
+                {"unread": "No tienes chats sin leer.", "groups": "Todavía no hay grupos.",
+                 "archived": "No hay chats archivados."}.get(
+                    self._filter, "No hay chats en esta carpeta." if self._filter.startswith("folder:")
+                    else "Todavía no hay chats."))
 
     def _on_scroll(self, value):
         sb = self.list_widget.verticalScrollBar()
@@ -948,6 +1058,15 @@ class ChatListPanel(QWidget):
         act_edit = menu.addAction(icon("user"), "Guardar / editar contacto")
         is_locked = chat_lock.is_locked(chat_data.get("jid"))
         act_lock = menu.addAction(icon("lock"), "Desbloquear chat" if is_locked else "Bloquear chat")
+        act_hide = None
+        if is_locked:
+            hidden = chat_lock.is_hidden(chat_data.get("jid"))
+            act_hide = menu.addAction(icon("eye"), "Dejar de ocultar chat" if hidden else "Ocultar chat (se busca con el código)")
+        archived = bool(chat_data.get("is_archived"))
+        act_archive = menu.addAction(icon("folder"), "Sacar de Archivados" if archived else "Archivar chat")
+        silent = org.is_silent_read(chat_data.get("jid"))
+        act_silent = menu.addAction(icon("eye"), "Lectura invisible: activada (tocá para apagar)" if silent
+                                    else "Lectura invisible (sin tildes azules)")
         tag_actions, act_untag_all, act_tags_cfg = self._add_tag_menu(menu, chat_data.get("jid"))
         menu.addSeparator()
         act_clear = menu.addAction(icon("eraser", C["danger"], active_color=C["danger"]), "Vaciar chat…")
@@ -989,6 +1108,13 @@ class ChatListPanel(QWidget):
             self.chat_marked_read.emit(jid)
         elif act == act_lock:
             self._toggle_chat_lock(chat_data, is_locked)
+        elif act_hide is not None and act == act_hide:
+            self._toggle_chat_hidden(chat_data)
+        elif act == act_archive:
+            org.set_archived(jid, not archived)
+            self.reload_chats(select_jid=self._current_jid())
+        elif act == act_silent:
+            org.set_silent_read(jid, not silent)
         elif act == act_edit:
             self._open_edit_contact_dialog(chat_data)
         elif act == act_clear:
@@ -1006,6 +1132,20 @@ class ChatListPanel(QWidget):
         else:
             if not lock_dialogs.ensure_password(self) or not chat_lock.lock_chat(jid):
                 return
+        self.chat_lock_changed.emit(jid)
+        self.reload_chats(select_jid=self._current_jid())
+
+    def _toggle_chat_hidden(self, chat_data: dict):
+        jid = chat_data.get("jid")
+        if chat_lock.is_hidden(jid):
+            chat_lock.set_hidden(jid, False)
+        else:
+            if not lock_dialogs.ensure_secret_code(self) or not chat_lock.set_hidden(jid, True):
+                return
+            QMessageBox.information(
+                self, "Chat oculto",
+                "El chat ya no aparece en la lista ni en la búsqueda, y no muestra notificaciones.\n\n"
+                "Para verlo, escribí tu código secreto en el buscador (o mostralo desde Configuración).")
         self.chat_lock_changed.emit(jid)
         self.reload_chats(select_jid=self._current_jid())
 

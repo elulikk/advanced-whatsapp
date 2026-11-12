@@ -73,3 +73,36 @@ def remove_password(parent: Optional[QWidget]) -> bool:
         return False
     chat_lock.remove_password()
     return True
+
+
+# ── Código secreto de los chats ocultos ──
+
+def ensure_secret_code(parent: Optional[QWidget]) -> bool:
+    """Si todavía no hay código secreto para los chats ocultos, pide crearlo. True si hay uno al terminar."""
+    if chat_lock.has_secret_code():
+        return True
+    return create_secret_code(parent)
+
+
+def create_secret_code(parent: Optional[QWidget]) -> bool:
+    while True:
+        first = _ask(parent, f"Elegí un código secreto para mostrar tus chats ocultos (mínimo {chat_lock.MIN_SECRET_LEN} "
+                             "caracteres).\nLo escribís en el buscador de chats y aparecen:")
+        if first is None:
+            return False
+        if len(first.strip()) < chat_lock.MIN_SECRET_LEN:
+            QMessageBox.warning(parent, _TITLE, f"Tiene que tener al menos {chat_lock.MIN_SECRET_LEN} caracteres.")
+            continue
+        second = _ask(parent, "Repetí el código:")
+        if second is None:
+            return False
+        if first.strip() != second.strip():
+            QMessageBox.warning(parent, _TITLE, "Los códigos no coinciden.")
+            continue
+        return chat_lock.set_secret_code(first)
+
+
+def change_secret_code(parent: Optional[QWidget]) -> bool:
+    if chat_lock.has_secret_code() and not ask_current_password(parent, "Ingresá la contraseña de bloqueo:"):
+        return False
+    return create_secret_code(parent)

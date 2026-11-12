@@ -511,6 +511,11 @@ class ChatViewPanel(QWidget):
         header_layout.addWidget(self.btn_psych)
         header_layout.addSpacing(4)
 
+        # Nota privada del contacto: se resalta (y muestra el texto al pasar el mouse) cuando hay una
+        self.btn_notes = tool_button("edit", "Nota privada del contacto")
+        self.btn_notes.clicked.connect(self._open_notes_dialog)
+        header_layout.addWidget(self.btn_notes)
+
         self.btn_edit_contact = tool_button("info", "Info del contacto")
         self.btn_edit_contact.setCheckable(True)
         self.btn_edit_contact.clicked.connect(self.toggle_info_panel)
@@ -939,6 +944,8 @@ class ChatViewPanel(QWidget):
     def _set_info_visible(self, visible: bool):
         self.info_panel.setVisible(visible)
         self.btn_edit_contact.setChecked(visible)
+        if hasattr(self, "btn_notes"):
+            self._refresh_notes_indicator()   # el panel de info también edita la nota
 
     def _focus_search(self):
         self.search_row.setVisible(True)
@@ -1052,6 +1059,7 @@ class ChatViewPanel(QWidget):
             self.lbl_contact_status.setText(format_phone(phone) if phone else "Número no disponible")
 
         self.header_avatar.set_avatar(name, avatar_path=avatar_path)
+        self._refresh_notes_indicator()
         self._default_subtitle = self.lbl_contact_status.text()
         self._presence_reset()
         if not chat_data.get("is_group") and "(Tú)" not in name:
@@ -1119,6 +1127,30 @@ class ChatViewPanel(QWidget):
             QMessageBox.information(self, "Análisis psicológico", "Esta conversación no tiene mensajes.")
             return
         PsychAnalysisDialog(jid, self._display_name(), parent=self).exec()
+
+    def _refresh_notes_indicator(self):
+        """El botón de la nota se resalta y muestra su texto cuando el contacto tiene una."""
+        from app.db import get_contact_notes
+        jid = (self.current_chat or {}).get("jid")
+        note = get_contact_notes(jid).strip() if jid else ""
+        self.btn_notes.setIcon(icon("edit", C["accent"] if note else None))
+        self.btn_notes.setToolTip(("Nota privada: " + (note if len(note) < 400 else note[:400] + "…")) if note
+                                  else "Nota privada del contacto (vacía)")
+
+    def _open_notes_dialog(self):
+        if not self.current_chat:
+            return
+        from app.ui.notes_dialog import NotesDialog
+        NotesDialog(self.current_chat["jid"], self._display_name(), parent=self).exec()
+        self._refresh_notes_indicator()
+        if self.info_panel.isVisible():
+            self.info_panel.show_chat(self.current_chat, self._display_name())
+
+    def _open_gallery(self):
+        if not self.current_chat:
+            return
+        from app.ui.gallery_dialog import GalleryDialog
+        GalleryDialog(self.current_chat["jid"], self._display_name(), parent=self).exec()
 
     def _open_edit_contact_dialog(self):
         if not self.current_chat:
@@ -2355,6 +2387,13 @@ class ChatViewPanel(QWidget):
         act_search = menu.addAction(icon("search"), "Buscar en el chat\tCtrl+F")
         act_psych = menu.addAction(icon("analysis"), "Análisis psicológico…")
         act_edit = menu.addAction(icon("user"), "Editar / guardar contacto…")
+        act_notes = menu.addAction(icon("edit"), "Nota privada…")
+        act_gallery = menu.addAction(icon("image"), "Galería (fotos, documentos, links, audios)…")
+        from app import organization as _org
+        jid = (self.current_chat or {}).get("jid")
+        act_silent = menu.addAction(icon("eye"), "Lectura invisible (sin tildes azules en este chat)")
+        act_silent.setCheckable(True)
+        act_silent.setChecked(_org.is_silent_read(jid))
         menu.addSeparator()
         act_clear = menu.addAction(icon("eraser", C["danger"], active_color=C["danger"]), "Vaciar chat…")
         act = menu.exec(menu_below(menu, self.btn_options))
@@ -2366,6 +2405,12 @@ class ChatViewPanel(QWidget):
             self._open_psych_analysis()
         elif act == act_edit:
             self._open_edit_contact_dialog()
+        elif act == act_notes:
+            self._open_notes_dialog()
+        elif act == act_gallery:
+            self._open_gallery()
+        elif act == act_silent:
+            _org.set_silent_read(jid, act_silent.isChecked())
         elif act == act_clear:
             self._clear_current_chat()
 

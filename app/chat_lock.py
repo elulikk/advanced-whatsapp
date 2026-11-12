@@ -3,6 +3,9 @@
 - La contraseña se guarda solo como hash PBKDF2-HMAC-SHA256 con sal aleatoria (tabla `lock_meta`); nunca en texto plano.
 - Los chats bloqueados viven en la tabla `chat_locks` y se cachean en memoria (la lista de chats consulta
   `is_locked` por cada fila, así que no puede ir a disco cada vez).
+- Chats ocultos: un chat bloqueado se puede marcar "oculto" (tabla `chat_hidden`). No aparece en la lista ni en la búsqueda
+  hasta escribir el código secreto en el buscador (o mostrarlos desde Ajustes). El código secreto se guarda como hash
+  aparte (claves `hide_*` de `lock_meta`), con el mismo esquema PBKDF2 que la contraseña.
 - "Desbloqueado" es un estado de sesión (solo en memoria): el chat queda abierto mientras se lo mira y se vuelve a
   bloquear al salir de él o cuando la app pasa un rato en segundo plano (`lock_all`).
 """
@@ -22,6 +25,9 @@ LOCKED_NOTIFICATION = "Nuevo mensaje"
 _locked: Optional[Set[str]] = None      # chats bloqueados (cache de la tabla)
 _unlocked: Set[str] = set()             # bloqueados que se abrieron en esta sesión
 _has_password: Optional[bool] = None
+_hidden: Optional[Set[str]] = None      # chats ocultos (cache de la tabla)
+_revealed = False                       # los ocultos se muestran en esta sesión
+_has_secret: Optional[bool] = None
 
 
 def ensure_tables(conn) -> None:
@@ -32,12 +38,16 @@ def ensure_tables(conn) -> None:
         )
     """)
     conn.execute("CREATE TABLE IF NOT EXISTS lock_meta (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS chat_hidden (chat_jid TEXT PRIMARY KEY)")
 
 
 def _invalidate() -> None:
-    global _locked, _has_password
+    global _locked, _has_password, _hidden, _revealed, _has_secret
     _locked = None
     _has_password = None
+    _hidden = None
+    _has_secret = None
+    _revealed = False
     _unlocked.clear()
 
 
@@ -94,6 +104,8 @@ def remove_password() -> None:
     with db_conn() as conn:
         conn.execute("DELETE FROM lock_meta WHERE key IN ('pw_hash','pw_salt','pw_iters')")
         conn.execute("DELETE FROM chat_locks")
+        conn.execute("DELETE FROM chat_hidden")
+        conn.execute("DELETE FROM lock_meta WHERE key IN ('hide_hash','hide_salt','hide_iters')")
     _has_password = False
     _invalidate()
 
@@ -137,7 +149,9 @@ def unlock_chat(jid: str) -> None:
     """Saca el bloqueo del chat definitivamente."""
     with db_conn() as conn:
         conn.execute("DELETE FROM chat_locks WHERE chat_jid = ?", (jid,))
+        conn.execute("DELETE FROM chat_hidden WHERE chat_jid = ?", (jid,))   # sin bloqueo no hay nada que ocultar
     _load().discard(jid)
+    _load_hidden().discard(jid)
     _unlocked.discard(jid)
 
 
@@ -158,4 +172,125 @@ def relock(jid: Optional[str] = None, keep: Optional[str] = None) -> None:
 
 
 def lock_all() -> None:
+    """Cierra todos los chats abiertos y vuelve a esconder los ocultos."""
+    global _revealed
     _unlocked.clear()
+    _revealed = False
+
+
+# ── Chats ocultos ──
+
+MIN_SECRET_LEN = 3
+
+
+def _load_hidden() -> Set[str]:
+    global _hidden
+    if _hidden is None:
+        with db_conn() as conn:
+            _hidden = {r[0] for r in conn.execute("SELECT chat_jid FROM chat_hidden").fetchall()}
+    return _hidden
+
+
+def hidden_jids() -> List[str]:
+    return sorted(_load_hidden())
+
+
+def is_hidden(jid: Optional[str]) -> bool:
+    """¿El chat está marcado como oculto? (sus notificaciones nunca se muestran, aunque la lista esté visible)."""
+    return bool(jid) and jid in _load_hidden()
+
+
+def is_revealed() -> bool:
+    return _revealed
+
+
+def hidden_now(jid: Optional[str]) -> bool:
+    """Oculto y sin haber escrito el código: no debe verse en la lista ni en la búsqueda."""
+    return is_hidden(jid) and not _revealed
+
+
+def set_hidden(jid: str, hidden: bool) -> bool:
+    """Marca o desmarca un chat como oculto. Solo se puede ocultar un chat bloqueado y con código secreto creado."""
+    if not jid:
+        return False
+    if hidden and not (is_locked(jid) and has_secret_code()):
+        return False
+    with db_conn() as conn:
+        if hidden:
+            conn.execute("INSERT OR IGNORE INTO chat_hidden (chat_jid) VALUES (?)", (jid,))
+        else:
+            conn.execute("DELETE FROM chat_hidden WHERE chat_jid = ?", (jid,))
+    if hidden:
+        _load_hidden().add(jid)
+    else:
+        _load_hidden().discard(jid)
+    return True
+
+
+def has_secret_code() -> bool:
+    global _has_secret
+    if _has_secret is None:
+        with db_conn() as conn:
+            _has_secret = bool(conn.execute("SELECT 1 FROM lock_meta WHERE key = 'hide_hash'").fetchone())
+    return _has_secret
+
+
+def set_secret_code(code: str) -> bool:
+    """Crea o cambia el código secreto que muestra los chats ocultos. False si es muy corto."""
+    global _has_secret
+    code = (code or "").strip()
+    if len(code) < MIN_SECRET_LEN:
+        return False
+    h, s, it = hash_password(code)
+    with db_conn() as conn:
+        conn.executemany("INSERT OR REPLACE INTO lock_meta (key, value) VALUES (?, ?)",
+                         [("hide_hash", h), ("hide_salt", s), ("hide_iters", str(it))])
+    _has_secret = True
+    return True
+
+
+def verify_secret_code(code: str) -> bool:
+    code = (code or "").strip()
+    if not code or not has_secret_code():
+        return False
+    with db_conn() as conn:
+        rows = dict(conn.execute(
+            "SELECT key, value FROM lock_meta WHERE key IN ('hide_hash','hide_salt','hide_iters')").fetchall())
+    if "hide_hash" not in rows:
+        return False
+    return check_hash(code, rows["hide_hash"], rows.get("hide_salt", ""), int(rows.get("hide_iters") or PBKDF2_ITERATIONS))
+
+
+def remove_secret_code() -> None:
+    """Quita el código y deja de ocultar: los chats ocultos pasan a ser solo bloqueados."""
+    global _has_secret, _revealed
+    with db_conn() as conn:
+        conn.execute("DELETE FROM lock_meta WHERE key IN ('hide_hash','hide_salt','hide_iters')")
+        conn.execute("DELETE FROM chat_hidden")
+    _has_secret = False
+    _load_hidden().clear()
+    _revealed = False
+
+
+def reveal() -> None:
+    global _revealed
+    _revealed = True
+
+
+def conceal() -> None:
+    global _revealed
+    _revealed = False
+
+
+def try_secret(text: str) -> Optional[str]:
+    """Lo escrito en el buscador: si es el código secreto, muestra u oculta los chats ocultos.
+    Devuelve 'revealed', 'concealed' o None (no era el código)."""
+    if not has_secret_code() or len((text or "").strip()) < MIN_SECRET_LEN:
+        return None
+    if not verify_secret_code(text):
+        return None
+    if _revealed:
+        conceal()
+        return "concealed"
+    reveal()
+    return "revealed"

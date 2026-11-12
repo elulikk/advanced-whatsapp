@@ -8,7 +8,7 @@ estado de la sesión de WhatsApp y parámetros del sistema.
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QCheckBox, QGroupBox, QMessageBox,
-    QComboBox, QFrame, QScrollArea, QTabWidget, QSlider, QGridLayout
+    QComboBox, QFrame, QScrollArea, QTabWidget, QSlider, QGridLayout, QSpinBox
 )
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, QUrl
 from PySide6.QtGui import QDesktopServices
@@ -19,6 +19,7 @@ from app.config import (
     GATEWAY_PORT, WEBHOOK_PORT,
 )
 from app import windows_integration, chat_lock
+from app import organization as org
 from app.ui import lock_dialogs
 from app.ui.theme import C, HEADER_H
 from app.ui.icons import icon, tool_button, flame_pixmap
@@ -84,6 +85,7 @@ class SettingsPanel(QWidget):
     font_scale_changed = Signal(int)
     test_notification_requested = Signal()
     locks_cleared = Signal()   # se quitó la contraseña: todos los chats quedaron desbloqueados
+    privacy_changed = Signal()  # cambió algo que afecta la lista de chats (ocultos, archivado automático)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -385,6 +387,54 @@ class SettingsPanel(QWidget):
         row4.addStretch()
         l4.addLayout(row4)
         layout.addWidget(g4)
+
+        g5 = QGroupBox("Organización y privacidad")
+        l5 = QVBoxLayout(g5)
+        l5.setSpacing(6)
+        row_a = QHBoxLayout()
+        row_a.addWidget(QLabel("Archivar solos los chats sin actividad hace"))
+        self.spin_archive = QSpinBox()
+        self.spin_archive.setRange(0, 3650)
+        self.spin_archive.setSpecialValueText("apagado")
+        self.spin_archive.setSuffix(" días")
+        self.spin_archive.setValue(org.get_auto_archive_days())
+        self.spin_archive.editingFinished.connect(self._on_archive_days)
+        row_a.addWidget(self.spin_archive)
+        row_a.addStretch()
+        l5.addLayout(row_a)
+        l5.addWidget(self._hint("Pasan a «Archivados» (debajo de los filtros de la lista). Vuelven solos si llega un mensaje, "
+                                "salvo que el chat esté silenciado. Los chats fijados no se archivan."))
+
+        self.chk_app_lock = QCheckBox("Pedir la contraseña al abrir Advanced WhatsApp y al volver tras un rato")
+        self.chk_app_lock.setChecked(get_pref("app_lock_enabled") and chat_lock.has_password())
+        self.chk_app_lock.toggled.connect(self._on_app_lock_toggled)
+        l5.addWidget(self.chk_app_lock)
+        row_b = QHBoxLayout()
+        row_b.addWidget(QLabel("Volver a pedirla si estuvo en la bandeja o minimizada más de"))
+        self.spin_lock_minutes = QSpinBox()
+        self.spin_lock_minutes.setRange(0, 1440)
+        self.spin_lock_minutes.setSpecialValueText("siempre")
+        self.spin_lock_minutes.setSuffix(" min")
+        self.spin_lock_minutes.setValue(org.get_app_lock_minutes())
+        self.spin_lock_minutes.editingFinished.connect(lambda: org.set_app_lock_minutes(self.spin_lock_minutes.value()))
+        row_b.addWidget(self.spin_lock_minutes)
+        row_b.addStretch()
+        l5.addLayout(row_b)
+        l5.addWidget(self._hint("Usa la misma contraseña que los chats bloqueados."))
+
+        l5.addWidget(self._hint("Chats ocultos: un chat bloqueado puede ocultarse (clic derecho sobre el chat). No aparece en la "
+                                "lista ni en la búsqueda ni avisa con notificaciones, hasta que escribas tu código secreto "
+                                "en el buscador de chats."))
+        row_c = QHBoxLayout()
+        self.btn_secret = QPushButton()
+        self.btn_secret.clicked.connect(self._on_secret_code)
+        row_c.addWidget(self.btn_secret)
+        self.btn_reveal = QPushButton()
+        self.btn_reveal.clicked.connect(self._on_toggle_reveal)
+        row_c.addWidget(self.btn_reveal)
+        row_c.addStretch()
+        l5.addLayout(row_c)
+        layout.addWidget(g5)
         self._refresh_lock_buttons()
         layout.addStretch()
         self.load_prefs()
@@ -394,6 +444,43 @@ class SettingsPanel(QWidget):
         has = chat_lock.has_password()
         self.btn_lock_pw.setText("Cambiar contraseña de bloqueo" if has else "Crear contraseña de bloqueo")
         self.btn_lock_remove.setVisible(has)
+        if hasattr(self, "btn_secret"):
+            self.btn_secret.setText("Cambiar código secreto de chats ocultos" if chat_lock.has_secret_code()
+                                    else "Crear código secreto de chats ocultos")
+            self.btn_reveal.setVisible(chat_lock.has_secret_code())
+            self.btn_reveal.setText("Volver a ocultar los chats ocultos" if chat_lock.is_revealed()
+                                    else "Mostrar chats ocultos")
+            self.chk_app_lock.setEnabled(has)
+            if not has:
+                self.chk_app_lock.blockSignals(True)
+                self.chk_app_lock.setChecked(False)
+                self.chk_app_lock.blockSignals(False)
+
+    def _on_archive_days(self):
+        org.set_auto_archive_days(self.spin_archive.value())
+        self.privacy_changed.emit()
+
+    def _on_app_lock_toggled(self, on: bool):
+        if on and not lock_dialogs.ensure_password(self):
+            self.chk_app_lock.blockSignals(True)
+            self.chk_app_lock.setChecked(False)
+            self.chk_app_lock.blockSignals(False)
+            self._refresh_lock_buttons()
+            return
+        set_pref("app_lock_enabled", on)
+        self._refresh_lock_buttons()
+
+    def _on_secret_code(self):
+        lock_dialogs.change_secret_code(self)
+        self._refresh_lock_buttons()
+
+    def _on_toggle_reveal(self):
+        if chat_lock.is_revealed():
+            chat_lock.conceal()
+        elif lock_dialogs.ask_current_password(self, "Ingresá la contraseña para mostrar los chats ocultos:"):
+            chat_lock.reveal()
+        self._refresh_lock_buttons()
+        self.privacy_changed.emit()
 
     def _on_lock_password(self):
         lock_dialogs.change_password(self)

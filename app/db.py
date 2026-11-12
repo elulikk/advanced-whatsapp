@@ -255,6 +255,10 @@ def init_db():
         from app.chat_lock import ensure_tables as _ensure_lock_tables
         _ensure_lock_tables(conn)
 
+        # Carpetas inteligentes, lectura invisible por chat e índice de archivados
+        from app.organization import ensure_tables as _ensure_org_tables
+        _ensure_org_tables(conn)
+
         # Migración puntual de datos heredados (antes se ejecutaba en cada arranque)
         if cursor.execute("PRAGMA user_version").fetchone()[0] < 1:
             _migrate_legacy_v1(cursor)
@@ -502,6 +506,11 @@ def save_message(
             WHERE jid = ?
         """, (snippet, timestamp, unread_increment, chat_label, chat_label, chat_jid))
         refresh_chat_previews(cursor, [chat_jid])
+
+        # Un mensaje nuevo saca al chat de Archivados (salvo que esté silenciado); el historial viejo no
+        if is_new and (from_me or not already_read) and timestamp >= time.time() - 3600:
+            from app.organization import unarchive_on_message
+            unarchive_on_message(cursor, chat_jid)
 
         # Si el mensaje llegó por LID y ya existe el chat del teléfono, unirlos ahora (no esperar al próximo arranque)
         if chat_jid.endswith("@lid"):
@@ -839,6 +848,7 @@ def get_total_unread_count(include_muted: bool = True, include_groups: bool = Tr
     include_muted=False deja afuera los chats silenciados (como WhatsApp en el ícono de la app);
     include_groups=False cuenta solo los chats individuales."""
     where = VISIBLE_CHAT_SQL if include_groups else INDIVIDUAL_CHAT_SQL
+    where += " AND jid NOT IN (SELECT chat_jid FROM chat_hidden)"   # los chats ocultos no suman en ningún contador
     params: list = []
     if not include_muted:
         where += " AND NOT (COALESCE(muted_until, 0) = -1 OR COALESCE(muted_until, 0) > ?)"
@@ -851,16 +861,31 @@ def get_total_unread_count(include_muted: bool = True, include_groups: bool = Tr
 
 
 def get_chats(search: Optional[str] = None, filter_unread: bool = False, limit: int = 40, offset: int = 0,
-              include_hidden: bool = False, groups_only: bool = False) -> List[Dict[str, Any]]:
+              include_hidden: bool = False, groups_only: bool = False, extra_where: Optional[tuple] = None,
+              archived: str = "hide", show_secret: bool = False) -> List[Dict[str, Any]]:
     """Obtiene la lista de chats ordenados por actividad reciente con paginación de alto rendimiento.
     Sin filtros devuelve los individuales; los sin leer y las búsquedas también abarcan los grupos.
-    groups_only=True deja solo los grupos; include_hidden=True suma además canales y difusiones."""
+    groups_only=True deja solo los grupos; include_hidden=True suma además canales y difusiones.
+    extra_where=(sql, params): condición de una carpeta inteligente (ya abarca individuales y grupos).
+    archived: "hide" (no muestra los archivados; las búsquedas sí los incluyen), "only" o "any".
+    Los chats ocultos (chat_lock) no salen salvo show_secret=True (ya se escribió el código)."""
     with db_conn() as conn:
         cursor = conn.cursor()
         query = "SELECT * FROM chats WHERE 1=1"
         params: list = []
 
-        if groups_only:
+        searching = bool(search and search.strip())
+        if archived == "only":
+            query += " AND is_archived = 1"
+        elif archived != "any" and not searching:
+            query += " AND COALESCE(is_archived, 0) = 0"
+        if not show_secret:
+            query += " AND jid NOT IN (SELECT chat_jid FROM chat_hidden)"
+
+        if extra_where is not None:
+            query += f" AND {VISIBLE_CHAT_SQL} AND ({extra_where[0]})"
+            params.extend(extra_where[1])
+        elif groups_only:
             query += f" AND {GROUP_CHAT_SQL}"
         elif not include_hidden:
             everywhere = filter_unread or bool(search and search.strip())

@@ -1,5 +1,6 @@
 import sys
 import threading
+import time
 from urllib.parse import urlparse, parse_qs
 
 from PySide6.QtWidgets import (
@@ -10,6 +11,7 @@ from PySide6.QtCore import Qt, QTimer, QEvent, QSettings, QRectF, Signal
 from PySide6.QtGui import QShortcut, QKeySequence, QIcon, QPixmap, QPainter, QColor, QFont
 
 from app import chat_lock
+from app import organization as org
 from app.config import APP_NAME, get_pref, set_pref
 from app.db import get_or_create_chat, get_chats, get_chat, mark_chat_as_read
 from app.gateway_manager import GatewayManager
@@ -26,6 +28,7 @@ from app.ui.qr_dialog import QRDialog
 from app.ui.theme import QSS_STYLESHEET, C
 from app.ui.effects import WindowPolisher
 from app.ui import lock_dialogs
+from app.ui.app_lock import AppLockOverlay
 
 
 class MainWindow(QMainWindow):
@@ -97,6 +100,14 @@ class MainWindow(QMainWindow):
         self._badge = TaskbarBadge()
 
         self._connect_signals()
+
+        # Bloqueo de la app entera (opcional): cubre la ventana hasta ingresar la contraseña de los chats bloqueados
+        self._app_lock = AppLockOverlay(self)
+        self._app_lock.unlocked.connect(self._on_app_unlocked)
+        self._app_lock.quit_requested.connect(self._quit_from_lock)
+        self._left_at = None            # momento en que la ventana pasó a la bandeja o se minimizó
+        self._unlocked_once = False
+        self._maybe_lock_app()
 
         # Estados programados: evitar la suspensión mientras haya pendientes
         self._keep_awake_on = False
@@ -241,6 +252,7 @@ class MainWindow(QMainWindow):
 
         # Conexión de Configuración
         self.settings_panel.qr_requested.connect(self._open_qr_dialog)
+        self.settings_panel.privacy_changed.connect(lambda: self.chat_list_panel.reload_chats(select_jid=self._current_jid_open()))
         self.settings_panel.locks_cleared.connect(lambda: self.chat_list_panel.reload_chats(select_jid=self._current_jid_open()))
         self.settings_panel.font_scale_changed.connect(self.chat_view_panel.set_font_scale)
         self.chat_view_panel.font_scale_changed.connect(self.settings_panel.set_font_scale_silently)
@@ -310,6 +322,30 @@ class MainWindow(QMainWindow):
     def _on_chat_lock_changed(self, jid: str):
         self._close_if_locked_current()
 
+    # ── Bloqueo de la app entera ──
+
+    def _maybe_lock_app(self):
+        """Cubre la ventana si corresponde pedir la contraseña: al abrir, o al volver tras X minutos fuera."""
+        if self._app_lock.active:
+            return
+        if self._unlocked_once:
+            left, self._left_at = self._left_at, None
+            if left is None or not org.app_lock_due(left):
+                return
+        elif not org.app_lock_due(None):
+            return
+        chat_lock.lock_all()
+        self._app_lock.engage()
+
+    def _on_app_unlocked(self):
+        self._unlocked_once = True
+        self._left_at = None
+        self.chat_list_panel.focus_search()
+
+    def _quit_from_lock(self):
+        self._quitting = True
+        self.close()
+
     def _relock_chats(self):
         chat_lock.lock_all()
         self._close_if_locked_current()
@@ -332,6 +368,11 @@ class MainWindow(QMainWindow):
         super().changeEvent(event)
         if not hasattr(self, "notifications"):
             return   # todavía construyéndose
+        if event.type() == QEvent.WindowStateChange and hasattr(self, "_app_lock"):
+            if self.isMinimized():
+                self._left_at = time.time()
+            else:
+                self._maybe_lock_app()
         if event.type() in (QEvent.ActivationChange, QEvent.WindowStateChange):
             self._presence_timer.start()
             if self._is_foreground():
@@ -601,6 +642,8 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
+        if hasattr(self, "_app_lock"):
+            self._maybe_lock_app()   # volvió de la bandeja
         # La barra de tareas recrea el botón al mostrar la ventana: volver a poner el contador
         self._badge.reset()
         QTimer.singleShot(300, lambda: self._update_unread_ui(self._unread_total))
@@ -685,6 +728,7 @@ class MainWindow(QMainWindow):
             return False
         self._save_geometry()
         tray.show()
+        self._left_at = time.time()
         self.hide()
         self._presence_timer.start()
         if chat_lock.locked_jids():
