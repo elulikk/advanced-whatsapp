@@ -1256,7 +1256,7 @@ class ChatViewPanel(QWidget):
                 if path and os.path.exists(path):
                     QDesktopServices.openUrl(QUrl.fromLocalFile(path))
                 else:
-                    request_media(msg)
+                    request_media(msg, save_copy=True)   # solo se baja y queda en la burbuja y en Descargas
             elif action == "play":
                 path = msg.get("media_path")
                 chip, self._voice_click_chip = self._voice_click_chip, False

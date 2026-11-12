@@ -9,11 +9,12 @@ import json
 import os
 import itertools
 import queue
+import shutil
 import threading
 import time
 from typing import Dict, Optional, Tuple
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QStandardPaths, Signal
 
 from app import db
 from app.ai.transcription import transcribe_audio, has_transcription_key
@@ -38,6 +39,7 @@ _lock = threading.Lock()
 _pending: set = set()                # (kind, message_id) en cola o en curso
 _errors: Dict[Tuple[str, str], str] = {}   # (kind, message_id) -> último error
 _worker: Optional[threading.Thread] = None
+_save_copy: set = set()              # message_id de descargas pedidas con el botón: además van a la carpeta Descargas
 
 
 def _ensure_worker():
@@ -102,12 +104,41 @@ def unavailable_reason(msg: dict) -> Optional[str]:
     return reason
 
 
-def request_media(msg: dict):
-    """Pide el archivo de un mensaje si todavía no está en disco y se puede descargar."""
+def downloads_dir() -> str:
+    """Carpeta Descargas del usuario, con una subcarpeta propia de la app."""
+    base = QStandardPaths.writableLocation(QStandardPaths.DownloadLocation) or os.path.join(os.path.expanduser("~"), "Downloads")
+    return os.path.join(base, "AdvancedWhatsapp")
+
+
+def save_to_downloads(path: str) -> Optional[str]:
+    """Copia un archivo descargado a Descargas\AdvancedWhatsapp sin pisar otro. Devuelve la ruta o None; nunca lanza."""
+    try:
+        folder = downloads_dir()
+        os.makedirs(folder, exist_ok=True)
+        name, ext = os.path.splitext(os.path.basename(path))
+        dest, n = os.path.join(folder, name + ext), 1
+        while os.path.exists(dest):
+            if os.path.getsize(dest) == os.path.getsize(path):
+                return dest   # ya estaba copiada
+            n += 1
+            dest = os.path.join(folder, f"{name} ({n}){ext}")
+        shutil.copyfile(path, dest)
+        return dest
+    except Exception as e:
+        print(f"[Advanced WhatsApp Media] no se pudo copiar a Descargas: {e}")
+        return None
+
+
+def request_media(msg: dict, save_copy: bool = False):
+    """Pide el archivo de un mensaje si todavía no está en disco y se puede descargar.
+    Con save_copy (botón «descargar») una imagen también se copia a la carpeta Descargas."""
     if msg.get("media_path") and os.path.exists(msg["media_path"]):
         return
     if not msg.get("media_raw") or unavailable_reason(msg):
         return
+    if save_copy and msg.get("media_type") == "image":
+        with _lock:
+            _save_copy.add(msg["id"])
     _enqueue("download", msg)
 
 
@@ -183,7 +214,12 @@ def _run():
         msg_id = msg["id"]
         try:
             if kind == "download":
-                _download(msg)
+                got = _download(msg)
+                with _lock:
+                    wants_copy = msg_id in _save_copy
+                    _save_copy.discard(msg_id)
+                if wants_copy:
+                    save_to_downloads(got)
                 with _lock:
                     _errors.pop((kind, msg_id), None)
                 media_signals.media_ready.emit(msg_id)

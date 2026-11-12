@@ -2299,6 +2299,112 @@ app.post('/fetch-avatar', async (req, res) => {
     res.json({ success: true, avatar_path: p });
 });
 
+// ── Normalizador de OGG/Opus para notas de voz ──
+// WhatsApp reproduce la nota solo si el OGG está bien formado: BOS/EOS, granule position coherente con la
+// duración real y CRC válidos. El MediaRecorder de Android (OutputFormat.OGG) deja páginas con granule
+// incorrecto/ausente y sin marca de fin, y el receptor muestra "audio no disponible". Acá se rearma el
+// contenedor página por página (sin tocar los paquetes Opus) y se calcula la duración exacta. Si el archivo
+// no es OGG/Opus o algo no cuadra, se devuelve tal cual para no empeorar nada.
+const OGG_CRC_TABLE = (() => {
+    const t = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) {
+        let r = i << 24;
+        for (let j = 0; j < 8; j++) r = (r & 0x80000000) ? ((r << 1) ^ 0x04c11db7) : (r << 1);
+        t[i] = r >>> 0;
+    }
+    return t;
+})();
+
+function oggCrc(buf) {
+    let crc = 0;
+    for (let i = 0; i < buf.length; i++) crc = ((crc << 8) ^ OGG_CRC_TABLE[((crc >>> 24) ^ buf[i]) & 0xff]) >>> 0;
+    return crc >>> 0;
+}
+
+// Muestras a 48 kHz que dura un paquete Opus (según su byte TOC)
+function opusPacketSamples(pkt) {
+    if (!pkt.length) return 0;
+    const toc = pkt[0], config = toc >> 3;
+    let ms;
+    if (config < 12) ms = [10, 20, 40, 60][config % 4];
+    else if (config < 16) ms = [10, 20][config % 2];
+    else ms = [2.5, 5, 10, 20][config % 4];
+    const code = toc & 3;
+    let frames = 1;
+    if (code === 1 || code === 2) frames = 2;
+    else if (code === 3) frames = pkt.length > 1 ? (pkt[1] & 0x3f) : 0;
+    return Math.round(ms * 48 * frames);
+}
+
+function oggReadPackets(buf) {
+    const packets = [];
+    let cur = [], pos = 0, serial = null;
+    while (pos + 27 <= buf.length) {
+        if (buf.toString('latin1', pos, pos + 4) !== 'OggS') throw new Error('página OGG inválida');
+        const nseg = buf[pos + 26];
+        if (pos + 27 + nseg > buf.length) break;           // página truncada: se descarta
+        let dataLen = 0;
+        for (let i = 0; i < nseg; i++) dataLen += buf[pos + 27 + i];
+        if (pos + 27 + nseg + dataLen > buf.length) break;  // idem
+        if (serial === null) serial = buf.readUInt32LE(pos + 14);
+        let off = pos + 27 + nseg;
+        for (let i = 0; i < nseg; i++) {
+            const len = buf[pos + 27 + i];
+            cur.push(buf.subarray(off, off + len));
+            off += len;
+            if (len < 255) { packets.push(Buffer.concat(cur)); cur = []; }
+        }
+        pos = off;
+    }
+    return { packets, serial: serial === null ? 0x41575041 : serial };
+}
+
+function oggBuildPage(packets, headerType, granule, serial, seq) {
+    const segs = [];
+    for (const p of packets) {
+        let n = p.length;
+        while (n >= 255) { segs.push(255); n -= 255; }
+        segs.push(n);
+    }
+    const header = Buffer.alloc(27 + segs.length);
+    header.write('OggS', 0, 'latin1');
+    header[5] = headerType;
+    header.writeBigUInt64LE(BigInt(granule), 6);
+    header.writeUInt32LE(serial >>> 0, 14);
+    header.writeUInt32LE(seq, 18);
+    header[26] = segs.length;
+    for (let i = 0; i < segs.length; i++) header[27 + i] = segs[i];
+    const page = Buffer.concat([header, ...packets]);
+    page.writeUInt32LE(oggCrc(page), 22);
+    return page;
+}
+
+// Devuelve { buffer, seconds } con el OGG/Opus reempaquetado, o null si no es un OGG/Opus utilizable
+function normalizeOggOpus(buf) {
+    try {
+        if (!Buffer.isBuffer(buf) || buf.length < 64 || buf.toString('latin1', 0, 4) !== 'OggS') return null;
+        const { packets, serial } = oggReadPackets(buf);
+        if (packets.length < 3 || packets[0].toString('latin1', 0, 8) !== 'OpusHead'
+            || packets[1].toString('latin1', 0, 8) !== 'OpusTags') return null;
+        const preSkip = packets[0].length >= 12 ? packets[0].readUInt16LE(10) : 312;
+        const audio = packets.slice(2).filter(p => p.length > 0);
+        const out = [oggBuildPage([packets[0]], 0x02, 0, serial, 0), oggBuildPage([packets[1]], 0x00, 0, serial, 1)];
+        let seq = 2, granule = 0, i = 0;
+        while (i < audio.length) {
+            const group = [];
+            let size = 0;
+            while (i < audio.length && group.length < 50 && size < 3500) {
+                group.push(audio[i]); size += audio[i].length; granule += opusPacketSamples(audio[i]); i++;
+            }
+            out.push(oggBuildPage(group, i >= audio.length ? 0x04 : 0x00, granule, serial, seq++));
+        }
+        if (!audio.length || granule <= preSkip) return null;
+        return { buffer: Buffer.concat(out), seconds: (granule - preSkip) / 48000 };
+    } catch (e) {
+        return null;
+    }
+}
+
 // Envía un mensaje con el cuerpo de POST /send. Si algo falla lanza un error con httpStatus (404 = falta el archivo).
 async function sendWhatsApp(body, extraOpts = {}) {
     const { to, text, image_path, image_thumb, image_url, document_path, document_name, mimetype,
@@ -2350,10 +2456,15 @@ async function sendWhatsApp(body, extraOpts = {}) {
         const buffer = mediaFile(video_path, 'Video no encontrado');
         result = await sock.sendMessage(jid, { video: buffer, caption: msgText || undefined }, sendOpts);
     } else if (audio_path) {
-        const buffer = mediaFile(audio_path, 'Audio no encontrado');
+        let buffer = mediaFile(audio_path, 'Audio no encontrado');
+        // Se reempaqueta el OGG/Opus (granule, fin de stream y CRC correctos) y de ahí sale la duración exacta
+        const ogg = normalizeOggOpus(buffer);
+        if (ogg) buffer = ogg.buffer;
+        else logger.warn?.(`Audio ${path.basename(audio_path)} no es un OGG/Opus válido: se envía sin tocar`);
         const audioMsg = { audio: buffer, mimetype: 'audio/ogg; codecs=opus', ptt: true };
         // Notas grabadas en la app: llegan con su duración y su onda (si no, Baileys calcula solo la duración)
-        if (Number(audio_seconds) > 0) audioMsg.seconds = Math.max(1, Math.round(Number(audio_seconds)));
+        const secs = ogg ? ogg.seconds : Number(audio_seconds);
+        if (secs > 0) audioMsg.seconds = Math.max(1, Math.round(secs));
         if (Array.isArray(audio_waveform) && audio_waveform.length) {
             audioMsg.waveform = new Uint8Array(audio_waveform.map(v => Math.max(0, Math.min(100, Number(v) | 0))));
         }

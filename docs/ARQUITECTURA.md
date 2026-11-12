@@ -145,3 +145,12 @@ equivalente de `webhook_server.py` es `gateway/WebhookServer.kt` y el de `db.py`
 - **Envío**: `POST /send` con `sticker_path` (webp) y, si es animado, `sticker_animated: true`. Se copia a `media/enviados/` antes de enviar.
 - **Importación**: archivos/carpetas/.wastickers, historial de chats (baja con `/media/download` los que faltan) y, en Android, las carpetas
   de WhatsApp (`Android/media/com.whatsapp/...`) con el selector de carpetas (SAF).
+
+## Notas de voz enviadas (causa raíz del "audio no disponible")
+
+WhatsApp solo reproduce una nota de voz si el OGG/Opus está bien formado: páginas con BOS/EOS, *granule position*
+coherente con la duración real y CRC válido. El `MediaRecorder` de Android (`OutputFormat.OGG` + `AudioEncoder.OPUS`)
+deja el contenedor con granule incorrecto y sin marca de fin de stream, y el receptor mostraba error al reproducir.
+`sendWhatsApp` (gateway) pasa ahora todo audio por `normalizeOggOpus`: reempaqueta las páginas sin tocar los paquetes
+Opus y calcula la duración exacta (`seconds`); si el archivo no es OGG/Opus se envía tal cual. Sirve igual para PC
+(FFmpeg ya genera OGG/Opus válido) y Android (mismo `server.js`, sin dependencias nativas).

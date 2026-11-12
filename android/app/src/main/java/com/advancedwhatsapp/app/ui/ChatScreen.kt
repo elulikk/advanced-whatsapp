@@ -542,11 +542,15 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
                             onDelete = { runTask { Actions.deleteForEveryone(m) } },
                             onOpenMedia = {
                                 withBusy(m.id) {
+                                    // Una imagen que todavía no estaba bajada solo se descarga (queda en la burbuja y en Descargas);
+                                    // la pantalla completa se abre recién al tocarla ya descargada
+                                    val yaDescargada = m.mediaPath?.let { File(it).exists() } == true
                                     val path = Actions.downloadMedia(m)
                                     // Lo descargado también queda en la carpeta pública Descargas del teléfono
-                                    if (m.mediaType == "document" || m.mediaType == "video") {
+                                    if (m.mediaType == "document" || m.mediaType == "video" || m.mediaType == "image") {
                                         Downloads.saveCopy(File(path), Downloads.displayName(m.text, File(path)))
                                     }
+                                    if (m.mediaType == "image" && !yaDescargada) return@withBusy
                                     withContext(Dispatchers.Main) {
                                         if (m.mediaType == "image" || m.mediaType == "sticker") viewerImage = path
                                         else if (m.mediaType != "audio") openFile(context, path, m.text)
