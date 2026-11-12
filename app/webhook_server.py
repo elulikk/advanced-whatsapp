@@ -129,6 +129,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
                         already_read=bool(data.get("already_read"))
                     )
 
+                    if saved and data.get("link_preview"):
+                        from app import link_preview
+                        link_preview.store_event(data)
+
                     # Emitir señal a la UI únicamente si el mensaje fue almacenado válidamente.
                     # is_new: llegó ahora por primera vez (no es una edición, un borrado ni un reenvío del gateway)
                     if saved:

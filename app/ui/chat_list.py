@@ -17,7 +17,7 @@ from app.ui.theme import C, HEADER_H, R_LG, unread_badge_qss
 from app.ui.icons import icon, tool_button, pixmap
 from app.ui.effects import HoverFade, mix, overlay, menu_below
 from app import tags as tagdb
-from app import chat_lock
+from app import chat_lock, thumb_cache
 from app.ui import lock_dialogs
 from app.ui.tag_widgets import (TagPalettePanel, TagManagerDialog, paint_avatar_tags, tags_tooltip, tag_pixmap,
                                 tag_id_from_mime, paint_row_effect)
@@ -156,13 +156,10 @@ class AvatarWidget(QWidget):
             return None
         if self._pix_cache[0] == path:
             return self._pix_cache[1]
-        pix = QPixmap(path)
-        if pix.isNull():
+        # Caché compartida (LRU en memoria): al recargar la lista no se vuelve a decodificar cada avatar
+        scaled = thumb_cache.scaled_pixmap(path, self.size_px, self.devicePixelRatioF())
+        if scaled is None:
             return None
-        ratio = self.devicePixelRatioF()
-        side = round(self.size_px * ratio)
-        scaled = pix.scaled(side, side, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-        scaled.setDevicePixelRatio(ratio)
         self._pix_cache = (path, scaled)
         return scaled
 
