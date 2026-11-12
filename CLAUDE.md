@@ -17,7 +17,9 @@ app/
   notifications.py / windows_integration.py   Toasts, bandeja, advancedwhatsapp://, instancia única, inicio con Windows
   tags.py          Tags visuales de chats (tablas tags / chat_tags)
   ai/              ai_service (Gemini/Groq/OpenAI/Claude con fallback), message_summary, psych_analysis,
-                   reply_polisher, transcription (Whisper)
+                   reply_polisher, transcription (Whisper), smart_features (lo que te perdiste, respuestas rápidas,
+                   búsqueda por significado, fechas detectadas, traducción, «sin responder»; widgets en ui/ai_extras.py)
+  reminders.py     Recordatorios locales (recordatorios.json + aviso por notificación)
   ui/              Widgets Qt: main_window, chat_list, chat_view, status_view, scheduled_messages, settings_view, theme...
 gateway/           server.js (Express + Baileys) y package.json. node_modules NO se versiona
 android/           App Kotlin/Compose con Node embebido (ver android/README.md); usa gateway/server.js tal cual

@@ -184,6 +184,29 @@ class SettingsPanel(QWidget):
             "Las notas de voz que llegan (y las que mandás) se transcriben solas en segundo plano. "
             "Necesita una clave de Groq u OpenAI. Si falla alguna, queda el botón «Transcribir» en el mensaje."))
 
+        # IA extra: respuestas rápidas, recordatorios detectados e idioma de traducción
+        from app.ai import smart_features
+        self.check_quick_replies = QCheckBox("Sugerir respuestas rápidas sobre el campo de mensaje")
+        self.check_quick_replies.setChecked(get_pref("quick_replies"))
+        self.check_quick_replies.toggled.connect(lambda on: set_pref("quick_replies", on))
+        c_layout.addWidget(self.check_quick_replies)
+        self.check_date_reminders = QCheckBox("Detectar fechas y horas en los mensajes (⏰ para crear un recordatorio)")
+        self.check_date_reminders.setChecked(get_pref("date_reminders"))
+        self.check_date_reminders.toggled.connect(lambda on: set_pref("date_reminders", on))
+        c_layout.addWidget(self.check_date_reminders)
+        lang_row = QHBoxLayout()
+        lang_row.addWidget(QLabel("Traducir mensajes a:"))
+        self.cmb_translate_lang = QComboBox()
+        self.cmb_translate_lang.setEditable(True)
+        self.cmb_translate_lang.addItems([l for l in smart_features.LANGUAGES])
+        self.cmb_translate_lang.setCurrentText(smart_features.get_translate_lang())
+        self.cmb_translate_lang.currentTextChanged.connect(smart_features.set_translate_lang)
+        lang_row.addWidget(self.cmb_translate_lang, stretch=1)
+        c_layout.addLayout(lang_row)
+        c_layout.addWidget(self._hint(
+            "Las respuestas rápidas se piden al abrir un chat cuyo último mensaje trae una pregunta (con caché: no se repite la "
+            "consulta); en el resto, el botón ✨ del chat las genera a pedido."))
+
         # Proveedor y modelo principal
         group_active = QGroupBox("Proveedor y modelo principal")
         grid = QGridLayout(group_active)

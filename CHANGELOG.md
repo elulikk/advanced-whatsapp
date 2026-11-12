@@ -1,5 +1,22 @@
 # Changelog
 
+## Sin publicar — IA extra (PC y Android)
+
+### Nuevo
+- **Lo que te perdiste**: en un chat con 15 o más mensajes sin leer aparece un banner arriba con "Resumir"; la IA resume
+  quién dijo qué, las decisiones y las preguntas para vos.
+- **Respuestas rápidas sugeridas**: 2-3 chips sobre el campo de mensaje con respuestas cortas al último mensaje, en tu estilo
+  (usa tus notas/perfil del contacto si existen). Se piden solas cuando el último mensaje trae una pregunta; si no, con el
+  botón ✨. Caché por último mensaje. Se apagan en Ajustes.
+- **Buscar con IA**: ✨ en el buscador de chats; encuentra mensajes por significado, incluidas las transcripciones de audios
+  (sinónimos con IA + candidatos por texto + reranking: como máximo 2 llamadas por búsqueda, con caché).
+- **Recordatorios detectados**: un ⏰ en los mensajes que mencionan una fecha/hora futura ("el jueves a las 8") para crear un
+  recordatorio local (notificación) o programar el próximo mensaje a esa hora. Detección con regex, sin IA.
+- **Traducción**: "Traducir" en el menú de un mensaje (al idioma configurado en Ajustes) y "Traducir antes de enviar" sobre el
+  borrador.
+- **Requiere respuesta**: los chats donde quedó una pregunta o pedido tuyo sin contestar muestran "↩" y hay un filtro
+  "Sin responder".
+
 ## 2026-11-11 — Android 0.3.1
 
 ### Arreglos
