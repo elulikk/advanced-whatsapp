@@ -197,6 +197,16 @@ def init_db():
             )
         """)
 
+        # Versiones anteriores de un mensaje editado (la más vieja primero), sin FK: se limpian con el mensaje
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS message_edits (
+                message_id TEXT NOT NULL,
+                text TEXT,
+                edited_at INTEGER DEFAULT 0
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_message_edits_msg ON message_edits(message_id)")
+
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_jid ON messages(chat_jid, timestamp)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_chats_last_time ON chats(last_message_time DESC)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts(name)")
@@ -228,8 +238,11 @@ def init_db():
         # summary: resumen e interpretación del mensaje hecho por la IA (modo resumen)
         # edited: el remitente editó el texto después de enviarlo
         # transcript_failed: la transcripción automática falló; no se reintenta sola (queda el «Transcribir» manual)
+        # starred_at: mensaje destacado (epoch ms); revoked_orig: JSON con el contenido de un mensaje eliminado por el
+        # remitente (se conserva salvo que se apague el ajuste); poll_json: encuesta con las opciones y el conteo de votos
         for column in ("media_raw TEXT", "transcript TEXT", "pinned_at INTEGER", "summary TEXT",
-                       "edited INTEGER DEFAULT 0", "transcript_failed INTEGER DEFAULT 0"):
+                       "edited INTEGER DEFAULT 0", "transcript_failed INTEGER DEFAULT 0",
+                       "starred_at INTEGER", "revoked_orig TEXT", "poll_json TEXT"):
             try:
                 cursor.execute(f"ALTER TABLE messages ADD COLUMN {column}")
             except Exception:
@@ -590,6 +603,7 @@ def save_sync_batch(chats: List[Dict[str, Any]], contacts: List[Dict[str, Any]],
                     _revoke_in(cursor, msg_id)
                     touched_chats.append(chat_jid)
                 elif exists and text_val:
+                    _record_edit(cursor, msg_id, text_val)
                     cursor.execute("UPDATE messages SET text = ?, edited = 1, summary = NULL WHERE id = ?",
                                    (text_val, msg_id))
                     touched_chats.append(chat_jid)
@@ -1135,6 +1149,7 @@ def delete_messages(msg_ids) -> None:
         marks = ",".join("?" * len(ids))
         chats = [r[0] for r in conn.execute(f"SELECT DISTINCT chat_jid FROM messages WHERE id IN ({marks})", ids)]
         conn.execute(f"DELETE FROM reactions WHERE message_id IN ({marks})", ids)
+        conn.execute(f"DELETE FROM message_edits WHERE message_id IN ({marks})", ids)
         conn.execute(f"DELETE FROM messages WHERE id IN ({marks})", ids)
         refresh_chat_previews(conn.cursor(), chats)
         for jid in chats:
@@ -1142,10 +1157,37 @@ def delete_messages(msg_ids) -> None:
                 conn.execute("UPDATE chats SET last_message_text = 'Sin mensajes' WHERE jid = ?", (jid,))
 
 
+def _keep_history() -> bool:
+    """Ajuste «Conservar mensajes eliminados y versiones editadas» (activado por defecto)."""
+    from app.config import get_pref
+    return get_pref("keep_deleted")
+
+
+def _record_edit(cursor, msg_id: str, new_text: str) -> None:
+    """Antes de pisar el texto por una edición, guarda la versión anterior (si el ajuste está activo)."""
+    if not _keep_history():
+        return
+    row = cursor.execute("SELECT text FROM messages WHERE id = ?", (msg_id,)).fetchone()
+    if not row or (row[0] or "") == (new_text or ""):
+        return
+    cursor.execute("INSERT INTO message_edits (message_id, text, edited_at) VALUES (?, ?, ?)",
+                   (msg_id, row[0] or "", int(time.time())))
+
+
 def _revoke_in(cursor, msg_id: str) -> None:
+    if _keep_history():
+        row = cursor.execute(
+            "SELECT media_type, text, media_path, media_raw, quoted_text, quoted_sender, transcript "
+            "FROM messages WHERE id = ?", (msg_id,)).fetchone()
+        if row and row[0] != "revoked":
+            import json
+            keys = ("media_type", "text", "media_path", "media_raw", "quoted_text", "quoted_sender", "transcript")
+            cursor.execute("UPDATE messages SET revoked_orig = ? WHERE id = ?",
+                           (json.dumps({k: row[i] for i, k in enumerate(keys)}, ensure_ascii=False), msg_id))
     cursor.execute(
         "UPDATE messages SET media_type = 'revoked', text = '', media_path = NULL, media_raw = NULL, "
-        "quoted_text = NULL, quoted_sender = NULL, transcript = NULL, summary = NULL, pinned_at = NULL WHERE id = ?", (msg_id,))
+        "quoted_text = NULL, quoted_sender = NULL, transcript = NULL, summary = NULL, pinned_at = NULL, "
+        "starred_at = CASE WHEN revoked_orig IS NULL THEN NULL ELSE starred_at END WHERE id = ?", (msg_id,))
     cursor.execute("DELETE FROM reactions WHERE message_id = ?", (msg_id,))
 
 
@@ -1174,9 +1216,74 @@ def apply_message_edit(msg_id: str, text: str) -> bool:
         row = conn.execute("SELECT chat_jid FROM messages WHERE id = ?", (msg_id,)).fetchone()
         if not row or not clean:
             return False
+        _record_edit(conn.cursor(), msg_id, clean)
         conn.execute("UPDATE messages SET text = ?, edited = 1, summary = NULL WHERE id = ?", (clean, msg_id))
         refresh_chat_previews(conn.cursor(), [row["chat_jid"]])
         return True
+
+
+def get_message_edits(msg_id: str) -> List[Dict[str, Any]]:
+    """Versiones anteriores de un mensaje editado, de la más vieja a la más nueva."""
+    with db_conn() as conn:
+        rows = conn.execute("SELECT text, edited_at FROM message_edits WHERE message_id = ? ORDER BY rowid",
+                            (msg_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_revoked_original(msg_id: str) -> Optional[Dict[str, Any]]:
+    """Contenido original de un mensaje que el remitente eliminó, o None si no se conservó."""
+    import json
+    with db_conn() as conn:
+        row = conn.execute("SELECT revoked_orig FROM messages WHERE id = ?", (msg_id,)).fetchone()
+    if not row or not row["revoked_orig"]:
+        return None
+    try:
+        return json.loads(row["revoked_orig"])
+    except ValueError:
+        return None
+
+
+def set_message_starred(msg_id: str, starred: bool) -> bool:
+    with db_conn() as conn:
+        cur = conn.execute("UPDATE messages SET starred_at = ? WHERE id = ?",
+                           (int(time.time() * 1000) if starred else None, msg_id))
+        return cur.rowcount > 0
+
+
+def get_starred_messages(search: str = "", limit: int = 300) -> List[Dict[str, Any]]:
+    """Mensajes destacados de todos los chats (el último destacado primero), con el nombre del chat; filtra por texto/chat."""
+    term = search.strip().lower()
+    like = f"%{term}%"
+    with db_conn() as conn:
+        rows = conn.execute(
+            "SELECT m.*, COALESCE(NULLIF(c.custom_name, ''), c.name, c.phone, m.chat_jid) AS chat_name "
+            "FROM messages m LEFT JOIN chats c ON c.jid = m.chat_jid "
+            "WHERE m.starred_at IS NOT NULL AND m.media_type != 'revoked' "
+            "AND (? = '' OR LOWER(COALESCE(m.text, '')) LIKE ? OR LOWER(COALESCE(m.transcript, '')) LIKE ? "
+            "OR LOWER(COALESCE(c.custom_name, c.name, '')) LIKE ?) "
+            "ORDER BY m.starred_at DESC LIMIT ?", (term, like, like, like, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def set_message_poll(msg_id: str, poll: Optional[Dict[str, Any]]) -> bool:
+    """Guarda la encuesta de un mensaje (opciones y votos) tal como la manda el gateway."""
+    import json
+    with db_conn() as conn:
+        cur = conn.execute("UPDATE messages SET poll_json = ? WHERE id = ?",
+                           (json.dumps(poll, ensure_ascii=False) if poll else None, msg_id))
+        return cur.rowcount > 0
+
+
+def parse_poll(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    import json
+    raw = msg.get("poll_json")
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) and data.get("options") else None
+    except ValueError:
+        return None
 
 
 def get_chat(jid: str) -> Optional[Dict[str, Any]]:

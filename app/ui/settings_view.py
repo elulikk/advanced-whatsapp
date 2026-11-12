@@ -84,6 +84,7 @@ class SettingsPanel(QWidget):
     font_scale_changed = Signal(int)
     test_notification_requested = Signal()
     locks_cleared = Signal()   # se quitó la contraseña: todos los chats quedaron desbloqueados
+    starred_requested = Signal()   # abrir la lista de mensajes destacados
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -136,6 +137,9 @@ class SettingsPanel(QWidget):
         self.tabs.addTab(self.tab_whatsapp, "WhatsApp y conexión")
         self.tab_notify = self._create_notifications_tab()
         self.tabs.addTab(self.tab_notify, "Notificaciones y Windows")
+        from app.ui.extras_dialogs import build_messaging_tab
+        self.tab_messaging = build_messaging_tab(self, self.gateway)
+        self.tabs.addTab(self.tab_messaging, "Mensajería")
         self.tab_appearance = self._create_appearance_tab()
         self.tabs.addTab(self.tab_appearance, "Apariencia")
         self.tab_about = self._create_about_tab()

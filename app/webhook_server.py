@@ -8,7 +8,7 @@ from PySide6.QtCore import QObject, Signal
 from app.config import WEBHOOK_PORT, TOKEN_HEADER, get_gateway_token
 from app.db import (
     save_message, save_contact, save_sync_batch, update_chat_avatar, update_message_status, set_reaction,
-    message_exists, revoke_message_local, apply_message_edit,
+    message_exists, revoke_message_local, apply_message_edit, set_message_poll,
     mark_messages_read_elsewhere, mark_chat_read_elsewhere, mark_chat_unread_elsewhere
 )
 
@@ -26,6 +26,8 @@ class WebhookSignals(QObject):
     app_activate = Signal(str)          # otra instancia (o una notificación) pide abrir/mostrar algo: advancedwhatsapp://...
     read_elsewhere = Signal(list)       # [chat_jid]: chats que leíste (o marcaste no leídos) en el celular
     scheduled_changed = Signal(dict)    # {id, state: sent|failed|expired, to, chat_name, type, text, error}
+    poll_changed = Signal(dict)         # encuesta con votos nuevos: {id, chat_jid, name, multi, options: [{name, votes, mine}]}
+    bulk_changed = Signal(dict)         # terminó un envío a varios: {id, state, total, sent, failed, targets}
 
 
 signals = WebhookSignals()
@@ -129,6 +131,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
                         already_read=bool(data.get("already_read"))
                     )
 
+                    if saved and data.get("poll"):
+                        set_message_poll(msg_id, data["poll"])
+
                     # Emitir señal a la UI únicamente si el mensaje fue almacenado válidamente.
                     # is_new: llegó ahora por primera vez (no es una edición, un borrado ni un reenvío del gateway)
                     if saved:
@@ -149,9 +154,20 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._ok()
             return
 
+        elif self.path == "/api/whatsapp/poll":
+            try:
+                if data.get("id"):
+                    set_message_poll(data["id"], data)
+                    signals.poll_changed.emit(data)
+            except Exception as e:
+                _log_error(self.path, e)
+            self._ok()
+            return
+
         elif self.path in ("/api/whatsapp/presence", "/api/whatsapp/call", "/api/whatsapp/contact_status",
-                           "/api/whatsapp/scheduled"):
-            sig = {"/api/whatsapp/presence": signals.presence_changed,
+                           "/api/whatsapp/scheduled", "/api/whatsapp/bulk"):
+            sig = {"/api/whatsapp/bulk": signals.bulk_changed,
+                   "/api/whatsapp/presence": signals.presence_changed,
                    "/api/whatsapp/call": signals.call_event,
                    "/api/whatsapp/contact_status": signals.contact_status,
                    "/api/whatsapp/scheduled": signals.scheduled_changed}[self.path]

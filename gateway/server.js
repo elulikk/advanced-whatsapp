@@ -14,8 +14,10 @@ import makeWASocket, {
     areJidsSameUser,
     makeCacheableSignalKeyStore,
     BufferJSON,
-    generateMessageIDV2
+    generateMessageIDV2,
+    decryptPollVote
 } from '@whiskeysockets/baileys';
+import { createExtras, normalizeRepeat } from './extras.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -520,6 +522,7 @@ function extractMessageDetails(msg) {
 
     let text = '';
     let mediaType = 'text';
+    let pollInfo = null;
 
     if (m.conversation) {
         text = m.conversation;
@@ -557,6 +560,7 @@ function extractMessageDetails(msg) {
         const poll = m.pollCreationMessage || m.pollCreationMessageV2 || m.pollCreationMessageV3;
         mediaType = 'poll';
         text = `📊 Encuesta: ${poll?.name || ''}`;
+        pollInfo = { name: poll?.name || '', options: (poll?.options || []).map(o => o.optionName).filter(Boolean), multi: poll?.selectableOptionsCount !== 1 };
     } else if (m.buttonsResponseMessage) {
         text = m.buttonsResponseMessage.selectedDisplayText || m.buttonsResponseMessage.selectedButtonId || '';
     } else if (m.listResponseMessage) {
@@ -618,7 +622,7 @@ function extractMessageDetails(msg) {
         return null;
     }
 
-    return { text: cleanText, mediaType, innerMessage: m, quotedText, quotedSender };
+    return { text: cleanText, mediaType, innerMessage: m, quotedText, quotedSender, poll: pollInfo };
 }
 
 // Claves "útiles" de un mensaje descartado, para el log (messageContextInfo siempre viene y no dice nada)
@@ -1326,6 +1330,8 @@ async function initWhatsApp() {
                 }
                 if (!isChatJid(msg.key.remoteJid)) continue;
                 rememberGroupSender(msg);
+                // Voto de una encuesta: se descifra y se avisa a la app con el conteo nuevo (no es un mensaje)
+                if (extras.onPollVote(msg)) continue;
                 console.log(`[Baileys] Recibido (${type}): [${msg.key.remoteJid}] id=${msg.key.id} fromMe=${Boolean(msg.key.fromMe)}`);
 
                 const fromMe = Boolean(msg.key.fromMe);
@@ -1343,6 +1349,7 @@ async function initWhatsApp() {
                     continue;
                 }
                 const { text, mediaType, innerMessage, quotedText, quotedSender } = details;
+                const pollView = details.poll ? extras.trackPoll(msg, details, remoteJid) : null;
 
                 // Extraer correspondencia de teléfono y LID si Baileys la provee
                 // Baileys 7 entrega el identificador alterno (LID <-> teléfono) en remoteJidAlt / participantAlt
@@ -1395,12 +1402,16 @@ async function initWhatsApp() {
                         media_raw: serializeMediaRaw(msg, mediaType),
                         quoted_text: quotedText,
                         quoted_sender: quotedSender,
+                        poll: pollView,
                         timestamp: Number(msg.messageTimestamp || Math.floor(Date.now() / 1000)),
                         is_group: remoteJid.endsWith('@g.us')
                     };
 
                     // Reintenta y, si la app no responde, queda en la bandeja de salida (no se pierde)
                     await deliverReliably(PYTHON_WEBHOOK_URL, payload);
+                    // Respuestas automáticas (corren acá para que funcionen con la ventana cerrada)
+                    extras.onIncoming({ jid: remoteJid, fromMe, isGroup: isGroupMsg, type, mediaType, timestamp: payload.timestamp,
+                        revoked: payload.revoked, edited: payload.edited, isCall: false });
                 } catch (e) {
                     console.error('[Baileys] Error despachando mensaje entrante:', e);
                 }
@@ -1584,6 +1595,20 @@ function pruneMessageHistory() {
 
 const scheduledDueAt = (m) => Math.max(m.at, m.retry_at || 0);
 
+// Mensaje con repetición: tras salir (o vencer) vuelve a la cola para la próxima fecha, con un id de WhatsApp nuevo
+function advanceRepeat(item) {
+    if (!item.repeat) return false;
+    const next = extras.nextRepeatAt(item.anchor_at || item.at, item.repeat, Math.floor(Date.now() / 1000));
+    if (!next) return false;
+    item.at = next;
+    item.state = 'pending';
+    item.attempts = 0;
+    item.wa_id = null;
+    item.retry_at = null;
+    item.error = null;
+    return true;
+}
+
 function armMessageTimer() {
     clearTimeout(messageTimer);
     messageTimer = null;
@@ -1605,6 +1630,7 @@ function reportScheduledMessage(item) {
 async function runScheduledMessage(item) {
     item.state = 'sending';
     item.attempts = (item.attempts || 0) + 1;
+    let delivered = false;
     // Un id fijo por mensaje: si un reintento repite un envío que sí había salido, WhatsApp no lo muestra dos veces
     item.wa_id = item.wa_id || generateMessageIDV2(sock?.user?.id);
     saveMessageSchedule();
@@ -1612,12 +1638,13 @@ async function runScheduledMessage(item) {
         const body = { ...item.send, to: item.to, text: item.text };
         const result = await sendWhatsApp(body, { messageId: item.wa_id });
         const now = Math.floor(Date.now() / 1000);
+        delivered = true;
         item.state = 'sent';
         item.sent_at = now;
         item.message_id = result?.key?.id || item.wa_id;
         item.error = null;
         item.retry_at = null;
-        item.send = null;   // miniatura y onda ya no hacen falta
+        if (!advanceRepeat(item)) item.send = null;   // miniatura y onda ya no hacen falta (una repetición los conserva)
         console.log(`[Programados] ✅ Enviado ${item.id} (${item.type}) a ${item.to}`);
         // El gateway descarta el eco de lo que envía: la app se entera por acá
         deliverReliably(PYTHON_WEBHOOK_URL, {
@@ -1643,10 +1670,16 @@ async function runScheduledMessage(item) {
         if (connectionStatus !== 'connected') item.attempts -= 1;
         item.state = e.httpStatus === 404 || item.attempts >= SCHEDULE_MAX_ATTEMPTS ? 'failed' : 'pending';
         console.error(`[Programados] ❌ Falló ${item.id} (intento ${item.attempts}):`, item.error);
+        // Una repetición que falló se avisa y sigue con la próxima fecha
+        if (item.state === 'failed' && item.repeat) {
+            reportScheduledMessage(item);
+            advanceRepeat(item);
+        }
     }
     pruneMessageHistory();
     saveMessageSchedule();
     if (item.state !== 'pending') reportScheduledMessage(item);
+    else if (item.repeat && delivered) reportScheduledMessage({ ...item, state: 'sent', at: item.sent_at });
 }
 
 // De a uno y en orden. La cola se vuelve a mirar tras cada envío: lo programado o cancelado durante una subida larga cuenta.
@@ -1663,6 +1696,10 @@ async function processMessageSchedule() {
             }
             if (!item) break;
             if (now - item.at > SCHEDULE_LATE_GRACE && !item.attempts) {
+                if (advanceRepeat(item)) {   // una repetición vencida se salta y espera la próxima
+                    saveMessageSchedule();
+                    continue;
+                }
                 item.state = 'expired';
                 item.error = 'El equipo estaba apagado o sin conexión a la hora programada';
                 pruneMessageHistory();
@@ -2165,7 +2202,9 @@ app.post('/message-schedule', async (req, res) => {
             at: Math.floor(Number(body.at)),
             created_at: now,
             state: 'pending',
-            attempts: 0
+            attempts: 0,
+            repeat: normalizeRepeat(body.repeat),
+            anchor_at: Math.floor(Number(body.at))   // fecha de inicio: las repeticiones mensuales/anuales no se corren de día
         };
         scheduledMessages.push(item);
         saveMessageSchedule();
@@ -2179,7 +2218,7 @@ app.post('/message-schedule', async (req, res) => {
 
 // Cambia la fecha/hora o el texto de un mensaje que no salió ("at" = ahora lo envía ya)
 app.post('/message-schedule/update', (req, res) => {
-    const { id, at, text } = req.body || {};
+    const { id, at, text, repeat } = req.body || {};
     const item = scheduledMessages.find(m => m.id === id);
     if (!item) return res.status(404).json({ error: 'No existe ese mensaje programado' });
     if (!['pending', 'failed', 'expired', 'canceled'].includes(item.state)) {
@@ -2190,6 +2229,8 @@ app.post('/message-schedule/update', (req, res) => {
         item.text = text.trim();
     }
     if (Number(at) > 0) item.at = Math.floor(Number(at));
+    if (repeat !== undefined) item.repeat = normalizeRepeat(repeat);
+    if (Number(at) > 0 || repeat !== undefined) item.anchor_at = item.at;
     item.state = 'pending';
     item.attempts = 0;
     item.retry_at = null;
@@ -2564,6 +2605,13 @@ if (PARENT_PID > 0) {
         }
     }, 10000);
 }
+
+// Respuestas automáticas, encuestas, envío a varios y repetición de programados (gateway/extras.js)
+const extras = createExtras({
+    app, dataDir: USER_DATA_DIR, getSock: () => sock, isConnected: () => connectionStatus === 'connected' && Boolean(sock),
+    sendWhatsApp, deliverReliably, postEvent, webhookUrl: PYTHON_WEBHOOK_URL, decryptPollVote, log: console.log,
+    markSent: (id) => { sentBotMessageIds.add(id); }
+});
 
 // Iniciar servidor Express
 const server = app.listen(PORT, '127.0.0.1', () => {

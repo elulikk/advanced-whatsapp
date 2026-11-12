@@ -223,6 +223,7 @@ PREF_DEFAULTS = {
     "status_receipts": True,     # al ver un estado, el contacto ve que lo viste
     "typing_indicator": True,    # mandar "escribiendo…" mientras escribo
     "auto_transcribe": True,     # transcribir solos los audios que llegan (y los que mando)
+    "keep_deleted": True,        # conservar el contenido de mensajes eliminados y las versiones anteriores de los editados
     "tags_palette_open": True,  # panel de tags abierto debajo de los filtros de la lista de chats
 }
 

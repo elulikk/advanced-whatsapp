@@ -22,10 +22,12 @@ from PySide6.QtGui import (
 from PySide6.QtCore import QUrl, QEvent, QPointF, QRectF
 
 from app.ui.contact_info_panel import format_phone
+from app import polls, quick_replies
 from app.db import (
     resolve_phone, get_messages, mark_chat_as_read, clear_chat_messages, get_message, get_reactions, set_reaction,
     get_pinned_messages, set_message_pinned, delete_messages, revoke_message_local, save_message, _preview_for,
-    MAX_PINNED, count_messages_since, get_or_create_chat, save_or_update_contact
+    MAX_PINNED, count_messages_since, get_or_create_chat, save_or_update_contact, set_message_starred, parse_poll,
+    get_chat
 )
 from app.ui.message_menu import (
     ReactionBar, MessageContextMenu, ForwardDialog, SHADOW, add_shadow
@@ -287,7 +289,37 @@ class MessageInputEdit(QTextEdit):
         has_txt = bool(self.toPlainText().strip())
         self.has_text_changed.emit(has_txt)
 
+    def _expand_shortcut(self, partial: bool = False) -> bool:
+        """Si lo escrito termina en /atajo, lo reemplaza por la plantilla (partial: completa con el primer atajo que coincida)."""
+        cur = self.textCursor()
+        if cur.hasSelection():
+            return False
+        before = self.toPlainText()[:cur.position()]
+        new = quick_replies.expand_trailing(before)
+        if new is None and partial:
+            sc = quick_replies.trailing_shortcut(before)
+            sug = quick_replies.suggestions(sc) if sc else []
+            if sug:
+                new = before[: len(before) - len(sc) - 1] + sug[0]["text"]
+        if new is None:
+            return False
+        cur.setPosition(0)
+        cur.setPosition(len(before), cur.MoveMode.KeepAnchor)
+        cur.insertText(new)
+        self.setTextCursor(cur)
+        return True
+
     def keyPressEvent(self, event: QKeyEvent):
+        if event.key() in (Qt.Key_Space, Qt.Key_Tab) and not (event.modifiers() & (Qt.ControlModifier | Qt.AltModifier)):
+            if self._expand_shortcut(partial=event.key() == Qt.Key_Tab):
+                if event.key() == Qt.Key_Space:
+                    self.insertPlainText(" ")
+                event.accept()
+                return
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter) and not (event.modifiers() & Qt.ShiftModifier):
+            if self._expand_shortcut():   # Enter sobre un /atajo lo expande sin enviar: se revisa antes de mandar
+                event.accept()
+                return
         if event.key() in (Qt.Key_Return, Qt.Key_Enter):
             if event.modifiers() & Qt.ShiftModifier:
                 super().keyPressEvent(event)
@@ -1272,6 +1304,9 @@ class ChatViewPanel(QWidget):
                     request_media(msg)
             elif action == "transcribe":
                 request_transcript(msg)
+            elif action in ("original", "history"):
+                from app.ui.extras_dialogs import OriginalDialog
+                OriginalDialog(msg, "revoked" if action == "original" else "edits", self).exec()
             elif action == "summarize":
                 self._toggle_summary(msg)
             elif action == "resummarize":
@@ -1693,6 +1728,11 @@ class ChatViewPanel(QWidget):
                 ct_txt = raw_text or "Contacto compartido"
                 media_html = panel(f'👤 <b>{html.escape(ct_txt)}</b>{self._contact_actions_html(msg)}')
 
+            elif media_type == "poll":
+                poll = parse_poll(msg)
+                if poll:
+                    media_html = panel(polls.poll_html(poll, C["accent"], C["text_2"]))
+
             if transcript_html:
                 media_html += transcript_html
 
@@ -1703,16 +1743,21 @@ class ChatViewPanel(QWidget):
                         '&nbsp;') if msg.get("pinned_at") else ""
             ticks = self._ticks_html(msg.get("status", "sent")) if from_me else ""
             summary_link = self._summary_link(msg, mid in self._summary_hidden)
-            edited_mark = (f'<span style="{meta_style} font-style: italic;">Editado&nbsp;</span>'
+            edited_mark = (f'<a href="advancedwhatsapp://history/{mid}" title="Ver versiones anteriores" '
+                           f'style="{meta_style} font-style: italic; text-decoration: none;">Editado&nbsp;</a>'
                            if msg.get("edited") and media_type != "revoked" else "")
-            meta = (f'{summary_link}{self._reply_forward_links(msg)}{self._react_link(mid)}{pin_mark}{edited_mark}'
+            star_mark = f'<span style="{meta_style}">★&nbsp;</span>' if msg.get("starred_at") else ""
+            meta = (f'{summary_link}{self._reply_forward_links(msg)}{self._react_link(mid)}{pin_mark}{star_mark}{edited_mark}'
                     f'<span style="{meta_style}">{hora}</span>{ticks}')
 
-            if media_type == "audio" or media_type == "sticker" or (media_type in ["location", "contact"] and media_html):
+            if media_type == "audio" or media_type == "sticker" or (media_type in ["location", "contact", "poll"] and media_html):
                 content_text = ""
             elif media_type == "revoked":
                 revoked_txt = "Eliminaste este mensaje" if from_me else "Este mensaje fue eliminado"
                 content_text = f'<span style="color: {C["text_2"]}; font-style: italic;">🚫 {revoked_txt}</span>'
+                if msg.get("revoked_orig"):
+                    content_text += (f' <a href="advancedwhatsapp://original/{msg["id"]}" style="color: {C["link"]};">'
+                                     f'Ver original</a>')
             else:
                 content_text = self._linkify(raw_text)
 
@@ -2027,6 +2072,7 @@ class ChatViewPanel(QWidget):
                             not message_summary.is_pending(msg["id"])))
         actions += [
             ("pin", "pin", "Desfijar" if pinned else "Fijar", not revoked),
+            ("star", "star", "Quitar destacado" if msg.get("starred_at") else "Destacar", not revoked),
             (None, "", "", True),
             ("select", "select", "Seleccionar", True),
             (None, "", "", True),
@@ -2054,6 +2100,9 @@ class ChatViewPanel(QWidget):
             self._toggle_summary(msg)
         elif key == "pin":
             self._toggle_pin(msg)
+        elif key == "star":
+            set_message_starred(msg["id"], not msg.get("starred_at"))
+            self.refresh_messages(scroll_to_bottom=False)
         elif key == "select":
             self._enter_select_mode(msg["id"])
         elif key == "delete":
@@ -2356,6 +2405,11 @@ class ChatViewPanel(QWidget):
         act_psych = menu.addAction(icon("analysis"), "Análisis psicológico…")
         act_edit = menu.addAction(icon("user"), "Editar / guardar contacto…")
         menu.addSeparator()
+        act_poll = menu.addAction(icon("list"), "Crear encuesta…")
+        act_starred = menu.addAction(icon("star"), "Mensajes destacados…")
+        act_tpl = menu.addAction(icon("edit"), "Plantillas y atajos…")
+        act_many = menu.addAction(icon("forward"), "Enviar a varios…")
+        menu.addSeparator()
         act_clear = menu.addAction(icon("eraser", C["danger"], active_color=C["danger"]), "Vaciar chat…")
         act = menu.exec(menu_below(menu, self.btn_options))
         if act == act_info:
@@ -2366,8 +2420,58 @@ class ChatViewPanel(QWidget):
             self._open_psych_analysis()
         elif act == act_edit:
             self._open_edit_contact_dialog()
+        elif act == act_poll:
+            self._create_poll()
+        elif act == act_starred:
+            self.open_starred()
+        elif act == act_tpl:
+            from app.ui.extras_dialogs import TemplatesDialog
+            TemplatesDialog(self).exec()
+        elif act == act_many:
+            from app.ui.extras_dialogs import SendManyDialog
+            SendManyDialog(self.gateway, self).exec()
         elif act == act_clear:
             self._clear_current_chat()
+
+    def _create_poll(self):
+        from app.ui.extras_dialogs import PollDialog
+        if not self.current_chat:
+            return
+        dlg = PollDialog(self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        name, options, multi = dlg.values()
+        res = self.gateway.send_poll(self.current_chat["jid"], name, options, multi)
+        if not res.get("success"):
+            QMessageBox.warning(self, "Encuesta", res.get("error") or "No se pudo enviar la encuesta.")
+
+    def open_starred(self):
+        """Lista de destacados de todos los chats; un doble clic va al mensaje."""
+        from app.ui.extras_dialogs import StarredDialog
+        dlg = StarredDialog(self)
+        dlg.open_chat.connect(lambda jid, mid: (dlg.accept(), self._goto_message(jid, mid)))
+        dlg.exec()
+
+    def _goto_message(self, chat_jid: str, msg_id: str):
+        chat = get_chat(chat_jid)
+        if not chat:
+            return
+        if not self.current_chat or self.current_chat.get("jid") != chat_jid:
+            self.chat_open_requested.emit(chat)
+            QTimer.singleShot(300, lambda: self.show_message(msg_id))
+        else:
+            self.show_message(msg_id)
+
+    def show_message(self, msg_id: str):
+        """Desplaza el chat abierto hasta un mensaje (amplía el historial cargado si hace falta)."""
+        msg = get_message(msg_id)
+        if not msg or not self.current_chat or msg["chat_jid"] != self.current_chat.get("jid"):
+            return
+        if msg_id not in {mid for _, mid in self._msg_frames}:
+            self._messages_limit = max(self._messages_limit, count_messages_since(msg["chat_jid"], msg.get("timestamp", 0)) + 20)
+            self.refresh_messages(scroll_to_bottom=False)
+        self._pending_restore = None
+        self.txt_messages.scrollToAnchor(f"m_{msg_id}")
 
     def _choose_attachment(self):
         files, _ = QFileDialog.getOpenFileNames(
@@ -2553,21 +2657,25 @@ class ChatViewPanel(QWidget):
         from app.ui.scheduled_messages import ScheduleTimeDialog
         if not self.current_chat:
             return
-        dlg = ScheduleTimeDialog(self._schedule_at, parent=self)
+        dlg = ScheduleTimeDialog(self._schedule_at, repeat=getattr(self, "_schedule_repeat", None), parent=self)
         accepted = dlg.exec() == QDialog.Accepted
         at = dlg.values()[0]
+        dlg_repeat = dlg.repeat()
         dlg.deleteLater()
         if not accepted:
             return
         if at <= time.time():
             QMessageBox.warning(self, "Fecha pasada", "Elegí una fecha y hora futuras.")
             return
+        self._schedule_repeat = dlg_repeat
         self._set_schedule(at)
         if self.input_text.isVisible():
             self.input_text.setFocus()
 
     def _set_schedule(self, at):
         self._schedule_at = at
+        if not at:
+            self._schedule_repeat = None
         self._update_schedule_bar()
         self._update_action_button()
 
@@ -2580,7 +2688,10 @@ class ChatViewPanel(QWidget):
     def _schedule_kwargs(self, at, quoted_text, quoted_sender) -> dict:
         if not at:
             return {}
-        return {"at": at, "chat_name": self._display_name(), "quoted_text": quoted_text, "quoted_sender": quoted_sender}
+        kw = {"at": at, "chat_name": self._display_name(), "quoted_text": quoted_text, "quoted_sender": quoted_sender}
+        if getattr(self, "_schedule_repeat", None):
+            kw["repeat"] = self._schedule_repeat
+        return kw
 
     def _on_scheduled(self, at: int):
         from app.ui.scheduled_messages import when_text
@@ -2596,7 +2707,9 @@ class ChatViewPanel(QWidget):
         for w in (self.lbl_schedule_icon, self.lbl_schedule, self.btn_schedule_clear):
             w.setVisible(bool(at))
         if at:
-            self.lbl_schedule.setText(f"Lo próximo que mandes sale: {when_text(at)}")
+            from app.recurrence import describe_repeat
+            rep = describe_repeat(getattr(self, "_schedule_repeat", None))
+            self.lbl_schedule.setText(f"Lo próximo que mandes sale: {when_text(at)}" + (f" · {rep}" if rep else ""))
         self.btn_schedule_list.setVisible(count > 0)
         self.btn_schedule_list.setText(f"{count} programado{'s' if count != 1 else ''} en este chat")
         self.schedule_bar.setVisible(bool(at) or count > 0)

@@ -245,6 +245,8 @@ class MainWindow(QMainWindow):
         self.settings_panel.font_scale_changed.connect(self.chat_view_panel.set_font_scale)
         self.chat_view_panel.font_scale_changed.connect(self.settings_panel.set_font_scale_silently)
         self.settings_panel.test_notification_requested.connect(self._test_notification)
+        self.settings_panel.starred_requested.connect(self.chat_view_panel.open_starred)
+        signals.poll_changed.connect(lambda data: self.chat_view_panel._on_media_event(data.get("id")))
 
         # Conexiones internas de Paneles
         self.chat_list_panel.chat_selected.connect(self._on_chat_selected)
