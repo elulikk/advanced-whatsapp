@@ -84,7 +84,7 @@ object Actions {
     fun markRead(jid: String) {
         val ids = Db.markChatRead(jid)
         com.advancedwhatsapp.app.notify.Notifier.cancel(jid)   // leído: que la notificación (y el globo del ícono) baje
-        if (ids.isEmpty() || !Prefs.readReceipts) return
+        if (ids.isEmpty() || !Prefs.readReceipts || Organization.isSilentRead(jid)) return   // lectura invisible: ni global ni por chat
         // Los leídos se reintentan solos en la siguiente apertura si no hay conexión
         runCatching { GatewayClient.post("/read", JSONObject().put("to", jid).put("messages", JSONArray(ids))) }
     }
