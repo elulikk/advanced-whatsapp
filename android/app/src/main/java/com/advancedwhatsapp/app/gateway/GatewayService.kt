@@ -60,6 +60,7 @@ class GatewayService : Service() {
         bindNode()
         applyWakeLock()
         scope.launch { watchdog() }
+        scope.launch { backgroundTasks() }
         scope.launch {
             AppState.connection.collectLatest { c ->
                 getSystemService(NotificationManager::class.java)
@@ -121,6 +122,16 @@ class GatewayService : Service() {
                 }
             }
             delay(if (AppState.connection.value.status == "connected") 30_000 else 4_000)
+        }
+    }
+
+    /** Cada minuto: sincroniza con la PC (si está activada) y hace la copia automática cuando toca. */
+    private suspend fun backgroundTasks() {
+        delay(45_000)
+        while (true) {
+            runCatching { com.advancedwhatsapp.app.data.Sync.tick() }
+            runCatching { com.advancedwhatsapp.app.data.Backup.autoTick() }
+            delay(60_000)
         }
     }
 

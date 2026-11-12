@@ -145,3 +145,82 @@ equivalente de `webhook_server.py` es `gateway/WebhookServer.kt` y el de `db.py`
 - **Envío**: `POST /send` con `sticker_path` (webp) y, si es animado, `sticker_animated: true`. Se copia a `media/enviados/` antes de enviar.
 - **Importación**: archivos/carpetas/.wastickers, historial de chats (baja con `/media/download` los que faltan) y, en Android, las carpetas
   de WhatsApp (`Android/media/com.whatsapp/...`) con el selector de carpetas (SAF).
+
+## Copias y sincronización
+
+Los datos propios de la app (los que WhatsApp no guarda: tags, chats bloqueados, nombres y notas de contactos, stickers...) se
+manejan como **secciones**: cada una es un mapa `clave -> valor` (valores JSON simples, sin decimales). Código: PC
+`app/backup.py` (motor), `app/backup_sections.py` (secciones propias), `app/awcrypto.py`, `app/sync.py`, `app/secret_store.py`,
+`app/ui/backup_panel.py`; Android `data/Backup.kt`, `BackupSections.kt`, `AwCrypto.kt`, `Sync.kt`, `SecretStore.kt`, `ui/BackupUi.kt`.
+Ninguna toca el gateway: usan `/send`, `/delete`, `/media/download` y `/message-schedule` tal cual.
+
+### Contenedor cifrado (`.awbackup` y documentos de sincronización)
+
+```
+encabezado 34 B: "AWBK" | versión=1 | kdf=1 (PBKDF2-HMAC-SHA256) | iteraciones u32 BE | sal 16 | prefijo de nonce 8
+trozos (1 MiB de texto plano): largo u32 BE del cifrado (con etiqueta de 16 B) | AES-256-GCM
+```
+
+Clave = PBKDF2-HMAC-SHA256(contraseña UTF-8, sal, iteraciones) de 32 bytes (210 000 iteraciones al crear; se aceptan 1 000 a 5 000 000).
+Nonce del trozo `i` = prefijo + `i` (u32 BE). AAD = encabezado + 1 byte (1 si es el último trozo): no se puede cortar ni reordenar.
+Contraseña incorrecta y archivo dañado dan el mismo error (GCM no los distingue). El vector de prueba (iteraciones 1000, sal
+00..0f, nonce 10..17) está en `tests/test_backup.py` y en `android/.../BackupFormatTest.kt`: si uno cambia, fallan los dos.
+
+El contenido descifrado es un zip:
+
+| Entrada | Contenido |
+|---|---|
+| `manifest.json` | `{format:"awbackup", version:1, kind:"backup" o "sync", created_at (ms), device:{id, platform:"pc" o "android", app_version}, sections:{nombre:{count, sync}}, has_db}` |
+| `sections/<nombre>.json` | `{"items": {clave: {"v": valor, "t": ms}` o `{"t": ms, "d": 1}}}` (`d` = borrado/lápida) |
+| `files/<sección>/<resto>` | archivos de la sección (p. ej. `files/stickers/<id>.webp`); los valida `import_file` de cada sección |
+| `db/magsapp.db` | solo en copias: la base SQLite (copia consistente) |
+
+### Resolución de conflictos (último cambio gana, por clave)
+
+No se registra cada edición: en cada lectura (`local_items`) se compara el valor actual de la clave con el último visto (tabla
+`sync_state(section, key, h, t, d)` en la base) y, si cambió, queda con `t = ahora`; una clave que desapareció pasa a lápida
+(se conserva 90 días). Lo que ya existía antes de la primera lectura tiene `t = 1`, así que cualquier cambio real le gana.
+Gana el `t` más grande; en empate, el valor con hash SHA-1 canónico más grande (un valor le gana a un borrado). El JSON canónico
+(`json.dumps(sort_keys, separators=(",",":"), ensure_ascii=False)`) es igual en Python y en Kotlin. Lo que se aplica desde afuera
+guarda el `t` remoto, así no "rebota". Si una clave no se puede aplicar todavía (el chat o el archivo del sticker aún no existen),
+`apply` no la devuelve y se reintenta con el próximo documento.
+
+### Cómo sumar una sección nueva (plantillas, carpetas inteligentes, chats ocultos...)
+
+1. PC: en `app/backup_sections.py` (o en tu módulo) definí `collect() -> {clave: valor}` y `apply({clave: valor o None}) -> {claves aplicadas}`
+   y registrá `register_section(Section("nombre", "Etiqueta", collect, apply, ...))`. Banderas: `sync=False` (solo copias), `secret=True` (solo
+   si el usuario elige incluir claves), `platforms=("pc",)` (no se restaura en la otra app), `files`/`import_file` para archivos,
+   `order` para el orden de aplicación. Claves por jid o por nombre, nunca por ids autoincrementales.
+2. Android: lo mismo en `BackupSections.registerAll()`. Si todavía no está, **no se pierde**: Android guarda las secciones que no
+   conoce (`sync_opaque.json`, p. ej. los `tags` de la PC) y las reenvía, así un backup PC -> Android -> PC conserva todo.
+3. Un test que arme dos estados y los mezcle con `apply_remote` (ver `tests/test_backup.py`).
+
+Secciones actuales: `chat_names`, `chat_notes`, `tags` (solo PC; Android las conserva), `chat_locks` (incluye el hash PBKDF2 de la
+contraseña, no la contraseña), `stickers` (+ archivos), `prefs` (auto_transcribe, status_receipts, notify_groups, use_profile),
+`config` (ajustes propios de cada plataforma, solo copias), `secrets` (claves de IA, solo si se elige), `scheduled_messages` (solo copias).
+
+### Copias
+
+- Crear: `create_backup(path, password, include_secrets, include_db)` -> zip `kind:"backup"` cifrado, escrito a `.tmp` y renombrado. Las claves
+  de API **no** entran salvo `include_secrets`.
+- Restaurar: `restore_backup(path, password, mode)`. `merge` agrega chats/contactos/mensajes/reacciones que faltan (`INSERT OR IGNORE`
+  sobre las columnas en común, así sirve entre PC y Android; `media_path` que no existe acá se vacía y el archivo se baja al abrirlo) y
+  mezcla las secciones por clave; `replace` vacía esas tablas y deja cada sección igual a la copia.
+- Automática: PC `[BACKUP]` de `config.ini` (carpeta, cada N días, últimas N con rotación de `AdvancedWhatsapp-auto-*.awbackup`); la
+  contraseña se guarda con DPAPI (`~/.magsapp/secretos.json`). Android: Descargas/AdvancedWhatsapp/Copias (MediaStore), contraseña con Android Keystore.
+
+### Sincronización PC <-> Android por «Mi número»
+
+Sin servidores propios ni misma red: cada app manda a su chat «Mi número» un documento `awsync-<dispositivo>-<ts>.awsync` (contenedor
+cifrado con la **clave de sincronización**, la misma en ambas) con las secciones `sync=True`. La otra lo reconoce por el nombre en
+el webhook (`sync_received` / `Sync.handleIncoming`), lo baja con `/media/download`, lo mezcla y **no lo guarda como mensaje**
+(`db.is_sync_doc` filtra `save_message` y el historial). Solo cuenta si viene del chat propio y de otro dispositivo (`manifest.device.id`).
+Cada envío borra el anterior (`/delete`): es una foto completa, solo importa la última. Se envía cuando cambió la huella
+(`digest` de secciones+claves+`t`); al recibir, si no había nada local más nuevo, se actualiza la huella para no contestar (sin ping-pong).
+Los `.webp` de stickers viajan solo la primera vez (hasta 20 MB por documento) o con «Sincronizar ahora» (completa).
+
+### Enviar archivos PC -> celular
+
+«Enviar al celular» (Configuración > Copias y sincronización, o menú de la bandeja): arrastrar o elegir archivos; `sync.send_files_to_phone`
+los manda como documentos a «Mi número». En Android, las burbujas de documentos de ese chat llevan el botón «Guardar en Descargas»
+(Descargas/AdvancedWhatsapp).

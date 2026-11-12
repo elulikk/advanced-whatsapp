@@ -113,6 +113,31 @@ object ChatLock {
         save()
     }
 
+    /** Para copias y sincronización: chats bloqueados y el hash de la contraseña (hash, sal, iteraciones), si hay. */
+    fun syncExport(): Pair<Set<String>, Triple<String, String, Int>?> {
+        ensureLoaded()
+        val hash = Prefs.getString(K_HASH)
+        val pw = if (hash.isEmpty()) null else Triple(hash, Prefs.getString(K_SALT), Prefs.getString(K_ITERS).toIntOrNull() ?: ITERATIONS)
+        return locked to pw
+    }
+
+    /** Aplica lo que vino de otro dispositivo. `pw` = nueva contraseña (hash, sal, iteraciones); `removePw` la quita. */
+    fun syncApply(lock: Set<String>, unlock: Set<String>, pw: Triple<String, String, Int>?, removePw: Boolean) {
+        ensureLoaded()
+        if (removePw) {
+            listOf(K_HASH, K_SALT, K_ITERS).forEach { Prefs.putString(it, "") }
+            hasPw = false
+        } else if (pw != null) {
+            Prefs.putString(K_HASH, pw.first)
+            Prefs.putString(K_SALT, pw.second)
+            Prefs.putString(K_ITERS, pw.third.toString())
+            hasPw = true
+        }
+        locked = (locked + lock) - unlock
+        open = open - unlock
+        save()
+    }
+
     fun markOpen(jid: String) { if (jid in locked) open = open + jid }
     fun relock(jid: String) { open = open - jid }
     fun lockAll() { open = emptySet() }

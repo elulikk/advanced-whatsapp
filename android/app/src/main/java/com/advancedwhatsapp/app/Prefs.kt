@@ -61,6 +61,24 @@ object Prefs {
         get() = p.getBoolean("use_profile", true)
         set(v) = p.edit().putBoolean("use_profile", v).apply()
 
+    /** Para las copias: ajustes que no son secretos (sin token, claves de IA ni contraseña de bloqueo), con tipos simples. */
+    fun exportNonSecret(): Map<String, Any> = p.all.filter { (k, v) ->
+        k != "token" && !k.startsWith("key_") && !k.startsWith("lock_") && !k.startsWith("secret_") && k != "device_id" &&
+            !k.startsWith("bk_") && !k.startsWith("sync_") && (v is Boolean || v is String || v is Int || v is Long)
+    }.mapValues { (_, v) -> if (v is Int) v.toLong() else v!! }
+
+    fun setRaw(k: String, v: Any) {
+        val e = p.edit()
+        when (v) {
+            is Boolean -> e.putBoolean(k, v)
+            is Long -> if (p.all[k] is Int) e.putInt(k, v.toInt()) else e.putLong(k, v)
+            is String -> e.putString(k, v)
+        }
+        e.apply()
+    }
+
+    fun remove(k: String) = p.edit().remove(k).apply()
+
     fun getString(k: String, d: String = ""): String = p.getString(k, d) ?: d
     fun putString(k: String, v: String) = p.edit().putString(k, v).apply()
 }

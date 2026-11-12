@@ -8,7 +8,7 @@ from PySide6.QtCore import QObject, Signal
 from app.config import WEBHOOK_PORT, TOKEN_HEADER, get_gateway_token
 from app.db import (
     save_message, save_contact, save_sync_batch, update_chat_avatar, update_message_status, set_reaction,
-    message_exists, revoke_message_local, apply_message_edit,
+    message_exists, revoke_message_local, apply_message_edit, is_sync_doc,
     mark_messages_read_elsewhere, mark_chat_read_elsewhere, mark_chat_unread_elsewhere
 )
 
@@ -26,6 +26,7 @@ class WebhookSignals(QObject):
     app_activate = Signal(str)          # otra instancia (o una notificación) pide abrir/mostrar algo: advancedwhatsapp://...
     read_elsewhere = Signal(list)       # [chat_jid]: chats que leíste (o marcaste no leídos) en el celular
     scheduled_changed = Signal(dict)    # {id, state: sent|failed|expired, to, chat_name, type, text, error}
+    sync_received = Signal(dict)        # llegó un documento de sincronización del celular (no se guarda como mensaje)
 
 
 signals = WebhookSignals()
@@ -89,6 +90,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 quoted_text = data.get("quoted_text")
                 quoted_sender = data.get("quoted_sender")
                 timestamp = data.get("timestamp") or int(time.time())   # NOT NULL en la base
+
+                if chat_jid and msg_id and is_sync_doc(media_type, text):
+                    signals.sync_received.emit(dict(data))
+                    self._ok()
+                    return
 
                 if chat_jid and msg_id:
                     # Guardar contacto solo si no es el propio usuario

@@ -279,6 +279,8 @@ class MainWindow(QMainWindow):
         signals.app_activate.connect(self.handle_uri)
         signals.read_elsewhere.connect(self._on_read_elsewhere)
         signals.scheduled_changed.connect(self._on_scheduled_changed)
+        signals.sync_received.connect(self.settings_panel.backup_tab.on_sync_received)
+        self.settings_panel.backup_tab.sync_applied.connect(self._on_sync_applied)
 
     def _check_initial_connection(self):
         st = self.gateway.get_status()
@@ -557,6 +559,14 @@ class MainWindow(QMainWindow):
         dlg.deleteLater()
         self.chat_view_panel.refresh_scheduled()
 
+    def _on_sync_applied(self, _n: int):
+        """Entraron cambios desde el celular (tags, bloqueos, nombres...): repintar la lista de chats."""
+        self.chat_list_panel.reload_chats(select_jid=self._current_jid_open())
+
+    def _send_to_phone(self):
+        self.show_from_background()
+        self.settings_panel.backup_tab.open_send_dialog()
+
     def _on_scheduled_changed(self, data: dict):
         self.chat_view_panel.refresh_scheduled()
         if data.get("state") not in ("failed", "expired"):
@@ -647,6 +657,7 @@ class MainWindow(QMainWindow):
         menu.addAction("Abrir Advanced WhatsApp", self.show_from_background)
         menu.addAction("Estados", lambda: (self.show_from_background(), self.nav_rail.set_tab("status")))
         menu.addAction("Mensajes programados", lambda: (self.show_from_background(), self._open_scheduled()))
+        menu.addAction("Enviar al celular…", self._send_to_phone)
         menu.addSeparator()
         self._act_notify = menu.addAction("Notificaciones activadas")
         self._act_notify.setCheckable(True)
