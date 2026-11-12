@@ -57,6 +57,32 @@ object Prefs {
         get() = p.getBoolean("auto_transcribe", true)
         set(v) = p.edit().putBoolean("auto_transcribe", v).apply()
 
+    /** Al terminar una nota de voz suena la siguiente del chat (si es otro audio ya bajado). */
+    var audioAutoplay: Boolean
+        get() = p.getBoolean("audio_autoplay", true)
+        set(v) = p.edit().putBoolean("audio_autoplay", v).apply()
+
+    /** Velocidad de los audios (1, 1.5 o 2): se recuerda entre notas y entre sesiones. */
+    var audioSpeed: Float
+        get() = p.getFloat("audio_speed", 1f)
+        set(v) = p.edit().putFloat("audio_speed", v).apply()
+
+    /** Tarjeta con título, descripción e imagen de los links. */
+    var linkPreviews: Boolean
+        get() = p.getBoolean("link_previews", true)
+        set(v) = p.edit().putBoolean("link_previews", v).apply()
+
+    /** Limpieza automática de multimedia bajada: más vieja que X días (0 = apagado) y/o tope en GB (0 = sin tope). */
+    var mediaAutoDays: Int
+        get() = p.getInt("media_auto_days", 0)
+        set(v) = p.edit().putInt("media_auto_days", v).apply()
+    var mediaAutoGb: Float
+        get() = p.getFloat("media_auto_gb", 0f)
+        set(v) = p.edit().putFloat("media_auto_gb", v).apply()
+    var mediaAutoLast: Long
+        get() = p.getLong("media_auto_last", 0L)
+        set(v) = p.edit().putLong("media_auto_last", v).apply()
+
     var useProfileInReplies: Boolean
         get() = p.getBoolean("use_profile", true)
         set(v) = p.edit().putBoolean("use_profile", v).apply()

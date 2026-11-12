@@ -146,6 +146,7 @@ fun MessageBubble(
                 Text("🚫 Mensaje eliminado", color = C.text2, fontStyle = FontStyle.Italic, fontSize = 14.sp)
             } else if (caption.isNotEmpty()) {
                 Text(linkify(caption), color = C.text, fontSize = 15.sp)
+                if (m.mediaType == "text") LinkCard(caption)
             }
             Row(Modifier.align(Alignment.End), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 if (MessageSummary.canSummarize(m)) {
@@ -315,10 +316,7 @@ private fun animatedImageLoader(): ImageLoader {
 private fun ImageContent(m: Message, busy: Boolean, onOpen: () -> Unit) {
     val file = m.mediaPath?.let { File(it) }?.takeIf { it.exists() }
     if (file != null) {
-        AsyncImage(
-            model = file, contentDescription = "Imagen", contentScale = ContentScale.FillWidth,
-            modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp).padding(bottom = 3.dp).clickable(onClick = onOpen),
-        )
+        ThumbImage(file.path, Modifier.fillMaxWidth().heightIn(max = 320.dp).padding(bottom = 3.dp), onOpen)
     } else {
         Row(
             Modifier.fillMaxWidth().height(90.dp).background(C.raised, RoundedCornerShape(6.dp)).clickable(enabled = !busy, onClick = onOpen).padding(10.dp),

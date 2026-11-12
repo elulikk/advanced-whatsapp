@@ -76,6 +76,12 @@ object Db {
     private lateinit var helper: SQLiteOpenHelper
     private val db: SQLiteDatabase get() = helper.writableDatabase
 
+    /** Acceso directo para las consultas propias de otros módulos (estadísticas, limpieza, audios en cadena). */
+    val handle: SQLiteDatabase get() = db
+
+    /** Avisa a las pantallas que algo cambió fuera de Db (p. ej. la limpieza de multimedia). */
+    fun announceChange(jid: String = "") = notifyChange(jid)
+
     /** Avisa a las pantallas que algo cambió (jid del chat, o "" si cambió más de uno). */
     val changes = MutableSharedFlow<String>(extraBufferCapacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
 

@@ -19,6 +19,10 @@ import com.advancedwhatsapp.app.AppState
 import com.advancedwhatsapp.app.Prefs
 import com.advancedwhatsapp.app.R
 import com.advancedwhatsapp.app.data.Db
+import com.advancedwhatsapp.app.data.LinkPreviews
+import com.advancedwhatsapp.app.data.MediaCleanup
+import com.advancedwhatsapp.app.data.Thumbs
+import com.advancedwhatsapp.app.widget.UnreadWidget
 import com.advancedwhatsapp.app.notify.Notifier
 import com.advancedwhatsapp.app.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
@@ -60,6 +64,15 @@ class GatewayService : Service() {
         bindNode()
         applyWakeLock()
         scope.launch { watchdog() }
+        // Widget «Sin leer»: se actualiza cuando se calma el flujo de cambios (el delay en collectLatest hace de debounce)
+        scope.launch { Db.changes.collectLatest { delay(1500); UnreadWidget.refresh(applicationContext) } }
+        // Mantenimiento: limpieza automática de multimedia (si está activada) y poda de miniaturas y previews viejos
+        scope.launch {
+            delay(60_000)
+            runCatching { MediaCleanup.runAutoIfDue() }
+            runCatching { Thumbs.prune() }
+            runCatching { LinkPreviews.prune() }
+        }
         scope.launch {
             AppState.connection.collectLatest { c ->
                 getSystemService(NotificationManager::class.java)
