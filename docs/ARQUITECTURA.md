@@ -130,6 +130,21 @@ descifra y escribe el archivo; la respuesta trae `media_path`.
 **Mensaje programado**: UI -> `POST /message-schedule` (copia o mueve el adjunto a `media/mensajes_programados/`) -> temporizador
 -> `runScheduledMessage` -> `sendWhatsApp` -> `scheduled` + `incoming (append)` a la app.
 
+## Mensajería extra (`gateway/extras.js`)
+
+Módulo del gateway (viaja junto a `server.js` en PC, instalador y APK). Datos en la carpeta de datos, escritura atómica.
+
+| Ruta | Descripción |
+|---|---|
+| `GET/POST /auto-reply`, `POST /auto-reply/mode` | Respuestas automáticas -> `respuestas_automaticas.json` (+ `_estado.json` con la última respuesta por contacto). Reglas `schedule` (días, franja) o `manual`; `exclude`/`only` por jid; `cooldown_hours` |
+| `POST /poll`, `POST /polls/get` | Crear encuesta (`{to, name, options, multiple}`); conteo por ids. Los votos se descifran en el gateway (`encuestas.json`) y se avisan por `POST /api/whatsapp/poll` |
+| `POST /send-many`, `GET /send-many`, `POST /send-many/cancel` | Un mismo `/send` a `targets:[{to, chat_name}]`, de a uno, con pausa `delay_min`..`delay_max` s. Cada envío llega a la app como `incoming (append)`; al terminar avisa `POST /api/whatsapp/bulk` |
+| `POST /message-schedule` y `/update` | Aceptan `repeat: {type: daily\|weekly\|monthly\|yearly, days?, every?}`: tras salir, el item vuelve a `pending` con la próxima fecha (`anchor_at` evita que el día se corra) |
+
+Eliminados y ediciones se conservan en la base de cada cliente: `messages.revoked_orig` (JSON del contenido) y la tabla
+`message_edits` (versiones anteriores), salvo que se apague el ajuste `keep_deleted`. Destacados: `messages.starred_at`;
+fijados: `pinned_at`; encuestas: `messages.poll_json` (opciones y votos tal como los manda el gateway).
+
 ## Android
 
 El mismo `gateway/server.js` corre dentro de la app con `nodejs-mobile` (`ADVANCEDWHATSAPP_DATA_DIR` apunta a la carpeta privada). El

@@ -51,7 +51,14 @@ data class Message(
     val summary: String?,
     val edited: Boolean,
     val reactions: List<String> = emptyList(),
+    val starredAt: Long = 0,          // destacado (epoch ms); 0 = no
+    val pinnedAt: Long = 0,           // fijado en el chat (epoch ms); 0 = no
+    val hasOriginal: Boolean = false, // eliminado por el remitente pero con el contenido original conservado
+    val pollJson: String? = null,     // encuesta con opciones y votos
 )
+
+/** Un mensaje destacado con el nombre de su chat. */
+data class StarredItem(val message: Message, val chatName: String)
 
 /** Datos del contacto que edita el usuario; se guardan solo en este teléfono y prevalecen sobre los de WhatsApp. */
 data class ContactInfo(val jid: String, val waName: String, val customName: String, val notes: String, val phone: String?)
@@ -148,8 +155,18 @@ object Db {
                 d.execSQL("CREATE INDEX idx_chats_tab ON chats(tab_id)")
             }
         }
+        ensureExtras(db)
         mergeLidDuplicates(db, null)
         recomputeUnread()
+    }
+
+    /** Columnas y tabla de la mensajería extra: destacados, fijados, eliminados conservados, ediciones y encuestas. */
+    private fun ensureExtras(d: SQLiteDatabase) {
+        for (col in listOf("starred_at INTEGER DEFAULT 0", "pinned_at INTEGER DEFAULT 0", "revoked_orig TEXT", "poll_json TEXT")) {
+            runCatching { d.execSQL("ALTER TABLE messages ADD COLUMN $col") }
+        }
+        d.execSQL("CREATE TABLE IF NOT EXISTS message_edits (message_id TEXT NOT NULL, text TEXT, edited_at INTEGER DEFAULT 0)")
+        d.execSQL("CREATE INDEX IF NOT EXISTS idx_message_edits_msg ON message_edits(message_id)")
     }
 
     private fun notifyChange(jid: String = "") {
@@ -180,6 +197,8 @@ object Db {
         mediaPath = str("media_path"), mediaRaw = str("media_raw"), quotedText = str("quoted_text"),
         quotedSender = str("quoted_sender"), timestamp = lng("timestamp"), status = str("status") ?: "sent",
         transcript = str("transcript"), summary = str("summary"), edited = lng("edited") != 0L,
+        starredAt = lng("starred_at"), pinnedAt = lng("pinned_at"), hasOriginal = !str("revoked_orig").isNullOrEmpty(),
+        pollJson = str("poll_json"),
     )
 
     /**
@@ -517,9 +536,12 @@ object Db {
         if (m.s("revoke_of") != null || m.s("edit_of") != null) {
             if (prev == null) return false
             if (m.s("revoke_of") != null) revokeIn(d, id)
-            else if (text.isNotEmpty()) d.update("messages", ContentValues().apply {
-                put("text", text); put("edited", 1); putNull("summary")
-            }, "id = ?", arrayOf(id))
+            else if (text.isNotEmpty()) {
+                recordEdit(d, id, text)
+                d.update("messages", ContentValues().apply {
+                    put("text", text); put("edited", 1); putNull("summary")
+                }, "id = ?", arrayOf(id))
+            }
             return true
         }
         if (text.isEmpty() && mediaType == "text" && m.s("media_path") == null && m.s("quoted_text") == null) return false
@@ -584,10 +606,26 @@ object Db {
         notifyChange()
     }
 
+    /** Antes de pisar el texto por una edición, guarda la versión anterior (si el ajuste está activo). */
+    private fun recordEdit(d: SQLiteDatabase, id: String, newText: String) {
+        if (!Extras.keepDeleted) return
+        val old = getMessageIn(d, id)?.text ?: return
+        if (old == newText) return
+        d.insert("message_edits", null, ContentValues().apply { put("message_id", id); put("text", old); put("edited_at", now()) })
+    }
+
     private fun revokeIn(d: SQLiteDatabase, id: String) {
+        if (Extras.keepDeleted) {
+            getMessageIn(d, id)?.takeIf { it.mediaType != "revoked" }?.let { m ->
+                val orig = JSONObject().put("media_type", m.mediaType).put("text", m.text).put("media_path", m.mediaPath)
+                    .put("media_raw", m.mediaRaw).put("quoted_text", m.quotedText).put("quoted_sender", m.quotedSender)
+                    .put("transcript", m.transcript)
+                d.update("messages", ContentValues().apply { put("revoked_orig", orig.toString()) }, "id = ?", arrayOf(id))
+            }
+        }
         d.update("messages", ContentValues().apply {
             put("text", ""); put("media_type", "revoked"); putNull("media_path"); putNull("media_raw")
-            putNull("quoted_text"); putNull("quoted_sender"); putNull("transcript"); putNull("summary")
+            putNull("quoted_text"); putNull("quoted_sender"); putNull("transcript"); putNull("summary"); put("pinned_at", 0)
         }, "id = ?", arrayOf(id))
         d.delete("reactions", "message_id = ?", arrayOf(id))
     }
@@ -601,11 +639,64 @@ object Db {
 
     fun applyEdit(id: String, text: String) {
         val chat = getMessage(id)?.chatJid ?: return
+        recordEdit(db, id, text.trim())
         db.update("messages", ContentValues().apply {
             put("text", text.trim()); put("edited", 1); putNull("summary")
         }, "id = ?", arrayOf(id))
         refreshPreviews(db, listOf(chat))
         notifyChange(chat)
+    }
+
+    // ─── Mensajería extra: destacados, fijados, versiones, eliminados conservados y encuestas ───
+
+    fun setStarred(id: String, on: Boolean) {
+        db.update("messages", ContentValues().apply { put("starred_at", if (on) System.currentTimeMillis() else 0L) }, "id = ?", arrayOf(id))
+        notifyChange(getMessage(id)?.chatJid ?: "")
+    }
+
+    /** Fija o desfija; en cada chat quedan como mucho 3 fijados (se suelta el más viejo). */
+    fun setMessagePinned(id: String, on: Boolean) {
+        val chat = getMessage(id)?.chatJid ?: return
+        db.update("messages", ContentValues().apply { put("pinned_at", if (on) System.currentTimeMillis() else 0L) }, "id = ?", arrayOf(id))
+        if (on) {
+            db.execSQL(
+                "UPDATE messages SET pinned_at = 0 WHERE chat_jid = ? AND pinned_at > 0 AND id NOT IN " +
+                    "(SELECT id FROM messages WHERE chat_jid = ? AND pinned_at > 0 ORDER BY pinned_at DESC LIMIT 3)",
+                arrayOf<Any?>(chat, chat),
+            )
+        }
+        notifyChange(chat)
+    }
+
+    /** Destacados de todos los chats, el último destacado primero; [search] filtra por texto, transcripción o chat. */
+    fun starredMessages(search: String): List<StarredItem> {
+        val term = search.trim().lowercase()
+        val like = "%$term%"
+        val sql = "SELECT m.*, COALESCE(NULLIF(c.custom_name, ''), c.name, m.chat_jid) AS chat_name " +
+            "FROM messages m LEFT JOIN chats c ON c.jid = m.chat_jid " +
+            "WHERE m.starred_at > 0 AND m.media_type != 'revoked' AND (? = '' OR LOWER(COALESCE(m.text, '')) LIKE ? " +
+            "OR LOWER(COALESCE(m.transcript, '')) LIKE ? OR LOWER(COALESCE(c.custom_name, c.name, '')) LIKE ?) " +
+            "ORDER BY m.starred_at DESC LIMIT 300"
+        return db.rawQuery(sql, arrayOf(term, like, like, like)).use { c ->
+            buildList { while (c.moveToNext()) add(StarredItem(c.toMessage(), c.str("chat_name").orEmpty())) }
+        }
+    }
+
+    /** Versiones anteriores de un mensaje editado (texto, momento del cambio), de la más vieja a la más nueva. */
+    fun editsOf(id: String): List<Pair<String, Long>> =
+        db.rawQuery("SELECT text, edited_at FROM message_edits WHERE message_id = ? ORDER BY rowid", arrayOf(id)).use { c ->
+            buildList { while (c.moveToNext()) add((c.getString(0) ?: "") to c.getLong(1)) }
+        }
+
+    /** Contenido original de un mensaje que el remitente eliminó, o null si no se conservó. */
+    fun revokedOriginal(id: String): JSONObject? =
+        db.rawQuery("SELECT revoked_orig FROM messages WHERE id = ?", arrayOf(id)).use { c ->
+            if (c.moveToFirst() && !c.isNull(0)) runCatching { JSONObject(c.getString(0)) }.getOrNull() else null
+        }
+
+    fun setPoll(id: String, json: String) {
+        db.update("messages", ContentValues().apply { put("poll_json", json) }, "id = ?", arrayOf(id))
+        notifyChange(getMessage(id)?.chatJid ?: "")
     }
 
     fun updateMessageStatus(id: String, status: String) {

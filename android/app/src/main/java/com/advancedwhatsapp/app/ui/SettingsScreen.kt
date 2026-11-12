@@ -57,7 +57,7 @@ import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(onBack: () -> Unit) {
+fun SettingsScreen(onBack: () -> Unit, onExtras: () -> Unit = {}) {
     val c = LocalContext.current
     val scope = rememberCoroutineScope()
     val conn by AppState.connection.collectAsStateWithLifecycle()
@@ -95,6 +95,13 @@ fun SettingsScreen(onBack: () -> Unit) {
             Toggle("Avisar de mensajes de grupos", notifyGroups) { notifyGroups = it; Prefs.notifyGroups = it }
             Toggle("Enviar confirmación de lectura (tildes azules)", receipts) { receipts = it; Prefs.readReceipts = it }
             Toggle("Al ver un estado, avisar al contacto que lo viste", statusReceipts) { statusReceipts = it; Prefs.statusReceipts = it }
+
+            Section("Mensajería")
+            Text(
+                "Respuestas automáticas, plantillas con /atajo, destacados, envío a varios y qué hacer con los mensajes eliminados o editados.",
+                color = C.text2, fontSize = 13.sp,
+            )
+            OutlinedButton(onClick = onExtras, modifier = Modifier.fillMaxWidth()) { Text("Mensajería extra") }
 
             Section("Chats bloqueados")
             Text(

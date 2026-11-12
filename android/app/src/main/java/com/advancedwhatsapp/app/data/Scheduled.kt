@@ -16,6 +16,7 @@ data class ScheduledItem(
     val sentAt: Long?,
     val state: String,         // pending, sending, sent, failed, expired o canceled
     val error: String?,
+    val repeat: String? = null, // «Todos los años», «Cada semana (lun, mié)»… o null si no se repite
 ) {
     val isActive get() = state == "pending" || state == "sending"
 }
@@ -29,7 +30,9 @@ object Scheduled {
             body.put("quoted_text", Db.preview(it.mediaType, it.text))
             body.put("quoted_sender", if (it.fromMe) "Yo" else it.senderName)
         }
+        Extras.nextRepeat?.let { body.put("repeat", it) }
         GatewayClient.post("/message-schedule", body)
+        Extras.nextRepeat = null
         AppState.scheduledChanged()
     }
 
@@ -70,6 +73,7 @@ object Scheduled {
         sentAt = m.optLong("sent_at").takeIf { it > 0 },
         state = m.optString("state"),
         error = m.text("error"),
+        repeat = Extras.describeRepeat(m.optJSONObject("repeat")),
     )
 
     private fun JSONObject.text(k: String): String? = if (isNull(k)) null else optString(k).ifEmpty { null }

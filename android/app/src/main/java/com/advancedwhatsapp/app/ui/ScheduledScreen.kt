@@ -231,6 +231,7 @@ private fun ScheduledRow(
                 Text(scheduleLabel(item.at), color = C.text, fontWeight = FontWeight.Medium, fontSize = 15.sp)
                 Text(label, color = color, fontSize = 12.sp, modifier = Modifier.padding(start = 8.dp))
             }
+            item.repeat?.let { Text("↻ $it", color = C.accent, fontSize = 12.sp) }
             Text(item.summary(showChat), color = C.text2, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
             if (item.error != null && item.state != "sent") Text(item.error, color = C.text3, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }

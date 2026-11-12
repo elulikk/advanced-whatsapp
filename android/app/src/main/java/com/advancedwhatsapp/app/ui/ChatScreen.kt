@@ -123,6 +123,7 @@ import com.advancedwhatsapp.app.data.Actions
 import com.advancedwhatsapp.app.data.Chat
 import com.advancedwhatsapp.app.data.Db
 import com.advancedwhatsapp.app.data.Downloads
+import com.advancedwhatsapp.app.data.Extras
 import com.advancedwhatsapp.app.data.Message
 import com.advancedwhatsapp.app.data.Photos
 import com.advancedwhatsapp.app.data.Scheduled
@@ -139,7 +140,7 @@ private const val PAGE = 60
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onScheduled: () -> Unit) {
+fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onScheduled: () -> Unit, onExtras: (String) -> Unit = {}) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val owner = LocalLifecycleOwner.current
@@ -158,6 +159,7 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
     // Con hora elegida, lo próximo que se mande queda programado en vez de salir ya
     var scheduleAt by rememberSaveable { mutableStateOf<Long?>(null) }
     var scheduledCount by remember { mutableIntStateOf(0) }
+    var askRepeat by remember { mutableStateOf(false) }   // tras elegir la hora: ¿se repite?
     var viewerImage by remember { mutableStateOf<String?>(null) }
     val busyIds = remember { mutableStateOf(setOf<String>()) }
     // Transcripciones y síntesis desplegadas: por mensaje, mientras dure esta pantalla (la lista recicla las burbujas)
@@ -218,7 +220,12 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
     BackHandler(enabled = emojiOpen) { emojiOpen = false }
 
     fun chooseScheduleTime() = pickDateTime(context, scheduleAt) { at ->
-        if (at > nowSec()) scheduleAt = at else notifyError("Elegí una fecha y hora futuras.")
+        if (at > nowSec()) {
+            scheduleAt = at
+            askRepeat = true
+        } else {
+            notifyError("Elegí una fecha y hora futuras.")
+        }
     }
 
     /** La hora elegida ya pasó: se avisa en vez de mandar el mensaje a destiempo. */
@@ -488,6 +495,7 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
                 actions = {
                     // El análisis estudia a una persona: no aplica a un grupo
                     if (chat?.isGroup == false) IconButton(onClick = onAnalysis) { Icon(Icons.Default.Psychology, "Análisis") }
+                    ChatExtrasMenu(jid, onNav = onExtras, onMessage = { notifyError(it) })
                 },
             )
         },
@@ -505,6 +513,14 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
             return@Scaffold
         }
         Column(Modifier.padding(pad).fillMaxSize().background(C.chatBg)) {
+            PinBar(
+                pins = remember(messages) { messages.filter { it.pinnedAt > 0 }.sortedByDescending { it.pinnedAt } },
+                onGo = { pin ->
+                    val idx = messages.asReversed().indexOfFirst { it.id == pin.id }
+                    if (idx >= 0) scope.launch { listState.animateScrollToItem(idx) }
+                },
+                onUnpin = { pin -> scope.launch(Dispatchers.IO) { Extras.pin(pin, false) } },
+            )
             LazyColumn(
                 state = listState, reverseLayout = true,
                 modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp),
@@ -602,9 +618,19 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
                     IconButton(onClick = { dismissClipImage() }) { Icon(Icons.Default.Close, "Ignorar") }
                 }
             }
-            ScheduleBar(scheduleAt, scheduledCount, onChange = { chooseScheduleTime() }, onClear = { scheduleAt = null }, onOpenList = onScheduled)
+            ScheduleBar(scheduleAt, scheduledCount, onChange = { chooseScheduleTime() }, onClear = { scheduleAt = null; Extras.nextRepeat = null }, onOpenList = onScheduled)
+            TemplateChips(draft) { t ->
+                val full = Extras.applyTemplate(draft, t)
+                draftState.value = TextFieldValue(full, TextRange(full.length))
+            }
             Composer(
-                draft = draftState.value, onDraft = { draftState.value = it }, scope = scope, scheduled = scheduleAt != null,
+                draft = draftState.value,
+                onDraft = { v ->
+                    // «/atajo» + espacio: se reemplaza por la plantilla guardada
+                    val expanded = if (v.selection.collapsed && v.selection.end == v.text.length) Extras.expandAfterSpace(v.text) else null
+                    draftState.value = if (expanded != null) TextFieldValue(expanded, TextRange(expanded.length)) else v
+                },
+                scope = scope, scheduled = scheduleAt != null,
                 emojiOpen = emojiOpen, onToggleEmoji = { toggleEmojiPanel() },
                 onFieldTap = {
                     if (emojiOpen) {
@@ -665,6 +691,18 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
         }
     }
     viewerImage?.let { ImageViewer(it) { viewerImage = null } }
+    if (askRepeat) {
+        RepeatDialog(
+            onChoose = { rep ->
+                Extras.nextRepeat = rep
+                askRepeat = false
+            },
+            onDismiss = {
+                Extras.nextRepeat = null
+                askRepeat = false
+            },
+        )
+    }
 }
 
 @Composable
