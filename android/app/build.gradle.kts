@@ -86,7 +86,7 @@ val gatewayZip = tasks.register<Zip>("gatewayZip") {
     archiveFileName.set("gateway.zip")
     destinationDirectory.set(gatewayOut.map { it.dir("assets") })
     from(gatewayDir) {
-        include("server.js", "package.json", "node_modules/**")
+        include("server.js", "extras.js", "package.json", "node_modules/**")
         exclude("**/*.md", "**/*.map", "**/*.d.ts", "**/*.d.cts", "**/*.d.mts", "**/*.ts.map",
             "**/test/**", "**/tests/**", "**/.github/**", "**/docs/**")
     }

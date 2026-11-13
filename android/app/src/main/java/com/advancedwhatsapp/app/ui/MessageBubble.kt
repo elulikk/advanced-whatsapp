@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.CircularProgressIndicator
@@ -79,8 +80,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
 import com.advancedwhatsapp.app.ai.MessageSummary
 import com.advancedwhatsapp.app.ai.SmartFeatures
+import com.advancedwhatsapp.app.data.Db
+import com.advancedwhatsapp.app.data.Extras
 import com.advancedwhatsapp.app.data.Message
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.io.File
 
@@ -109,6 +114,7 @@ fun MessageBubble(
     reminder: SmartFeatures.Detected? = null, onReminder: () -> Unit = {},
 ) {
     var menu by remember { mutableStateOf(false) }
+    var dialog by remember { mutableStateOf("") }   // «original» (mensaje eliminado) o «history» (versiones de una edición)
     val clipboard = LocalClipboardManager.current
     val revoked = m.mediaType == "revoked"
     val stickerFile = if (m.mediaType == "sticker") m.mediaPath?.let { File(it) }?.takeIf { it.exists() } else null
@@ -137,16 +143,22 @@ fun MessageBubble(
                 "audio" -> VoiceContent(m, busy, scope, onOpenMedia, onTranscribe, transcriptOpen, onToggleTranscript)
                 "video" -> FileRow(Icons.Default.Videocam, "Video", m, busy, onOpenMedia, showCaptionAsName = false)
                 "document" -> FileRow(Icons.Default.Description, m.text.ifEmpty { "Documento" }, m, busy, onOpenMedia, showCaptionAsName = true)
+                "poll" -> PollContent(m)
             }
             val caption = when {
                 revoked -> ""
-                m.mediaType == "document" || m.mediaType == "audio" -> ""
+                m.mediaType == "document" || m.mediaType == "audio" || m.mediaType == "poll" -> ""
                 m.mediaType == "location" -> "📍 ${m.text}".trim()
                 m.mediaType == "contact" -> contactText(m)
                 else -> m.text
             }
             if (revoked) {
-                Text("🚫 Mensaje eliminado", color = C.text2, fontStyle = FontStyle.Italic, fontSize = 14.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("🚫 Mensaje eliminado", color = C.text2, fontStyle = FontStyle.Italic, fontSize = 14.sp)
+                    if (m.hasOriginal) {
+                        Text("  Ver original", color = C.link, fontSize = 13.sp, modifier = Modifier.clickable { dialog = "original" })
+                    }
+                }
             } else if (caption.isNotEmpty()) {
                 Text(linkify(caption), color = C.text, fontSize = 15.sp)
             }
@@ -167,7 +179,8 @@ fun MessageBubble(
                 if (reminder != null) {
                     Text("⏰", fontSize = 15.sp, modifier = Modifier.clickable(onClick = onReminder).padding(horizontal = 2.dp))
                 }
-                if (m.edited) Text("Editado", color = C.text3, fontSize = 11.sp)
+                if (m.starredAt > 0) Icon(Icons.Default.Star, "Destacado", tint = C.ember, modifier = Modifier.size(13.dp))
+                if (m.edited) Text("Editado", color = C.text3, fontSize = 11.sp, modifier = Modifier.clickable { dialog = "history" })
                 Text(timeOf(m.timestamp), color = C.text2, fontSize = 11.sp)
                 if (m.fromMe && !revoked) StatusTicks(m.status)
             }
@@ -189,6 +202,14 @@ fun MessageBubble(
                 DropdownMenuItem(text = { Text("Responder") }, onClick = {
                     menu = false
                     onReply()
+                })
+                DropdownMenuItem(text = { Text(if (m.starredAt > 0) "Quitar destacado" else "Destacar") }, onClick = {
+                    menu = false
+                    scope.launch(Dispatchers.IO) { Db.setStarred(m.id, m.starredAt == 0L) }
+                })
+                DropdownMenuItem(text = { Text(if (m.pinnedAt > 0) "Desfijar" else "Fijar") }, onClick = {
+                    menu = false
+                    scope.launch(Dispatchers.IO) { Extras.pin(m, m.pinnedAt == 0L) }
                 })
                 if (m.text.isNotEmpty()) {
                     DropdownMenuItem(text = { Text("Copiar") }, onClick = {
@@ -230,6 +251,7 @@ fun MessageBubble(
             }
         }
     }
+    if (dialog.isNotEmpty()) OriginalDialog(m, edits = dialog == "history") { dialog = "" }
     if (m.reactions.isNotEmpty()) {
         Box(Modifier.fillMaxWidth(), contentAlignment = if (m.fromMe) Alignment.CenterEnd else Alignment.CenterStart) {
             Text(

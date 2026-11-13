@@ -16,6 +16,19 @@
   borrador.
 - **Requiere respuesta**: los chats donde quedó una pregunta o pedido tuyo sin contestar muestran "↩" y hay un filtro
   "Sin responder".
+## Sin publicar — Mensajería extra (PC y Android)
+
+### Nuevo
+- **Respuestas automáticas**: reglas por horario/días o "modo" manual ("Estoy manejando"), solo chats individuales,
+  excepciones y lista blanca, y un límite de una respuesta por contacto cada X horas. Las ejecuta el gateway: andan con la ventana cerrada.
+- **Plantillas / atajos**: escribí `/atajo` (y espacio, Tab o Enter en la PC; espacio o sugerencia en Android) y se inserta el texto guardado.
+  Se guardan en `plantillas.json` dentro de la carpeta de datos.
+- **Mensajes programados recurrentes**: diaria, semanal en los días elegidos, mensual o anual (cumpleaños).
+- **Mensajes eliminados y editados**: se conserva el original ("Ver original") y las versiones anteriores ("Editado" con historial).
+  Ajuste "Conservar lo que se elimina…", activado por defecto.
+- **Encuestas**: crear (pregunta, opciones, selección múltiple) y ver las recibidas/enviadas con el conteo de votos al día.
+- **Fijar y destacar**: barra de mensajes fijados arriba del chat (también en Android) y pantalla de destacados con buscador.
+- **Enviar a varios**: el mismo mensaje o archivo a cada contacto por separado, con pausa al azar entre envíos.
 
 ## 2026-11-11 — Android 0.3.1
 
