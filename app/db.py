@@ -7,6 +7,15 @@ from typing import List, Dict, Optional, Any
 from app.config import DB_PATH
 
 
+# Los documentos de sincronización con el celular («awsync-….awsync», ver app/sync.py) viajan por el chat «Mi número»
+# pero no son mensajes: nunca se guardan ni se muestran.
+SYNC_DOC_PREFIX = "awsync-"
+
+
+def is_sync_doc(media_type: Optional[str], text: Optional[str]) -> bool:
+    return media_type == "document" and (text or "").startswith(SYNC_DOC_PREFIX)
+
+
 def get_db_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=15.0)
     conn.row_factory = sqlite3.Row
@@ -430,6 +439,8 @@ def save_message(
     """Guarda un mensaje con soporte para respuestas citadas y filtrado de mensajes vacíos.
     already_read: mensaje recibido que ya leíste en otro dispositivo (no suma a "sin leer")."""
     clean_text = (text or "").strip()
+    if is_sync_doc(media_type, clean_text):
+        return False
     # Descartar mensajes fantasma completamente vacíos
     if not clean_text and (media_type == "text" or not media_type) and not media_path and not quoted_text:
         return False
@@ -620,6 +631,8 @@ def save_sync_batch(chats: List[Dict[str, Any]], contacts: List[Dict[str, Any]],
 
             # Omitir mensajes vacíos de desencriptación fallida o stubs
             if not text_val and media_type == "text" and not media_path and not quoted_text:
+                continue
+            if is_sync_doc(media_type, text_val):
                 continue
 
             from_me_val = 1 if m.get("from_me") else 0

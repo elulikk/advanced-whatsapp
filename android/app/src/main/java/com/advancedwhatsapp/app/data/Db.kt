@@ -452,6 +452,21 @@ object Db {
         }
     }
 
+    /** Para las copias y la sincronización (data/Backup.kt): acceso directo a la base. */
+    fun raw(): SQLiteDatabase = db
+
+    /** Después de unir una copia: vistas previas y contadores de los chats tocados. */
+    fun refreshAfterMerge(jids: Collection<String>) {
+        if (jids.isNotEmpty()) {
+            refreshPreviews(db, jids)
+            recomputeUnread(jids)
+        }
+        notifyChange()
+    }
+
+    /** Los documentos de sincronización con la PC («awsync-….awsync») viajan por «Mi número» pero no son mensajes. */
+    fun isSyncDoc(mediaType: String?, text: String?) = mediaType == "document" && (text ?: "").startsWith("awsync-")
+
     private fun refreshPreviews(d: SQLiteDatabase, jids: Collection<String>) {
         for (jid in jids.toSet()) {
             d.rawQuery(
@@ -476,6 +491,7 @@ object Db {
     ): Boolean {
         val clean = text.trim()
         if (clean.isEmpty() && mediaType == "text" && mediaPath == null && quotedText == null) return false
+        if (isSyncDoc(mediaType, clean)) return false
         val valid = senderName?.trim()?.takeIf { !fromMe && it.isNotEmpty() && it.lowercase() !in listOf("yo", "null", "none") }
         // Un grupo nunca toma el nombre de quien escribió
         val label = chatName ?: valid.takeUnless { chat.endsWith("@g.us") }
@@ -604,6 +620,7 @@ object Db {
         val chat = m.s("chat_jid") ?: return false
         val text = m.optString("text").takeUnless { m.isNull("text") }.orEmpty().trim()
         val mediaType = m.s("media_type") ?: "text"
+        if (isSyncDoc(mediaType, text)) return false
         val prev = getMessageIn(d, id)
         if (m.s("revoke_of") != null || m.s("edit_of") != null) {
             if (prev == null) return false

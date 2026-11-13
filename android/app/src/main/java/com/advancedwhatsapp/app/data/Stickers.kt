@@ -99,6 +99,11 @@ object StickerLibrary {
         }
     }
 
+    /** Para copias y sincronización (data/BackupSections.kt): el índice y la carpeta, bajo el mismo candado. */
+    fun <T> withIndex(block: (idx: JSONObject, dir: File) -> T): T = synchronized(lock) { block(load(), dir) }
+
+    fun saveIndex(idx: JSONObject) = synchronized(lock) { save(idx) }
+
     private fun toSticker(o: JSONObject) = Sticker(
         id = o.getString("id"), file = File(dir, o.getString("file")), pack = o.optString("pack", DEFAULT_PACK),
         fav = o.optBoolean("fav"), animated = o.optBoolean("animated"), added = o.optDouble("added", 0.0),

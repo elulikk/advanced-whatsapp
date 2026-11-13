@@ -204,6 +204,8 @@ fun SettingsScreen(onBack: () -> Unit, onExtras: () -> Unit = {}) {
             Selector("Traducir mensajes a", translateLang, SmartFeatures.LANGUAGES, { translateLang = it; SmartFeatures.translateLang = it })
             AiService.PROVIDERS.forEach { ProviderCard(it) }
 
+            BackupSettings()
+
             Text("Versión ${BuildConfig.VERSION_NAME}", color = C.text3, fontSize = 12.sp)
         }
     }

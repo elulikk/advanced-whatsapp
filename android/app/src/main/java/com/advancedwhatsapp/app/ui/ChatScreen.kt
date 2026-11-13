@@ -604,6 +604,17 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
                                 }
                             },
                             onDelete = { runTask { Actions.deleteForEveryone(m) } },
+                            onSaveToDownloads = if (m.mediaType == "document" && m.chatJid.substringBefore('@').substringBefore(':') ==
+                                (com.advancedwhatsapp.app.AppState.connection.value.phone ?: "").filter { it.isDigit() }.ifEmpty { "-" }
+                            ) {
+                                {
+                                    withBusy(m.id) {
+                                        val path = Actions.downloadMedia(m)
+                                        val ok = Downloads.saveCopy(File(path), Downloads.displayName(m.text, File(path)))
+                                        snackbar.showSnackbar(if (ok) "Guardado en Descargas/AdvancedWhatsapp." else "No se pudo guardar el archivo.")
+                                    }
+                                }
+                            } else null,
                             onOpenMedia = {
                                 withBusy(m.id) {
                                     // Una imagen que todavía no estaba bajada solo se descarga (queda en la burbuja y en Descargas);

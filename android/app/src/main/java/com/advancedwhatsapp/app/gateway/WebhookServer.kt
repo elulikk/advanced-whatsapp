@@ -159,6 +159,11 @@ class WebhookServer {
     private fun incoming(d: JSONObject) {
         val id = d.str("message_id") ?: return
         val chat = d.str("chat_jid") ?: return
+        // Documento de sincronización de la PC: se procesa aparte y nunca se muestra como mensaje
+        if (com.advancedwhatsapp.app.data.Sync.isSyncDoc(d)) {
+            pool.execute { runCatching { com.advancedwhatsapp.app.data.Sync.handleIncoming(d) } }
+            return
+        }
         val sender = d.str("sender_jid") ?: chat
         val push = d.optString("push_name").takeUnless { d.isNull("push_name") }.orEmpty()
         val fromMe = d.optBoolean("from_me")

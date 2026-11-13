@@ -109,7 +109,7 @@ fun MessageBubble(
     m: Message, busy: Boolean, scope: CoroutineScope, showSender: Boolean, onReply: () -> Unit, onReact: (String) -> Unit, onDelete: () -> Unit,
     onOpenMedia: () -> Unit, onTranscribe: () -> Unit, onSummarize: (redo: Boolean) -> Unit,
     transcriptOpen: Boolean, onToggleTranscript: () -> Unit, summaryOpen: Boolean, onSetSummaryOpen: (Boolean) -> Unit,
-    onAutoDownload: () -> Unit = {}, onSaveSticker: () -> Unit = {},
+    onAutoDownload: () -> Unit = {}, onSaveSticker: () -> Unit = {}, onSaveToDownloads: (() -> Unit)? = null,
     translation: String? = null, onTranslate: () -> Unit = {}, onHideTranslation: () -> Unit = {},
     reminder: SmartFeatures.Detected? = null, onReminder: () -> Unit = {},
 ) {
@@ -142,7 +142,15 @@ fun MessageBubble(
                 "sticker" -> StickerContent(m, stickerFile, busy, onOpenMedia, onAutoDownload)
                 "audio" -> VoiceContent(m, busy, scope, onOpenMedia, onTranscribe, transcriptOpen, onToggleTranscript)
                 "video" -> FileRow(Icons.Default.Videocam, "Video", m, busy, onOpenMedia, showCaptionAsName = false)
-                "document" -> FileRow(Icons.Default.Description, m.text.ifEmpty { "Documento" }, m, busy, onOpenMedia, showCaptionAsName = true)
+                "document" -> {
+                    FileRow(Icons.Default.Description, m.text.ifEmpty { "Documento" }, m, busy, onOpenMedia, showCaptionAsName = true)
+                    // Archivos que mandaste desde la PC a «Mi número»: guardarlos en Descargas con un toque
+                    if (onSaveToDownloads != null && !revoked) {
+                        androidx.compose.material3.TextButton(onClick = onSaveToDownloads, enabled = !busy) {
+                            Text("Guardar en Descargas", color = C.accent, fontSize = 13.sp)
+                        }
+                    }
+                }
                 "poll" -> PollContent(m)
             }
             val caption = when {

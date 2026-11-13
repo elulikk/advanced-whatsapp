@@ -144,6 +144,9 @@ class SettingsPanel(QWidget):
         self.tabs.addTab(self.tab_messaging, "Mensajería")
         self.tab_appearance = self._create_appearance_tab()
         self.tabs.addTab(self.tab_appearance, "Apariencia")
+        from app.ui.backup_panel import BackupTab
+        self.backup_tab = BackupTab(self.gateway)
+        self.tabs.addTab(self.backup_tab, "Copias y sincronización")
         self.tab_about = self._create_about_tab()
         self.tabs.addTab(self.tab_about, "Acerca de")
 

@@ -29,6 +29,16 @@
 - **Encuestas**: crear (pregunta, opciones, selección múltiple) y ver las recibidas/enviadas con el conteo de votos al día.
 - **Fijar y destacar**: barra de mensajes fijados arriba del chat (también en Android) y pantalla de destacados con buscador.
 - **Enviar a varios**: el mismo mensaje o archivo a cada contacto por separado, con pausa al azar entre envíos.
+## Sin publicar — Copias y sincronización (PC y Android)
+
+### Nuevo
+- **Copia de seguridad cifrada** (`.awbackup`, AES-256-GCM con clave PBKDF2): chats y mensajes, tags, chats bloqueados, nombres y notas
+  de contactos, stickers, mensajes programados y ajustes. Restaurar combinando (gana lo más nuevo) o reemplazando todo. El mismo archivo
+  se restaura en la otra app. Las claves de IA solo van si se elige. Copia automática programable con rotación de las últimas N.
+- **Sincronizar PC y celular** por el chat «Mi número» (documento cifrado que la otra app procesa sin mostrarlo): tags, bloqueos, nombres y
+  notas, stickers y preferencias; gana el último cambio por clave.
+- **Enviar al celular** (PC): arrastrar o elegir archivos que llegan a «Mi número»; en Android, botón «Guardar en Descargas».
+- Formato por secciones, fácil de extender (ver `docs/ARQUITECTURA.md`).
 
 ## 2026-11-11 — Android 0.3.1
 
