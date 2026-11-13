@@ -44,6 +44,7 @@ object Notifier {
         if (!Prefs.notifications) return
         if (AppState.inForeground && AppState.activeChat == jid) return
         if (jid.endsWith("@g.us") && !Prefs.notifyGroups) return
+        if (ChatLock.isHidden(jid)) return   // chat oculto: ninguna notificación, ni "Nuevo mensaje"
         val chat = Db.getChat(jid) ?: return
         if (chat.isMuted) return
         val pending = Db.unreadMessages(jid).filter { it.mediaType != "revoked" }

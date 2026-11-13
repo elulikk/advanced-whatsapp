@@ -7,7 +7,10 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -26,6 +29,7 @@ import com.advancedwhatsapp.app.AppState
 import com.advancedwhatsapp.app.ai.Psych
 import com.advancedwhatsapp.app.data.Actions
 import com.advancedwhatsapp.app.data.ChatLock
+import com.advancedwhatsapp.app.data.Organization
 import com.advancedwhatsapp.app.gateway.GatewayService
 import com.advancedwhatsapp.app.notify.Notifier
 import kotlinx.coroutines.Dispatchers
@@ -43,7 +47,14 @@ class MainActivity : FragmentActivity() {
         if (Build.VERSION.SDK_INT >= 33) askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         // Al girar el celular se recrea la actividad con el mismo intent: no hay que volver a abrir ese chat
         if (savedInstanceState == null) pendingChat.value = intent.getStringExtra(Notifier.EXTRA_CHAT)
-        setContent { AppTheme { AppNav(pendingChat.value) { pendingChat.value = null } } }
+        setContent {
+            AppTheme {
+                Box(Modifier.fillMaxSize()) {
+                    AppNav(pendingChat.value) { pendingChat.value = null }
+                    AppLockOverlay()   // bloqueo de la app entera (opcional), por encima de todo
+                }
+            }
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -56,12 +67,12 @@ class MainActivity : FragmentActivity() {
         super.onStart()
         AppState.foreground.value = true
         ChatLock.appReturned()   // tras un rato en segundo plano los chats bloqueados vuelven a cerrarse
-        lifecycleScope.launch(Dispatchers.IO) { Actions.setPresence(true) }
+        lifecycleScope.launch(Dispatchers.IO) { Actions.setPresence(true); Organization.autoArchive() }
     }
 
     override fun onStop() {
         AppState.foreground.value = false
-        ChatLock.appLeft()
+        if (!isChangingConfigurations) ChatLock.appLeft()   // girar el celular no es salir de la app
         lifecycleScope.launch(Dispatchers.IO) { Actions.setPresence(false) }
         super.onStop()
     }
@@ -138,8 +149,14 @@ private fun AppNav(pendingChat: String?, onChatOpened: () -> Unit) {
                         jid, onBack = { nav.popBackStack() }, onAnalysis = { nav.navigate("analysis/${Uri.encode(jid)}") },
                         onScheduled = { nav.navigate("scheduled?chat=${Uri.encode(jid)}") },
                         onExtras = { nav.navigate("extras/$it") },
+                        onGallery = { nav.navigate("gallery/${Uri.encode(jid)}") },
                     )
                 }
+            }
+        }
+        composable("gallery/{jid}", arguments = listOf(navArgument("jid") { type = NavType.StringType })) { e ->
+            LockGate(e.arguments?.getString("jid").orEmpty(), onBack = { nav.popBackStack() }) {
+                GalleryScreen(e.arguments?.getString("jid").orEmpty(), onBack = { nav.popBackStack() })
             }
         }
         composable("analysis/{jid}", arguments = listOf(navArgument("jid") { type = NavType.StringType })) { e ->

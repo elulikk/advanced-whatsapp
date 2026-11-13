@@ -433,6 +433,9 @@ class GatewayManager:
         ids = [i for i in (message_ids or []) if i]
         if not chat_jid or not ids:
             return
+        from app.organization import is_silent_read
+        if is_silent_read(chat_jid):
+            return   # lectura invisible en este chat: nunca se mandan tildes azules
 
         def _run():
             for start in range(0, len(ids), 100):

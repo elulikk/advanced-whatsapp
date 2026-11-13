@@ -27,6 +27,7 @@ data class Chat(
     val waName: String = "",       // nombre que manda WhatsApp (name es el que se muestra: el propio si hay)
     val customName: String = "",
     val notes: String = "",
+    val archived: Boolean = false,
 ) {
     val isMuted: Boolean
         get() = mutedUntil == -1L || mutedUntil > System.currentTimeMillis() / 1000
@@ -76,6 +77,8 @@ sealed interface ChatFilter {
     data object Unread : ChatFilter
     data object Groups : ChatFilter
     data class Tab(val id: Long) : ChatFilter
+    data object Archived : ChatFilter
+    data class Folder(val id: Long) : ChatFilter
 }
 
 /** Base local: misma estructura y mismas reglas que app/db.py en la PC. */
@@ -101,7 +104,7 @@ object Db {
     private val RESERVED_TAB_NAMES = listOf("todos", "no leídos", "grupos")
 
     fun init(c: Context) {
-        helper = object : SQLiteOpenHelper(c, "magsapp.db", null, 3) {
+        helper = object : SQLiteOpenHelper(c, "magsapp.db", null, 4) {
             override fun onConfigure(d: SQLiteDatabase) {
                 d.enableWriteAheadLogging()
             }
@@ -112,7 +115,8 @@ object Db {
                         jid TEXT PRIMARY KEY, name TEXT, phone TEXT, unread_count INTEGER DEFAULT 0,
                         last_message_text TEXT, last_message_time INTEGER DEFAULT 0, is_pinned INTEGER DEFAULT 0,
                         avatar_path TEXT, muted_until INTEGER DEFAULT 0, updated_at INTEGER DEFAULT 0,
-                        tab_id INTEGER DEFAULT 0, custom_name TEXT, notes TEXT, manual_unread INTEGER DEFAULT 0)"""
+                        tab_id INTEGER DEFAULT 0, custom_name TEXT, notes TEXT, manual_unread INTEGER DEFAULT 0,
+                        is_archived INTEGER DEFAULT 0)"""
                 )
                 d.execSQL(
                     """CREATE TABLE messages (
@@ -135,6 +139,7 @@ object Db {
                 d.execSQL("CREATE INDEX idx_chats_time ON chats(last_message_time DESC)")
                 d.execSQL("CREATE INDEX idx_contacts_name ON contacts(name)")
                 createTabs(d)
+                createOrganization(d)
             }
 
             override fun onUpgrade(d: SQLiteDatabase, o: Int, n: Int) {
@@ -147,6 +152,21 @@ object Db {
                         runCatching { d.execSQL("ALTER TABLE chats ADD COLUMN $col") }
                     }
                 }
+                if (o < 4) {
+                    runCatching { d.execSQL("ALTER TABLE chats ADD COLUMN is_archived INTEGER DEFAULT 0") }
+                    createOrganization(d)
+                }
+            }
+
+            /** Carpetas inteligentes, lectura invisible por chat e índice de archivados (idempotente). */
+            private fun createOrganization(d: SQLiteDatabase) {
+                d.execSQL(
+                    """CREATE TABLE IF NOT EXISTS smart_folders (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, rules TEXT NOT NULL DEFAULT '{}',
+                        sort_order INTEGER DEFAULT 0)"""
+                )
+                d.execSQL("CREATE TABLE IF NOT EXISTS chat_silent_read (chat_jid TEXT PRIMARY KEY)")
+                d.execSQL("CREATE INDEX IF NOT EXISTS idx_chats_archived ON chats(is_archived)")
             }
 
             private fun createTabs(d: SQLiteDatabase) {
@@ -189,6 +209,7 @@ object Db {
         lastText = str("last_message_text").orEmpty(), lastTime = lng("last_message_time"), pinned = lng("is_pinned") != 0L,
         avatarPath = str("avatar_path"), mutedUntil = lng("muted_until"), tabId = lng("tab_id"),
         waName = str("name").orEmpty(), customName = str("custom_name").orEmpty(), notes = str("notes").orEmpty(),
+        archived = lng("is_archived") != 0L,
     )
 
     private fun Cursor.toMessage() = Message(
@@ -211,7 +232,27 @@ object Db {
         ChatFilter.Unread -> "$VISIBLE AND unread_count != 0"
         ChatFilter.Groups -> "$GROUP AND tab_id = 0"
         is ChatFilter.Tab -> "$VISIBLE AND tab_id = ${filter.id}"
+        ChatFilter.Archived -> "$VISIBLE AND is_archived = 1"
+        is ChatFilter.Folder -> VISIBLE   // las reglas de la carpeta se suman en getChats (leen la base)
     }
+
+    /** Acceso para Organization.kt (carpetas, archivados, lectura invisible, galería). */
+    fun raw(): SQLiteDatabase = db
+
+    fun changed(jid: String = "") = notifyChange(jid)
+
+    /** Mensajes de un chat de ciertos tipos, del más nuevo al más viejo (galería). */
+    fun messagesOfTypes(jid: String, types: List<String>, limit: Int, offset: Int): List<Message> = db.rawQuery(
+        "SELECT * FROM messages WHERE chat_jid = ? AND media_type IN (${types.joinToString(",") { "?" }}) " +
+            "ORDER BY timestamp DESC LIMIT $limit OFFSET $offset",
+        (listOf(jid) + types).toTypedArray(),
+    ).use { c -> buildList { while (c.moveToNext()) add(c.toMessage()) } }
+
+    /** Mensajes de un chat cuyo texto contiene [pattern] (LIKE), del más nuevo al más viejo (links de la galería). */
+    fun messagesLike(jid: String, pattern: String, limit: Int, offset: Int): List<Message> = db.rawQuery(
+        "SELECT * FROM messages WHERE chat_jid = ? AND text LIKE ? ORDER BY timestamp DESC LIMIT $limit OFFSET $offset",
+        arrayOf(jid, pattern),
+    ).use { c -> buildList { while (c.moveToNext()) add(c.toMessage()) } }
 
     fun getChats(search: String = "", filter: ChatFilter? = null, limit: Int = 300): List<Chat> {
         val where = StringBuilder(filterSql(filter, search.isNotBlank()))
@@ -228,6 +269,11 @@ object Db {
                 args += lockedJids
             }
         }
+        // Archivados: solo se ven en su pestaña (y al buscar, para que nunca se pierda un chat)
+        if (filter != null && filter != ChatFilter.Archived && search.isBlank()) where.append(" AND COALESCE(is_archived, 0) = 0")
+        if (filter is ChatFilter.Folder) where.append(" AND (${Organization.folderWhere(filter.id)})")
+        // Chats ocultos: no salen en la lista ni en la búsqueda hasta escribir el código secreto
+        where.append(Organization.hiddenClause())
         return db.rawQuery(
             "SELECT * FROM chats WHERE $where ORDER BY is_pinned DESC, last_message_time DESC, updated_at DESC LIMIT $limit",
             args.toTypedArray(),
@@ -473,6 +519,8 @@ object Db {
                 arrayOf<Any?>(increment, now(), label, GROUP_PLACEHOLDER, label, chat),
             )
             refreshPreviews(d, listOf(chat))
+            // Un mensaje nuevo saca al chat de Archivados (salvo que esté silenciado); el historial viejo no
+            if (isNew && (fromMe || !read) && timestamp >= now() - 3600) Organization.unarchiveOnMessage(d, chat)
             if (chat.endsWith("@lid")) mergeLidDuplicates(d, chat)
             d.setTransactionSuccessful()
         } finally {

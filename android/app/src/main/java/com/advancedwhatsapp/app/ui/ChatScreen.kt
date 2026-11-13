@@ -38,6 +38,9 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.MoreVert
+import com.advancedwhatsapp.app.data.Organization
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PhotoCamera
@@ -141,7 +144,7 @@ private const val PAGE = 60
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onScheduled: () -> Unit, onExtras: (String) -> Unit = {}) {
+fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onScheduled: () -> Unit, onExtras: (String) -> Unit = {}, onGallery: () -> Unit = {}) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val owner = LocalLifecycleOwner.current
@@ -494,6 +497,8 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
 
     var editingContact by remember { mutableStateOf(false) }
     if (editingContact) ContactEditDialog(jid) { editingContact = false }
+    var silentRead by remember(jid) { mutableStateOf(Organization.isSilentRead(jid)) }   // lectura invisible solo en este chat
+    val hasNote = chat?.notes?.isNotBlank() == true
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
@@ -511,14 +516,33 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
                                 "composing" -> Text("escribiendo…", fontSize = 12.sp, color = C.accent)
                                 "recording" -> Text("grabando audio…", fontSize = 12.sp, color = C.accent)
                                 "available" -> Text("en línea", fontSize = 12.sp, color = C.text2)
+                                // Nota privada: se ve en el encabezado (tocar el nombre la edita)
+                                else -> if (hasNote) {
+                                    Text("Nota: " + chat?.notes.orEmpty().lineSequence().first(), fontSize = 11.sp, color = C.ember,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                } else Unit
                             }
                         }
                     }
                 },
                 actions = {
                     // El análisis estudia a una persona: no aplica a un grupo
+                    if (chat?.isGroup == false) IconButton(onClick = { editingContact = true }) {
+                        Icon(Icons.Default.Description, if (hasNote) "Nota privada (hay una)" else "Nota privada", tint = if (hasNote) C.ember else C.text3)
+                    }
                     if (chat?.isGroup == false) IconButton(onClick = onAnalysis) { Icon(Icons.Default.Psychology, "Análisis") }
-                    ChatExtrasMenu(jid, onNav = onExtras, onMessage = { notifyError(it) })
+                    ChatExtrasMenu(jid, onNav = onExtras, onMessage = { notifyError(it) }) { close ->
+                        DropdownMenuItem(text = { Text("Galería (fotos, documentos, links, audios)") }, onClick = { close(); onGallery() })
+                        DropdownMenuItem(text = { Text(if (silentRead) "✓ Lectura invisible (sin tildes azules)" else "Lectura invisible (sin tildes azules)") }, onClick = {
+                            close()
+                            silentRead = !silentRead
+                            Organization.setSilentRead(jid, silentRead)
+                        })
+                        DropdownMenuItem(text = { Text(if (chat?.archived == true) "Sacar de Archivados" else "Archivar chat") }, onClick = {
+                            close()
+                            Organization.setArchived(jid, chat?.archived != true)
+                        })
+                    }
                 },
             )
         },

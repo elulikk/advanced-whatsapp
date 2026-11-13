@@ -608,7 +608,7 @@ fun PollContent(m: Message) {
 
 /** Botón de tres puntos del chat: encuesta, destacados y plantillas. */
 @Composable
-fun ChatExtrasMenu(jid: String, onNav: (String) -> Unit, onMessage: (String) -> Unit) {
+fun ChatExtrasMenu(jid: String, onNav: (String) -> Unit, onMessage: (String) -> Unit, more: @Composable (close: () -> Unit) -> Unit = {}) {
     var open by remember { mutableStateOf(false) }
     var poll by remember { mutableStateOf(false) }
     Box {
@@ -618,6 +618,7 @@ fun ChatExtrasMenu(jid: String, onNav: (String) -> Unit, onMessage: (String) -> 
             DropdownMenuItem(text = { Text("Mensajes destacados") }, onClick = { open = false; onNav("starred") })
             DropdownMenuItem(text = { Text("Plantillas y atajos") }, onClick = { open = false; onNav("templates") })
             DropdownMenuItem(text = { Text("Enviar a varios") }, onClick = { open = false; onNav("sendmany") })
+            more { open = false }
         }
     }
     if (poll) PollDialog(jid, onDismiss = { poll = false }, onResult = onMessage)

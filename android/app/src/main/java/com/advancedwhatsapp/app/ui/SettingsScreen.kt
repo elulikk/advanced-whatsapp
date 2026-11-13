@@ -50,6 +50,7 @@ import com.advancedwhatsapp.app.ai.AutoTranscriber
 import com.advancedwhatsapp.app.ai.SmartFeatures
 import com.advancedwhatsapp.app.data.Actions
 import com.advancedwhatsapp.app.data.ChatLock
+import com.advancedwhatsapp.app.data.Organization
 import com.advancedwhatsapp.app.gateway.GatewayService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -72,6 +73,11 @@ fun SettingsScreen(onBack: () -> Unit, onExtras: () -> Unit = {}) {
     var provider by remember { mutableStateOf(Prefs.provider) }
     var lockDialog by remember { mutableStateOf("") }   // "new", "change" (pide la actual y luego la nueva), "remove"
     var biometricOn by remember { mutableStateOf(ChatLock.biometric) }
+    var autoArchiveDays by remember { mutableStateOf(Prefs.autoArchiveDays) }
+    var appLockOn by remember { mutableStateOf(Prefs.appLockEnabled && ChatLock.hasPassword()) }
+    var appLockMinutes by remember { mutableStateOf(Prefs.appLockMinutes) }
+    var secretDialog by remember { mutableStateOf("") }   // "new" (crear/cambiar), "reveal" (pide la contraseña para mostrar los ocultos)
+    var needPasswordForAppLock by remember { mutableStateOf(false) }
 
     Scaffold(topBar = {
         TopAppBar(title = { Text("Ajustes") }, navigationIcon = {
@@ -121,6 +127,48 @@ fun SettingsScreen(onBack: () -> Unit, onExtras: () -> Unit = {}) {
                 }
             }
 
+            Section("Organización y privacidad")
+            Text(
+                "Archivar solo los chats sin actividad: pasan a «Archivados» (pestaña junto a las carpetas) y vuelven si llega un mensaje, " +
+                    "salvo que estén silenciados. Los fijados no se archivan.",
+                color = C.text2, fontSize = 13.sp,
+            )
+            Selector(
+                "Archivar chats inactivos", autoArchiveDays.toString(), listOf("0", "7", "14", "30", "60", "90", "180"),
+                { autoArchiveDays = it.toInt(); Prefs.autoArchiveDays = autoArchiveDays; scope.launch(Dispatchers.IO) { Organization.autoArchive() } },
+                { if (it == "0") "Apagado" else "Tras $it días" },
+            )
+            Toggle("Pedir la contraseña (o la huella) al abrir la app y al volver", appLockOn) { on ->
+                if (on && !ChatLock.hasPassword()) {
+                    needPasswordForAppLock = true
+                } else {
+                    appLockOn = on
+                    Prefs.appLockEnabled = on
+                    if (on) ChatLock.unlockApp()   // recién activado: esta sesión sigue abierta
+                }
+            }
+            if (appLockOn) {
+                Selector(
+                    "Volver a pedirla tras estar en segundo plano", appLockMinutes.toString(), listOf("0", "1", "5", "15", "30", "60"),
+                    { appLockMinutes = it.toInt(); Prefs.appLockMinutes = appLockMinutes },
+                    { if (it == "0") "En cuanto vuelva" else "Más de $it min" },
+                )
+            }
+            Text(
+                "Chats ocultos: un chat bloqueado puede ocultarse (mantené apretado el chat). No aparece en la lista ni en la búsqueda, " +
+                    "ni muestra notificaciones, hasta que escribas tu código secreto en el buscador.",
+                color = C.text2, fontSize = 13.sp,
+            )
+            OutlinedButton(onClick = { secretDialog = "new" }, modifier = Modifier.fillMaxWidth(), enabled = ChatLock.hasPassword()) {
+                Text(if (ChatLock.hasSecretCode()) "Cambiar código secreto" else "Crear código secreto")
+            }
+            if (ChatLock.hasSecretCode()) {
+                OutlinedButton(
+                    onClick = { if (ChatLock.revealed) ChatLock.conceal() else secretDialog = "reveal" },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(if (ChatLock.revealed) "Volver a ocultar los chats ocultos" else "Mostrar chats ocultos") }
+            }
+
             Section("Segundo plano")
             Toggle("Mantener la conexión siempre activa (mensajes al instante, usa más batería)", keepCpu) {
                 keepCpu = it
@@ -164,6 +212,17 @@ fun SettingsScreen(onBack: () -> Unit, onExtras: () -> Unit = {}) {
         "new" -> NewPasswordDialog(onDone = { lockDialog = "" }, onDismiss = { lockDialog = "" })
         "change" -> AskPasswordDialog("Contraseña actual", onOk = { lockDialog = "new" }, onDismiss = { lockDialog = "" })
         "remove" -> AskPasswordDialog("Ingresá la contraseña para quitarla", onOk = { ChatLock.removePassword(); lockDialog = "" }, onDismiss = { lockDialog = "" })
+    }
+
+    when (secretDialog) {
+        "new" -> NewSecretDialog(onDone = { secretDialog = "" }, onDismiss = { secretDialog = "" })
+        "reveal" -> AskPasswordDialog("Ingresá la contraseña para mostrar los chats ocultos", onOk = { ChatLock.reveal(); secretDialog = "" }, onDismiss = { secretDialog = "" })
+    }
+    if (needPasswordForAppLock) {
+        NewPasswordDialog(
+            onDone = { needPasswordForAppLock = false; appLockOn = true; Prefs.appLockEnabled = true; ChatLock.unlockApp() },
+            onDismiss = { needPasswordForAppLock = false },
+        )
     }
 
     if (confirmUnlink) {

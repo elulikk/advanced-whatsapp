@@ -61,6 +61,21 @@ object Prefs {
         get() = p.getBoolean("use_profile", true)
         set(v) = p.edit().putBoolean("use_profile", v).apply()
 
+    /** Pedir la contraseña de los chats bloqueados al abrir la app y al volver tras un rato en segundo plano. */
+    var appLockEnabled: Boolean
+        get() = p.getBoolean("app_lock", false)
+        set(v) = p.edit().putBoolean("app_lock", v).apply()
+
+    /** Minutos en segundo plano tras los que se vuelve a pedir (0 = en cuanto vuelve). */
+    var appLockMinutes: Int
+        get() = p.getInt("app_lock_min", 1)
+        set(v) = p.edit().putInt("app_lock_min", v).apply()
+
+    /** Días sin actividad para archivar solo un chat (0 = apagado). */
+    var autoArchiveDays: Int
+        get() = p.getInt("auto_archive_days", 0)
+        set(v) = p.edit().putInt("auto_archive_days", v).apply()
+
     fun getString(k: String, d: String = ""): String = p.getString(k, d) ?: d
     fun putString(k: String, v: String) = p.edit().putString(k, v).apply()
 }

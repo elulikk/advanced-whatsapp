@@ -5,6 +5,9 @@ import android.content.Context
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -51,7 +54,9 @@ fun biometricAvailable(c: Context): Boolean =
         BiometricManager.BIOMETRIC_SUCCESS
 
 /** Pide la huella; si falla o se cancela, el usuario sigue con la contraseña. */
-fun promptBiometric(activity: FragmentActivity, onSuccess: () -> Unit) {
+fun promptBiometric(
+    activity: FragmentActivity, title: String = "Chat bloqueado", subtitle: String = "Usá tu huella para abrirlo", onSuccess: () -> Unit,
+) {
     val prompt = BiometricPrompt(
         activity, ContextCompat.getMainExecutor(activity),
         object : BiometricPrompt.AuthenticationCallback() {
@@ -60,8 +65,8 @@ fun promptBiometric(activity: FragmentActivity, onSuccess: () -> Unit) {
     )
     prompt.authenticate(
         BiometricPrompt.PromptInfo.Builder()
-            .setTitle("Chat bloqueado")
-            .setSubtitle("Usá tu huella para abrirlo")
+            .setTitle(title)
+            .setSubtitle(subtitle)
             .setNegativeButtonText("Usar contraseña")
             .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
             .build()
@@ -170,6 +175,86 @@ fun AskPasswordDialog(title: String, onOk: () -> Unit, onDismiss: () -> Unit) {
         },
         confirmButton = {
             TextButton(enabled = pw.isNotEmpty(), onClick = { if (ChatLock.verify(pw)) onOk() else { wrong = true; pw = "" } }) { Text("Aceptar") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
+}
+
+/**
+ * Bloqueo de la app entera: se dibuja encima de todo (la navegación y los borradores quedan debajo, intactos)
+ * hasta ingresar la contraseña de los chats bloqueados o usar la huella.
+ */
+@Composable
+fun AppLockOverlay() {
+    if (!ChatLock.appLocked()) return
+    val c = LocalContext.current
+    var pw by remember { mutableStateOf("") }
+    var wrong by remember { mutableStateOf(false) }
+    val bio = remember { biometricAvailable(c) }
+    val tryBio: () -> Unit = {
+        (c as? FragmentActivity)?.let { a ->
+            promptBiometric(a, "Advanced WhatsApp", "Usá tu huella para entrar") { ChatLock.unlockApp() }
+        }
+    }
+    LaunchedEffect(Unit) { if (bio) tryBio() }
+    val submit: () -> Unit = { if (ChatLock.verify(pw)) ChatLock.unlockApp() else { wrong = true; pw = "" } }
+
+    Box(
+        Modifier.fillMaxSize().background(C.panel)
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {},   // tapa la app: nada de abajo recibe toques
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            Modifier.fillMaxWidth().padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
+        ) {
+            Icon(Icons.Default.Lock, null, tint = C.text3, modifier = Modifier.size(56.dp))
+            Text("Advanced WhatsApp está bloqueado", color = C.text, fontSize = 17.sp, modifier = Modifier.padding(top = 12.dp))
+            Text("Ingresá la contraseña para continuar", color = C.text2, fontSize = 14.sp, modifier = Modifier.padding(top = 4.dp, bottom = 16.dp))
+            OutlinedTextField(
+                value = pw, onValueChange = { pw = it; wrong = false }, singleLine = true, label = { Text("Contraseña") },
+                isError = wrong, supportingText = { if (wrong) Text("Contraseña incorrecta") },
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Button(onClick = submit, enabled = pw.isNotEmpty(), modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Desbloquear") }
+            if (bio) {
+                OutlinedButton(onClick = tryBio, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                    Icon(Icons.Default.Fingerprint, null, modifier = Modifier.size(20.dp).padding(end = 6.dp))
+                    Text("Usar huella")
+                }
+            }
+        }
+    }
+}
+
+/** Crear el código secreto que muestra los chats ocultos (se escribe dos veces). */
+@Composable
+fun NewSecretDialog(onDone: () -> Unit, onDismiss: () -> Unit) {
+    var a by remember { mutableStateOf("") }
+    var b by remember { mutableStateOf("") }
+    val error = when {
+        a.isNotEmpty() && a.trim().length < ChatLock.MIN_SECRET_LEN -> "Mínimo ${ChatLock.MIN_SECRET_LEN} caracteres"
+        b.isNotEmpty() && a.trim() != b.trim() -> "Los códigos no coinciden"
+        else -> null
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss, title = { Text("Código secreto de chats ocultos") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Lo escribís en el buscador de la lista de chats y aparecen los chats ocultos.", color = C.text2, fontSize = 13.sp)
+                OutlinedTextField(a, { a = it }, singleLine = true, label = { Text("Código nuevo") }, visualTransformation = PasswordVisualTransformation())
+                OutlinedTextField(
+                    b, { b = it }, singleLine = true, label = { Text("Repetilo") }, visualTransformation = PasswordVisualTransformation(),
+                    isError = error != null, supportingText = { error?.let { Text(it) } },
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = error == null && a.isNotEmpty() && a.trim() == b.trim(), onClick = {
+                if (ChatLock.setSecretCode(a)) onDone()
+            }) { Text("Guardar") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
     )

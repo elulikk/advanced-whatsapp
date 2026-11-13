@@ -169,3 +169,21 @@ deja el contenedor con granule incorrecto y sin marca de fin de stream, y el rec
 `sendWhatsApp` (gateway) pasa ahora todo audio por `normalizeOggOpus`: reempaqueta las páginas sin tocar los paquetes
 Opus y calcula la duración exacta (`seconds`); si el archivo no es OGG/Opus se envía tal cual. Sirve igual para PC
 (FFmpeg ya genera OGG/Opus válido) y Android (mismo `server.js`, sin dependencias nativas).
+## Organización y privacidad
+
+Todo es local (nada pasa por el gateway). PC: `app/organization.py` (+ `app/chat_lock.py`); Android: `data/Organization.kt` (+ `data/ChatLock.kt`).
+
+- **Carpetas inteligentes** (`smart_folders`, reglas en JSON): un chat entra si cumple *todas* las reglas puestas (tags en PC / pestañas en Android,
+  tipo individual/grupo, no leídos, silenciados) o si es uno de los contactos elegidos. Sin reglas no muestra nada. Aparecen como píldoras bajo los filtros
+  de la lista; `get_chats(extra_where=...)` / `Db.getChats(ChatFilter.Folder)` arman la consulta.
+- **Archivados** (`chats.is_archived`): los filtros de la lista no los muestran (la búsqueda sí); píldora «Archivados». Archivado automático:
+  `auto_archive_days` (config.ini / Prefs, 0 = apagado) archiva los chats sin actividad que no estén fijados; `save_message` / `Db.saveMessage` los saca de
+  Archivados cuando llega o se manda un mensaje reciente, salvo que estén silenciados.
+- **Chats ocultos** (`chat_hidden` en PC, `lock_hidden` en Android): solo un chat bloqueado, y con código secreto creado. Su hash (PBKDF2, claves `hide_*`
+  de `lock_meta` / `lock_secret_*`) es independiente de la contraseña. `get_chats` los excluye salvo `show_secret=True`; escribir el código en el buscador
+  (`chat_lock.try_secret`) los muestra hasta que la app se re-bloquea (`lock_all`). No suman en contadores y sus notificaciones se descartan.
+- **Lectura invisible por chat** (`chat_silent_read`): `GatewayManager.send_read_receipts` (PC) y `Actions.markRead` (Android) no mandan tildes azules.
+- **Bloqueo de la app entera**: pref `app_lock_enabled` + minutos (`app_lock_minutes`); reutiliza la contraseña de `chat_lock`. PC: capa `AppLockOverlay`
+  al abrir y al restaurar de la bandeja/minimizada tras X minutos. Android: capa sobre la navegación (contraseña o huella) al abrir y al volver de segundo plano.
+- **Galería**: `gallery_page(chat, kind, limit, offset)` (PC) / `Organization.gallery` (Android): fotos y videos, documentos, links y audios, paginados.
+  Miniaturas con caché (LRU en PC, Coil en Android) y descarga de las fotos a la vista bajo demanda (`media_service.request_media` / `Actions.downloadMedia`).
