@@ -242,7 +242,7 @@ object Db {
         is ChatFilter.Folder -> VISIBLE   // las reglas de la carpeta se suman en getChats (leen la base)
     }
 
-    /** Acceso para Organization.kt (carpetas, archivados, lectura invisible, galería). */
+    /** Acceso directo a la base para Organization.kt y las copias/sincronización (Backup.kt). */
     fun raw(): SQLiteDatabase = db
 
     fun changed(jid: String = "") = notifyChange(jid)
@@ -457,9 +457,6 @@ object Db {
             }, "jid = ?", arrayOf(jid))
         }
     }
-
-    /** Para las copias y la sincronización (data/Backup.kt): acceso directo a la base. */
-    fun raw(): SQLiteDatabase = db
 
     /** Después de unir una copia: vistas previas y contadores de los chats tocados. */
     fun refreshAfterMerge(jids: Collection<String>) {

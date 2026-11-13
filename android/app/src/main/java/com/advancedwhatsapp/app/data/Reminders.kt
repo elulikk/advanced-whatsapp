@@ -67,7 +67,7 @@ object Reminders {
     private fun alarmIntent(id: String): PendingIntent {
         val ctx = App.instance
         return PendingIntent.getBroadcast(
-            ctx, id.hashCode(), Intent(ctx, ReminderReceiver::class.java).putExtra(EXTRA_ID, id),
+            ctx, id.hashCode(), Intent(ctx, Receiver::class.java).putExtra(EXTRA_ID, id),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
     }

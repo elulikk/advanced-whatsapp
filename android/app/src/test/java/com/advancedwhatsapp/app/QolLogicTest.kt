@@ -101,7 +101,7 @@ class QolLogicTest {
     @Test
     fun sizesAreReadable() {
         assertEquals("500 B", MediaCleanup.formatSize(500))
-        assertEquals("1.5 KB", MediaCleanup.formatSize(1536))
+        assertEquals("%.1f KB".format(1.5), MediaCleanup.formatSize(1536))   // separador decimal según el idioma del equipo
     }
 
     // ── Links ──

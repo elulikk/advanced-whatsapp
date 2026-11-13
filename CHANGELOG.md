@@ -1,8 +1,8 @@
 # Changelog
 
-## Sin publicar — IA extra (PC y Android)
+## 2026-11-12 — Android 0.4.0 / PC
 
-### Nuevo
+### Nuevo: IA
 - **Lo que te perdiste**: en un chat con 15 o más mensajes sin leer aparece un banner arriba con "Resumir"; la IA resume
   quién dijo qué, las decisiones y las preguntas para vos.
 - **Respuestas rápidas sugeridas**: 2-3 chips sobre el campo de mensaje con respuestas cortas al último mensaje, en tu estilo
@@ -16,9 +16,8 @@
   borrador.
 - **Requiere respuesta**: los chats donde quedó una pregunta o pedido tuyo sin contestar muestran "↩" y hay un filtro
   "Sin responder".
-## Sin publicar — Mensajería extra (PC y Android)
 
-### Nuevo
+### Nuevo: mensajería
 - **Respuestas automáticas**: reglas por horario/días o "modo" manual ("Estoy manejando"), solo chats individuales,
   excepciones y lista blanca, y un límite de una respuesta por contacto cada X horas. Las ejecuta el gateway: andan con la ventana cerrada.
 - **Plantillas / atajos**: escribí `/atajo` (y espacio, Tab o Enter en la PC; espacio o sugerencia en Android) y se inserta el texto guardado.
@@ -29,9 +28,8 @@
 - **Encuestas**: crear (pregunta, opciones, selección múltiple) y ver las recibidas/enviadas con el conteo de votos al día.
 - **Fijar y destacar**: barra de mensajes fijados arriba del chat (también en Android) y pantalla de destacados con buscador.
 - **Enviar a varios**: el mismo mensaje o archivo a cada contacto por separado, con pausa al azar entre envíos.
-## Sin publicar — Copias y sincronización (PC y Android)
 
-### Nuevo
+### Nuevo: copias y sincronización
 - **Copia de seguridad cifrada** (`.awbackup`, AES-256-GCM con clave PBKDF2): chats y mensajes, tags, chats bloqueados, nombres y notas
   de contactos, stickers, mensajes programados y ajustes. Restaurar combinando (gana lo más nuevo) o reemplazando todo. El mismo archivo
   se restaura en la otra app. Las claves de IA solo van si se elige. Copia automática programable con rotación de las últimas N.
@@ -39,9 +37,8 @@
   notas, stickers y preferencias; gana el último cambio por clave.
 - **Enviar al celular** (PC): arrastrar o elegir archivos que llegan a «Mi número»; en Android, botón «Guardar en Descargas».
 - Formato por secciones, fácil de extender (ver `docs/ARQUITECTURA.md`).
-## Sin publicar — calidad de vida y performance (PC y Android)
 
-### Nuevo
+### Nuevo: calidad de vida
 - **Audios**: la velocidad elegida (1x / 1.5x / 2x; en PC también las de broma) se recuerda entre notas y sesiones, y al
   terminar una nota suena sola la siguiente del chat si es otro audio ya bajado (se apaga en Ajustes).
 - **Vista previa de links** (PC y Android): título, descripción e imagen. Se usa el preview que trae el mensaje de WhatsApp;
@@ -57,6 +54,16 @@
 - **Limpieza de multimedia** (Ajustes de PC y Android): cuánto ocupa lo bajado por tipo y por chat, borrar lo más viejo que X días
   o por encima de X GB (se vuelve a bajar al abrirlo; lo enviado desde acá no se toca) y limpieza automática diaria opcional.
 
+
+### Nuevo: organización y privacidad
+- **Carpetas inteligentes**: píldoras bajo los filtros con reglas (tags/pestañas, individual o grupo, no leídos, silenciados)
+  o contactos elegidos.
+- **Archivar chats** (a mano o automático tras X días sin actividad, salvo los fijados); vuelven solos al llegar un mensaje.
+- **Notas privadas por chat** y **galería por chat** (fotos y videos, documentos, links y audios).
+- **Bloqueo de toda la app** con la misma contraseña (y huella en Android) al abrir y al volver tras X minutos.
+- **Chats ocultos**: un chat bloqueado puede desaparecer de la lista; se muestra escribiendo un código secreto en el buscador.
+- **Lectura invisible por chat**: leer sin mandar tildes azules.
+
 ### Performance
 - **Caché de miniaturas** en ambas apps (memoria LRU + disco): las fotos del chat ya no se decodifican enteras en cada
   redibujado; en PC además los avatares de la lista usan una LRU compartida. Medido en PC con 40 fotos de 12 MP: decodificar
@@ -66,6 +73,12 @@
   recorrido ordenado en Android, donde SQLite 3.22 no las tiene).
 - Paginación de mensajes: en un chat de 100 mil mensajes `get_messages` tarda ~2 ms con 40, ~12 ms con 2000 y ~58 ms con 10 mil:
   el cuello de botella es rearmar el HTML/lista, no la consulta.
+
+### Arreglos
+- Las **notas de voz** que mandabas no se podían escuchar del otro lado: el gateway ahora reempaqueta el OGG/Opus (páginas,
+  duración y fin de stream correctos) antes de enviarlo.
+- **Descargar una imagen** ya no la abre en pantalla completa: se baja, queda en el chat y se guarda una copia en
+  Descargas/AdvancedWhatsapp (PC y Android).
 
 ## 2026-11-11 — Android 0.3.1
 
