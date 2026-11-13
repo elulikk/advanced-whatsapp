@@ -467,6 +467,14 @@ class GatewayManager:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    def fetch_link_preview(self, url: str) -> Dict[str, Any]:
+        """Pide al gateway el título, la descripción y la imagen de un link (timeouts cortos del lado del gateway)."""
+        try:
+            r = _http.get(f"{GATEWAY_URL}/link-preview", params={"url": url}, timeout=12)
+            return r.json() if r.status_code == 200 else {"success": False}
+        except Exception:
+            return {"success": False}
+
     def update_contact(self, jid: str, name: str, phone: Optional[str] = None) -> Dict[str, Any]:
         """Notifica al gateway de Baileys para actualizar el contacto en su almacén en memoria."""
         try:

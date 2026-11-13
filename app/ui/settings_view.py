@@ -22,6 +22,7 @@ from app import windows_integration, chat_lock
 from app import organization as org
 from app.ui import lock_dialogs
 from app.ui.theme import C, HEADER_H
+from app.ui.storage_view import StorageTab
 from app.ui.icons import icon, tool_button, flame_pixmap
 from app.ai.ai_service import AIService
 from app.gateway_manager import GatewayManager
@@ -147,6 +148,8 @@ class SettingsPanel(QWidget):
         from app.ui.backup_panel import BackupTab
         self.backup_tab = BackupTab(self.gateway)
         self.tabs.addTab(self.backup_tab, "Copias y sincronización")
+        self.tab_storage = StorageTab()
+        self.tabs.addTab(self.tab_storage, "Almacenamiento y chat")
         self.tab_about = self._create_about_tab()
         self.tabs.addTab(self.tab_about, "Acerca de")
 

@@ -29,6 +29,7 @@ from app.ui.theme import QSS_STYLESHEET, C
 from app.ui.effects import WindowPolisher
 from app.ui import lock_dialogs
 from app.ui.app_lock import AppLockOverlay
+from app.ui.shortcuts import Shortcuts
 
 
 class MainWindow(QMainWindow):
@@ -186,6 +187,7 @@ class MainWindow(QMainWindow):
         sc("Ctrl+K", self._focus_chat_search)
         sc("Ctrl+F", self._find_in_chat)
         sc("Ctrl+Q", self.quit_app)
+        self._shortcuts = Shortcuts(self)   # marcar leído, silenciar, siguiente sin leer, archivar, estadísticas, Ctrl+/
 
     # ── Arranque ──
 
@@ -216,8 +218,20 @@ class MainWindow(QMainWindow):
 
     def after_startup(self):
         self._update_unread_ui(self._unread_total)
+        threading.Thread(target=self._background_housekeeping, daemon=True, name="advancedwhatsapp-housekeeping").start()
         self._presence_timer.start()
         QTimer.singleShot(4000, self.status_panel.refresh_contacts_badge)
+
+    @staticmethod
+    def _background_housekeeping():
+        """Limpieza automática de multimedia (si está activada) y poda de la caché de miniaturas, fuera del hilo de la UI."""
+        try:
+            time.sleep(20)     # que no compita con el arranque
+            from app import media_cleanup, thumb_cache
+            media_cleanup.run_auto_if_due()
+            thumb_cache.prune_disk()
+        except Exception as e:
+            print(f"[Advanced WhatsApp] mantenimiento en segundo plano: {e}")
 
     def _save_geometry(self):
         try:

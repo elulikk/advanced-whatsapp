@@ -48,6 +48,7 @@ from app.ai.reply_polisher import CONTEXT_MESSAGES, MODES, DEFAULT_MODE
 from app.media_service import (
     media_signals, request_media, request_transcript, is_pending, get_error, unavailable_reason
 )
+from app import link_preview, audio_queue, thumb_cache
 from app.ui.chat_list import AvatarWidget, format_hour, format_day_label, resolve_display_name
 from app.ui.theme import C, HEADER_H, R_MD, R_LG, R_SM
 from app.ui.icons import icon, tool_button, image as icon_image, pixmap as icon_pixmap, flame_pixmap
@@ -420,6 +421,14 @@ class ChatViewPanel(QWidget):
         player.state_changed.connect(self._on_voice_changed)
         player.progress_changed.connect(self._on_voice_changed)
         player.peaks_ready.connect(self._on_voice_changed)
+        player.finished.connect(self._on_voice_finished)
+
+        # Vista previa de links: al llegar un preview se redibuja el chat (junta varios en un solo repintado)
+        self._link_timer = QTimer(self)
+        self._link_timer.setSingleShot(True)
+        self._link_timer.setInterval(250)
+        self._link_timer.timeout.connect(lambda: self.refresh_messages(scroll_to_bottom=False))
+        link_preview.signals.preview_ready.connect(self._on_link_preview_ready)
 
         # Grabación de notas de voz: el micrófono graba a memoria y al enviar se convierte a OGG/Opus
         self._recorder = VoiceRecorder(self)
@@ -1719,8 +1728,14 @@ class ChatViewPanel(QWidget):
             transcript_html = ""
             sticker_url = None
             if media_type == "image" and has_file:
-                img_url = "file:///" + os.path.abspath(media_path).replace("\\", "/")
-                media_html = (f'<a href="advancedwhatsapp://open/{msg.get("id")}"><img src="{img_url}" border="0" '
+                # Se muestra una miniatura en caché (la foto original puede pesar varios MB y se redibuja seguido)
+                thumb, tw, th = thumb_cache.thumb_for(media_path)
+                img_url = "file:///" + os.path.abspath(thumb).replace("\\", "/")
+                dims = ""
+                if tw:
+                    dw, dh = thumb_cache.fit_size(tw, th)
+                    dims = f' width="{dw}" height="{dh}"'
+                media_html = (f'<a href="advancedwhatsapp://open/{msg.get("id")}"><img src="{img_url}" border="0"{dims} '
                               f'style="max-width: 300px; max-height: 240px;"/></a>')
             elif media_type == "image":
                 media_html = panel(self._media_placeholder(msg, "📷 Foto"))
@@ -1808,6 +1823,8 @@ class ChatViewPanel(QWidget):
                                      f'Ver original</a>')
             else:
                 content_text = self._linkify(raw_text)
+                if media_type == "text":
+                    content_text += self._link_card(raw_text, panel)
 
             sender_html = ""
             sender_name = msg.get("sender_name") or ""
@@ -1907,6 +1924,30 @@ class ChatViewPanel(QWidget):
         cx = self.txt_messages.cursorRect(self.txt_messages.cursorForPosition(pos)).x()
         left = cx if cx <= pos.x() <= cx + IMG_W else cx - IMG_W
         return pos.x() - left
+
+    def _on_link_preview_ready(self, url: str):
+        if self.current_chat:
+            self._link_timer.start()
+
+    def _link_card(self, raw_text: str, panel) -> str:
+        """Tarjeta con título, descripción e imagen del primer link del mensaje (vacío si no hay o aún no llegó)."""
+        url = link_preview.first_url(raw_text)
+        prev = link_preview.lookup(url) if url else None
+        return link_preview.card_html(prev, panel, C) if prev else ""
+
+    def _on_voice_finished(self, msg_id: str):
+        """Terminó una nota: sigue la próxima del chat si es un audio ya bajado (se puede apagar en Ajustes)."""
+        from app.config import get_pref
+        if not self.current_chat or msg_id not in self._voice_msgs or not get_pref("audio_autoplay"):
+            return
+        nxt = audio_queue.next_audio(self.current_chat.get("jid"), msg_id)
+        if not nxt:
+            return
+        path = nxt.get("media_path")
+        if path and os.path.exists(path):
+            voice_player().toggle(nxt["id"], path)
+        else:
+            request_media(nxt)   # se baja ahora; para escucharla hay que tocarla
 
     def _on_voice_speed_changed(self):
         self._add_voice_resources({mid: self._voice_image(mid) for mid in self._voice_msgs})

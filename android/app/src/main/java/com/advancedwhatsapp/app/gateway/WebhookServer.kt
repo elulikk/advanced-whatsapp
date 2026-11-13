@@ -7,6 +7,7 @@ import com.advancedwhatsapp.app.Prefs
 import com.advancedwhatsapp.app.ai.AutoTranscriber
 import com.advancedwhatsapp.app.data.Db
 import com.advancedwhatsapp.app.data.Extras
+import com.advancedwhatsapp.app.data.LinkPreviews
 import com.advancedwhatsapp.app.notify.Notifier
 import org.json.JSONArray
 import org.json.JSONObject
@@ -192,6 +193,7 @@ class WebhookServer {
             mediaRaw = d.str("media_raw"), alreadyRead = d.optBoolean("already_read"),
         )
         if (saved) d.optJSONObject("poll")?.let { Db.setPoll(id, it.toString()) }
+        if (saved && d.has("link_preview")) LinkPreviews.storeEvent(d)
         val isNew = !existed && !d.optBoolean("edited") && !d.optBoolean("revoked")
         if (saved && isNew && !fromMe && d.optString("upsert_type") == "notify" && !d.optBoolean("already_read")) {
             Notifier.message(chat)

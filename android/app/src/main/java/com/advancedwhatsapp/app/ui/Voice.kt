@@ -7,6 +7,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.platform.LocalView
 import com.advancedwhatsapp.app.App
+import com.advancedwhatsapp.app.Prefs
+import com.advancedwhatsapp.app.data.AudioQueue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -14,6 +16,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.math.max
 import kotlin.math.sqrt
@@ -110,7 +113,7 @@ object VoicePlayer {
     val progress = MutableStateFlow(0f)
     val positionMs = MutableStateFlow(0)
     val durationMs = MutableStateFlow(0)
-    val speed = MutableStateFlow(1f)
+    val speed = MutableStateFlow(Prefs.audioSpeed.takeIf { it == 1.5f || it == 2f } ?: 1f)
     private var player: MediaPlayer? = null
     private var ticker: Job? = null
     private var currentId: String? = null
@@ -135,7 +138,11 @@ object VoicePlayer {
         durationMs.value = 0
         player = MediaPlayer().apply {
             setDataSource(path)
-            setOnCompletionListener { release() }
+            setOnCompletionListener {
+                val finished = currentId
+                this@VoicePlayer.release()    // sin el calificador sería el release() del MediaPlayer
+                if (finished != null && Prefs.audioAutoplay) playNext(finished, scope)
+            }
             prepare()
             durationMs.value = duration
             applySpeed(this)
@@ -143,6 +150,16 @@ object VoicePlayer {
         }
         playingId.value = id
         startTicker(scope)
+    }
+
+    /** Pasa solo a la nota que sigue en el chat, si es un audio ya bajado (no arranca nada si hay otro cosa en el medio). */
+    private fun playNext(afterId: String, scope: CoroutineScope) {
+        scope.launch(Dispatchers.IO) {
+            val next = runCatching { AudioQueue.nextAfter(afterId) }.getOrNull() ?: return@launch
+            withContext(Dispatchers.Main) {
+                if (currentId == null) runCatching { toggle(next.id, next.path, scope) }
+            }
+        }
     }
 
     fun seek(id: String, fraction: Float) {
@@ -161,6 +178,7 @@ object VoicePlayer {
             1.5f -> 2f
             else -> 1f
         }
+        Prefs.audioSpeed = speed.value
         player?.let { if (it.isPlaying) applySpeed(it) }
     }
 

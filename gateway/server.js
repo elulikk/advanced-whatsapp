@@ -5,6 +5,8 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import os from 'os';
+import http from 'http';
+import https from 'https';
 import { fileURLToPath } from 'url';
 import makeWASocket, {
     useMultiFileAuthState,
@@ -622,7 +624,22 @@ function extractMessageDetails(msg) {
         return null;
     }
 
-    return { text: cleanText, mediaType, innerMessage: m, quotedText, quotedSender, poll: pollInfo };
+    // Vista previa de link que ya trae el mensaje (título, descripción y miniatura)
+    let linkPreview = null;
+    const ext = m.extendedTextMessage;
+    if (ext && (ext.title || ext.description || ext.jpegThumbnail)) {
+        try {
+            linkPreview = {
+                url: ext.canonicalUrl || ext.matchedText || '',
+                title: ext.title || '',
+                description: ext.description || '',
+                image_b64: ext.jpegThumbnail ? Buffer.from(ext.jpegThumbnail).toString('base64') : null,
+                image_mime: 'image/jpeg'
+            };
+        } catch (e) { linkPreview = null; }
+    }
+
+    return { text: cleanText, mediaType, innerMessage: m, quotedText, quotedSender, poll: pollInfo, linkPreview };
 }
 
 // Claves "útiles" de un mensaje descartado, para el log (messageContextInfo siempre viene y no dice nada)
@@ -1070,6 +1087,7 @@ async function initWhatsApp() {
                         media_type: mediaType,
                         media_path: null,
                         media_raw: serializeMediaRaw(m, mediaType),
+                        link_preview: details.linkPreview || undefined,
                         quoted_text: quotedText,
                         quoted_sender: quotedSender,
                         timestamp: Number(m.messageTimestamp || Math.floor(Date.now() / 1000)),
@@ -1400,6 +1418,7 @@ async function initWhatsApp() {
                         media_type: mediaType,
                         media_path: mediaPath,
                         media_raw: serializeMediaRaw(msg, mediaType),
+                        link_preview: details.linkPreview || undefined,
                         quoted_text: quotedText,
                         quoted_sender: quotedSender,
                         poll: pollView,
@@ -2446,6 +2465,119 @@ function normalizeOggOpus(buf) {
     }
 }
 
+// ── Vista previa de links ───────────────────────────────────────────────────
+// Se baja el HTML (tope de tamaño y de tiempo), se leen los metadatos og:/twitter: y la imagen. Caché en memoria con
+// vencimiento; los clientes guardan además la suya. Sin dependencias: solo http/https.
+const LINK_PREVIEW_TTL_MS = 6 * 3600 * 1000;
+const LINK_PREVIEW_MAX = 300;
+const linkPreviewCache = new Map();   // url -> { t, data }
+const linkPreviewInflight = new Map();   // url -> Promise
+const LINK_URL_RE = /https?:\/\/[^\s<>"']+/i;
+
+function isPrivateHost(host) {
+    const h = String(host || '').toLowerCase();
+    return h === 'localhost' || h.endsWith('.local') || h.endsWith('.internal') || h === '[::1]' ||
+        /^(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|0\.)/.test(h);
+}
+
+function httpGetLimited(urlStr, { maxBytes, timeoutMs, redirects = 4 }) {
+    return new Promise((resolve, reject) => {
+        let u;
+        try { u = new URL(urlStr); } catch (e) { return reject(new Error('URL inválida')); }
+        if (!/^https?:$/.test(u.protocol) || isPrivateHost(u.hostname)) return reject(new Error('URL no permitida'));
+        const lib = u.protocol === 'https:' ? https : http;
+        const req = lib.get(u, {
+            timeout: timeoutMs,
+            headers: { 'User-Agent': 'Mozilla/5.0 (compatible; WhatsApp/2.23; +https://www.whatsapp.com)', 'Accept': 'text/html,image/*;q=0.8,*/*;q=0.5', 'Accept-Language': 'es,en;q=0.7' }
+        }, (res) => {
+            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                res.resume();
+                if (redirects <= 0) return reject(new Error('Demasiadas redirecciones'));
+                let next;
+                try { next = new URL(res.headers.location, u).toString(); } catch (e) { return reject(e); }
+                return httpGetLimited(next, { maxBytes, timeoutMs, redirects: redirects - 1 }).then(resolve, reject);
+            }
+            if (res.statusCode !== 200) { res.resume(); return reject(new Error('HTTP ' + res.statusCode)); }
+            const chunks = [];
+            let size = 0;
+            res.on('data', (c) => {
+                size += c.length;
+                chunks.push(c);
+                if (size >= maxBytes) { res.destroy(); resolve({ buffer: Buffer.concat(chunks).subarray(0, maxBytes), contentType: res.headers['content-type'] || '', finalUrl: u.toString(), truncated: true }); }
+            });
+            res.on('end', () => resolve({ buffer: Buffer.concat(chunks), contentType: res.headers['content-type'] || '', finalUrl: u.toString(), truncated: false }));
+            res.on('error', reject);
+        });
+        req.on('timeout', () => req.destroy(new Error('Tiempo agotado')));
+        req.on('error', reject);
+    });
+}
+
+function decodeHtmlEntities(s) {
+    return String(s || '')
+        .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+        .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
+        .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+        .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
+}
+
+function parseHtmlMeta(html) {
+    const metas = {};
+    for (const tag of html.match(/<meta\s[^>]*>/gi) || []) {
+        const key = /(?:property|name)\s*=\s*["']([^"']+)["']/i.exec(tag)?.[1];
+        const val = /content\s*=\s*"([^"]*)"/i.exec(tag)?.[1] ?? /content\s*=\s*'([^']*)'/i.exec(tag)?.[1];
+        if (key && val != null && !(key.toLowerCase() in metas)) metas[key.toLowerCase()] = decodeHtmlEntities(val);
+    }
+    const titleTag = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1];
+    return {
+        title: metas['og:title'] || metas['twitter:title'] || decodeHtmlEntities(titleTag) || '',
+        description: metas['og:description'] || metas['twitter:description'] || metas['description'] || '',
+        image: metas['og:image'] || metas['og:image:url'] || metas['twitter:image'] || metas['twitter:image:src'] || ''
+    };
+}
+
+async function buildLinkPreview(url) {
+    const page = await httpGetLimited(url, { maxBytes: 300 * 1024, timeoutMs: 4000 });
+    if (!/html|xml/i.test(page.contentType)) throw new Error('No es una página');
+    const charset = /charset=([\w-]+)/i.exec(page.contentType)?.[1] || /<meta[^>]+charset=["']?([\w-]+)/i.exec(page.buffer.subarray(0, 4096).toString('latin1'))?.[1] || 'utf-8';
+    let html;
+    try { html = new TextDecoder(charset).decode(page.buffer); } catch (e) { html = page.buffer.toString('utf8'); }
+    const meta = parseHtmlMeta(html);
+    const data = { url: page.finalUrl, title: meta.title.slice(0, 200), description: meta.description.slice(0, 300), image_b64: null, image_mime: null };
+    if (meta.image) {
+        try {
+            const img = await httpGetLimited(new URL(meta.image, page.finalUrl).toString(), { maxBytes: 400 * 1024, timeoutMs: 3000 });
+            if (/^image\/(jpeg|png|webp|gif)/i.test(img.contentType) && !img.truncated) {
+                data.image_b64 = img.buffer.toString('base64');
+                data.image_mime = img.contentType.split(';')[0].trim().toLowerCase();
+            }
+        } catch (e) { /* sin imagen: el preview sigue valiendo */ }
+    }
+    return data;
+}
+
+// Devuelve el preview (de caché o recién bajado) o null. Nunca lanza.
+function getLinkPreview(url) {
+    const hit = linkPreviewCache.get(url);
+    if (hit && Date.now() - hit.t < LINK_PREVIEW_TTL_MS) return Promise.resolve(hit.data);
+    if (linkPreviewInflight.has(url)) return linkPreviewInflight.get(url);
+    const job = buildLinkPreview(url).catch(() => null).then((data) => {
+        linkPreviewInflight.delete(url);
+        linkPreviewCache.set(url, { t: Date.now() - (data ? 0 : LINK_PREVIEW_TTL_MS - 120000), data });   // un fallo se reintenta en 2 min
+        while (linkPreviewCache.size > LINK_PREVIEW_MAX) linkPreviewCache.delete(linkPreviewCache.keys().next().value);
+        return data;
+    });
+    linkPreviewInflight.set(url, job);
+    return job;
+}
+
+app.get('/link-preview', async (req, res) => {
+    const url = String(req.query.url || '');
+    if (!/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Falta url http(s)' });
+    const data = await getLinkPreview(url);
+    res.json({ success: Boolean(data && (data.title || data.description || data.image_b64)), preview: data });
+});
+
 // Envía un mensaje con el cuerpo de POST /send. Si algo falla lanza un error con httpStatus (404 = falta el archivo).
 async function sendWhatsApp(body, extraOpts = {}) {
     const { to, text, image_path, image_thumb, image_url, document_path, document_name, mimetype,
@@ -2522,7 +2654,25 @@ async function sendWhatsApp(body, extraOpts = {}) {
             caption: msgText || undefined
         }, sendOpts);
     } else {
-        result = await sock.sendMessage(jid, { text: msgText }, sendOpts);
+        const content = { text: msgText };
+        // Texto con un link: se manda con su vista previa (si el sitio no responde rápido, sale sin ella)
+        const linkMatch = body.link_preview === false ? null : LINK_URL_RE.exec(msgText);
+        if (linkMatch) {
+            const matched = linkMatch[0].replace(/[.,;:!?)]+$/, '');
+            const lp = await Promise.race([getLinkPreview(matched), new Promise(r => setTimeout(() => r(null), 3000))]);
+            if (lp && (lp.title || lp.description)) {
+                content.linkPreview = {
+                    'canonical-url': lp.url || matched,
+                    'matched-text': matched,
+                    title: lp.title,
+                    description: lp.description,
+                    // WhatsApp espera una miniatura JPEG chica; sin sharp/jimp solo se manda si ya viene así
+                    ...(lp.image_b64 && lp.image_mime === 'image/jpeg' && lp.image_b64.length < 60000
+                        ? { jpegThumbnail: Buffer.from(lp.image_b64, 'base64') } : {})
+                };
+            }
+        }
+        result = await sock.sendMessage(jid, content, sendOpts);
     }
 
     if (result?.key?.id) {

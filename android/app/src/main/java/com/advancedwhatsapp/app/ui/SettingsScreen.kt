@@ -205,6 +205,7 @@ fun SettingsScreen(onBack: () -> Unit, onExtras: () -> Unit = {}) {
             AiService.PROVIDERS.forEach { ProviderCard(it) }
 
             BackupSettings()
+            QolSettingsSection()
 
             Text("Versión ${BuildConfig.VERSION_NAME}", color = C.text3, fontSize = 12.sp)
         }
