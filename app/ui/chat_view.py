@@ -39,6 +39,7 @@ from app.config import (
 from app.ai import psych_analysis as pa
 from app.ai import reply_polisher
 from app.ai import message_summary
+from app.ui.ai_extras import AiExtras
 from app.ai.ai_service import AIService
 from app.ai.transcription import transcribe_audio, pcm_to_wav, merge_dictation
 from app.ai.reply_polisher import CONTEXT_MESSAGES, MODES, DEFAULT_MODE
@@ -582,6 +583,9 @@ class ChatViewPanel(QWidget):
         btn_unpin.clicked.connect(self._unpin_shown)
         pin_lay.addWidget(btn_unpin)
         self.chat_layout.addWidget(self.pin_bar)
+        # IA extra: banner «Lo que te perdiste», chips de respuestas rápidas, traducción y recordatorios
+        self.ai_extras = AiExtras(self)
+        self.chat_layout.addWidget(self.ai_extras.banner)
 
         # Visor de mensajes
         self.txt_messages = ChatBrowser()
@@ -823,6 +827,11 @@ class ChatViewPanel(QWidget):
         self.btn_polish.clicked.connect(self._toggle_polish)
         composer_layout.addWidget(self.btn_polish, alignment=Qt.AlignBottom)
 
+        self.btn_translate = tool_button("translate", "Traducir antes de enviar: escribí el mensaje y elegí el idioma",
+                                         size=btn, icon_size=20)
+        self.btn_translate.clicked.connect(lambda: self.ai_extras.show_draft_menu(self.btn_translate))
+        composer_layout.addWidget(self.btn_translate, alignment=Qt.AlignBottom)
+
         self.btn_schedule = tool_button("clock", "Programar envío: elegí día y hora, y lo próximo que mandes sale solo",
                                         size=btn, icon_size=20)
         self.btn_schedule.clicked.connect(self._choose_schedule_time)
@@ -919,6 +928,7 @@ class ChatViewPanel(QWidget):
         sb_lay.addWidget(self.btn_schedule_list)
         self.chat_layout.addWidget(self.schedule_bar)
 
+        self.chat_layout.addWidget(self.ai_extras.quick)
         self.chat_layout.addWidget(composer_frame)
 
         # Fila: chat + panel lateral de info del contacto
@@ -1062,6 +1072,8 @@ class ChatViewPanel(QWidget):
         if self.info_panel.isVisible():
             self.info_panel.show_chat(chat_data, name)
 
+        from app.db import get_chat as _get_chat
+        self.ai_extras.on_chat_opened(chat_data, int((_get_chat(jid) or {}).get("unread_count") or 0))   # antes de marcar leído
         newly_read = mark_chat_as_read(jid)
         self.gateway.send_read_receipts(jid, [mid for mid, _ in newly_read])
         self._messages_limit = 40
@@ -1274,6 +1286,10 @@ class ChatViewPanel(QWidget):
                 request_transcript(msg)
             elif action == "summarize":
                 self._toggle_summary(msg)
+            elif action == "remind":
+                self.ai_extras.open_reminder(msg)
+            elif action == "untranslate":
+                self.ai_extras.toggle_translation(msg)
             elif action == "resummarize":
                 self._request_summary(msg)
             elif action == "react":
@@ -1705,7 +1721,7 @@ class ChatViewPanel(QWidget):
             summary_link = self._summary_link(msg, mid in self._summary_hidden)
             edited_mark = (f'<span style="{meta_style} font-style: italic;">Editado&nbsp;</span>'
                            if msg.get("edited") and media_type != "revoked" else "")
-            meta = (f'{summary_link}{self._reply_forward_links(msg)}{self._react_link(mid)}{pin_mark}{edited_mark}'
+            meta = (f'{self.ai_extras.reminder_link(msg)}{summary_link}{self._reply_forward_links(msg)}{self._react_link(mid)}{pin_mark}{edited_mark}'
                     f'<span style="{meta_style}">{hora}</span>{ticks}')
 
             if media_type == "audio" or media_type == "sticker" or (media_type in ["location", "contact"] and media_html):
@@ -1761,7 +1777,7 @@ class ChatViewPanel(QWidget):
                   <tr>{row(f'''<td align="{align}">{anchor}
                     <table border="0" cellpadding="0" cellspacing="0" style="background-color: {bg};">
                       <tr><td style="{bubble_text} padding: 6px 10px 5px 10px;">
-                        {sender_html}{quote_html}{media_html}{content_text}{self._summary_html(msg)}
+                        {sender_html}{quote_html}{media_html}{content_text}{self._summary_html(msg)}{self.ai_extras.translation_html(msg)}
                         <div style="text-align: right; margin-top: 2px;">{meta}</div>
                       </td></tr>
                     </table>
@@ -1799,6 +1815,7 @@ class ChatViewPanel(QWidget):
         if len(frames) == len(block_ids):
             self._msg_frames = [(fr, mid) for fr, mid in zip(frames, block_ids) if mid]
         self._update_pin_bar()
+        self.ai_extras.on_messages(messages)
 
         if self._follow_bottom:
             sb.setValue(sb.maximum())
@@ -2025,6 +2042,9 @@ class ChatViewPanel(QWidget):
             shown = bool(msg.get("summary")) and msg["id"] not in self._summary_hidden
             actions.append(("summarize", "sparkle", "Ocultar resumen" if shown else "Resumir con IA",
                             not message_summary.is_pending(msg["id"])))
+        if self.ai_extras.can_translate(msg):
+            actions.append(("translate", "translate", "Ocultar traducción" if self.ai_extras.translation_visible(msg["id"])
+                            else "Traducir", True))
         actions += [
             ("pin", "pin", "Desfijar" if pinned else "Fijar", not revoked),
             (None, "", "", True),
@@ -2052,6 +2072,8 @@ class ChatViewPanel(QWidget):
             self._add_sticker_from_msg(msg)
         elif key == "summarize":
             self._toggle_summary(msg)
+        elif key == "translate":
+            self.ai_extras.toggle_translation(msg)
         elif key == "pin":
             self._toggle_pin(msg)
         elif key == "select":

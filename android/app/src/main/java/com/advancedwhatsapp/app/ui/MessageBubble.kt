@@ -78,6 +78,7 @@ import coil.decode.ImageDecoderDecoder
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
 import com.advancedwhatsapp.app.ai.MessageSummary
+import com.advancedwhatsapp.app.ai.SmartFeatures
 import com.advancedwhatsapp.app.data.Message
 import kotlinx.coroutines.CoroutineScope
 import org.json.JSONObject
@@ -104,6 +105,8 @@ fun MessageBubble(
     onOpenMedia: () -> Unit, onTranscribe: () -> Unit, onSummarize: (redo: Boolean) -> Unit,
     transcriptOpen: Boolean, onToggleTranscript: () -> Unit, summaryOpen: Boolean, onSetSummaryOpen: (Boolean) -> Unit,
     onAutoDownload: () -> Unit = {}, onSaveSticker: () -> Unit = {},
+    translation: String? = null, onTranslate: () -> Unit = {}, onHideTranslation: () -> Unit = {},
+    reminder: SmartFeatures.Detected? = null, onReminder: () -> Unit = {},
 ) {
     var menu by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
@@ -161,6 +164,9 @@ fun MessageBubble(
                         }.padding(3.dp),
                     )
                 }
+                if (reminder != null) {
+                    Text("⏰", fontSize = 15.sp, modifier = Modifier.clickable(onClick = onReminder).padding(horizontal = 2.dp))
+                }
                 if (m.edited) Text("Editado", color = C.text3, fontSize = 11.sp)
                 Text(timeOf(m.timestamp), color = C.text2, fontSize = 11.sp)
                 if (m.fromMe && !revoked) StatusTicks(m.status)
@@ -168,6 +174,7 @@ fun MessageBubble(
             if (summaryOpen || m.summary != null) {
                 SummaryPanel(m, busy, summaryOpen, onToggle = { onSetSummaryOpen(!summaryOpen) }, onRedo = { onSummarize(true) })
             }
+            if (translation != null) TranslationPanel(translation, onHideTranslation)
         }
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
             if (!revoked) {
@@ -194,6 +201,12 @@ fun MessageBubble(
                         menu = false
                         onSetSummaryOpen(true)
                         if (m.summary == null) onSummarize(false)
+                    })
+                }
+                if (SmartFeatures.text(m).isNotEmpty()) {
+                    DropdownMenuItem(text = { Text(if (translation != null) "Ocultar traducción" else "Traducir") }, onClick = {
+                        menu = false
+                        if (translation != null) onHideTranslation() else onTranslate()
                     })
                 }
                 if (stickerFile != null) {

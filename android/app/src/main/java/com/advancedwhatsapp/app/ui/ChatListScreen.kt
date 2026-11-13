@@ -28,6 +28,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DonutLarge
 import androidx.compose.material.icons.filled.Edit
@@ -82,6 +83,7 @@ import com.advancedwhatsapp.app.AppState
 import com.advancedwhatsapp.app.Prefs
 import com.advancedwhatsapp.app.data.Actions
 import com.advancedwhatsapp.app.data.Chat
+import com.advancedwhatsapp.app.ai.SmartFeatures
 import com.advancedwhatsapp.app.data.ChatFilter
 import com.advancedwhatsapp.app.data.ChatTab
 import com.advancedwhatsapp.app.data.Db
@@ -106,17 +108,27 @@ fun ChatListScreen(
     var tabs by remember { mutableStateOf(emptyList<ChatTab>()) }
     var unreadGroups by remember { mutableIntStateOf(0) }
     var managingTabs by remember { mutableStateOf(false) }
+    var aiSearch by remember { mutableStateOf(false) }
+    var pendingJids by remember { mutableStateOf(emptySet<String>()) }   // chats con una pregunta mía sin contestar
     val owner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
 
     suspend fun reload() {
         withContext(Dispatchers.IO) {
             val filter = filterFor(selected)
-            val loadedChats = Db.getChats(search, filter)
+            val loadedChats = if (selected == KEY_PENDING) {
+                val base = Db.getChats(search, null, 250)
+                val pend = SmartFeatures.needsReplyJids(base.map { it.jid })
+                base.filter { it.jid in pend }
+            } else {
+                Db.getChats(search, filter)
+            }
+            val flagged = SmartFeatures.needsReplyJids(loadedChats.take(60).map { it.jid })
             val loadedTabs = Db.getTabs()
             val groups = Db.unreadGroups()
             withContext(Dispatchers.Main) {
                 chats = loadedChats
+                pendingJids = flagged
                 tabs = loadedTabs
                 unreadGroups = groups
                 // La pestaña abierta se borró
@@ -180,6 +192,9 @@ fun ChatListScreen(
             if (searching) {
                 OutlinedTextField(
                     value = search, onValueChange = { search = it }, placeholder = { Text("Buscar chats") }, singleLine = true,
+                    trailingIcon = {
+                        IconButton(onClick = { aiSearch = true }) { Icon(Icons.Default.AutoAwesome, "Buscar con IA", tint = C.ember) }
+                    },
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
                 )
             }
@@ -191,6 +206,7 @@ fun ChatListScreen(
                     item(KEY_ALL) { TabChip("Todos", 0, selected == KEY_ALL) { selected = KEY_ALL } }
                     item(KEY_UNREAD) { TabChip("No leídos", 0, selected == KEY_UNREAD) { selected = KEY_UNREAD } }
                     item(KEY_GROUPS) { TabChip("Grupos", unreadGroups, selected == KEY_GROUPS) { selected = KEY_GROUPS } }
+                    item(KEY_PENDING) { TabChip("Sin responder", 0, selected == KEY_PENDING) { selected = KEY_PENDING } }
                     items(tabs, key = { tabKey(it.id) }) { t ->
                         TabChip(t.name, t.unread, selected == tabKey(t.id)) { selected = tabKey(t.id) }
                     }
@@ -212,6 +228,7 @@ fun ChatListScreen(
                             search.isNotBlank() -> "Ningún chat coincide con la búsqueda."
                             selected == KEY_UNREAD -> "No tenés chats sin leer."
                             selected == KEY_GROUPS -> "Todavía no hay grupos."
+                            selected == KEY_PENDING -> "No tenés nada sin responder. 🎉"
                             selected != KEY_ALL -> "Esta pestaña está vacía. Mantené apretado un chat y elegí \"Mover a\"."
                             conn.isConnected -> "Todavía no hay chats. Si recién vinculaste, el historial tarda unos minutos en llegar."
                             else -> "Sin chats todavía."
@@ -222,7 +239,7 @@ fun ChatListScreen(
             } else {
                 LazyColumn(contentPadding = PaddingValues(bottom = 88.dp)) {
                     items(chats, key = { it.jid }) { chat ->
-                        ChatRow(chat, tabs, onClick = { onOpen(chat.jid) }, onMarkRead = {
+                        ChatRow(chat, tabs, needsReply = chat.jid in pendingJids, onClick = { onOpen(chat.jid) }, onMarkRead = {
                             scope.launch(Dispatchers.IO) { Actions.markRead(chat.jid) }
                         }, onMove = { tabId ->
                             scope.launch(Dispatchers.IO) { Db.moveChatToTab(chat.jid, tabId) }
@@ -231,6 +248,12 @@ fun ChatListScreen(
                 }
             }
         }
+    }
+    if (aiSearch) {
+        AiSearchDialog(search, onDismiss = { aiSearch = false }, onOpen = { jid ->
+            aiSearch = false
+            onOpen(jid)
+        })
     }
     if (managingTabs) {
         TabsDialog(
@@ -246,6 +269,7 @@ fun ChatListScreen(
 private const val KEY_ALL = "todos"
 private const val KEY_UNREAD = "no_leidos"
 private const val KEY_GROUPS = "grupos"
+private const val KEY_PENDING = "sin_responder"
 private fun tabKey(id: Long) = "pestana:$id"
 
 private fun filterFor(key: String): ChatFilter = when (key) {
@@ -365,7 +389,7 @@ private fun BatteryBanner() {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ChatRow(chat: Chat, tabs: List<ChatTab>, onClick: () -> Unit, onMarkRead: () -> Unit, onMove: (Long) -> Unit) {
+private fun ChatRow(chat: Chat, tabs: List<ChatTab>, onClick: () -> Unit, onMarkRead: () -> Unit, onMove: (Long) -> Unit, needsReply: Boolean = false) {
     var menu by remember { mutableStateOf(false) }
     var lockDialog by remember { mutableStateOf("") }   // "", "new" (crear contraseña y bloquear), "ask" (pedirla para desbloquear)
     val locked = ChatLock.isLocked(chat.jid)
@@ -392,7 +416,7 @@ private fun ChatRow(chat: Chat, tabs: List<ChatTab>, onClick: () -> Unit, onMark
                     Text(chatTime(chat.lastTime), color = if (chat.unread != 0) C.accent else C.text3, fontSize = 12.sp)
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(if (locked) ChatLock.LOCKED_PREVIEW else chat.lastText, color = C.text2, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    Text(if (locked) ChatLock.LOCKED_PREVIEW else if (needsReply) "↩ ${chat.lastText}" else chat.lastText, color = if (needsReply && !locked) C.accent else C.text2, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                     if (chat.isMuted) Icon(Icons.Default.NotificationsOff, "Silenciado", tint = C.text3, modifier = Modifier.size(16.dp).padding(start = 2.dp))
                     if (chat.pinned) Icon(Icons.Default.PushPin, "Fijado", tint = C.text3, modifier = Modifier.size(16.dp).padding(start = 2.dp))
                     if (chat.unread != 0) {

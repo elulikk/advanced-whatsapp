@@ -47,6 +47,7 @@ import com.advancedwhatsapp.app.BuildConfig
 import com.advancedwhatsapp.app.Prefs
 import com.advancedwhatsapp.app.ai.AiService
 import com.advancedwhatsapp.app.ai.AutoTranscriber
+import com.advancedwhatsapp.app.ai.SmartFeatures
 import com.advancedwhatsapp.app.data.Actions
 import com.advancedwhatsapp.app.data.ChatLock
 import com.advancedwhatsapp.app.gateway.GatewayService
@@ -134,6 +135,18 @@ fun SettingsScreen(onBack: () -> Unit) {
                 Prefs.autoTranscribe = it
                 if (it) AutoTranscriber.backlogOnce(force = true)
             }
+            var quickReplies by remember { mutableStateOf(SmartFeatures.quickRepliesOn) }
+            Toggle("Sugerir respuestas rápidas sobre el campo de mensaje", quickReplies) {
+                quickReplies = it
+                SmartFeatures.quickRepliesOn = it
+            }
+            var dateReminders by remember { mutableStateOf(SmartFeatures.dateRemindersOn) }
+            Toggle("Detectar fechas en los mensajes (⏰ para crear un recordatorio)", dateReminders) {
+                dateReminders = it
+                SmartFeatures.dateRemindersOn = it
+            }
+            var translateLang by remember { mutableStateOf(SmartFeatures.translateLang) }
+            Selector("Traducir mensajes a", translateLang, SmartFeatures.LANGUAGES, { translateLang = it; SmartFeatures.translateLang = it })
             AiService.PROVIDERS.forEach { ProviderCard(it) }
 
             Text("Versión ${BuildConfig.VERSION_NAME}", color = C.text3, fontSize = 12.sp)

@@ -119,6 +119,7 @@ import com.advancedwhatsapp.app.ai.AiService
 import com.advancedwhatsapp.app.ai.AnalysisStore
 import com.advancedwhatsapp.app.ai.MessageSummary
 import com.advancedwhatsapp.app.ai.ReplyPolisher
+import com.advancedwhatsapp.app.ai.SmartFeatures
 import com.advancedwhatsapp.app.data.Actions
 import com.advancedwhatsapp.app.data.Chat
 import com.advancedwhatsapp.app.data.Db
@@ -163,6 +164,10 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
     // Transcripciones y síntesis desplegadas: por mensaje, mientras dure esta pantalla (la lista recicla las burbujas)
     val openTranscripts = remember { mutableStateMapOf<String, Boolean>() }
     val openSummaries = remember { mutableStateMapOf<String, Boolean>() }
+    // IA extra: traducciones por mensaje («…» mientras se traduce), fecha detectada a confirmar y sin leer al abrir el chat
+    val translations = remember { mutableStateMapOf<String, String>() }
+    var reminderFor by remember { mutableStateOf<Pair<Message, SmartFeatures.Detected>?>(null) }
+    val missedUnread = remember(jid) { runCatching { Db.getChat(jid)?.unread ?: 0 }.getOrDefault(0) }   // antes de marcarlo leído
     var transcribing by remember { mutableStateOf(false) }
     var clipHasImage by remember { mutableStateOf(false) }
     var clipDismissed by remember { mutableStateOf(0L) }
@@ -197,6 +202,24 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
     }
 
     fun nowSec() = System.currentTimeMillis() / 1000
+
+    fun toggleTranslation(m: Message) {
+        val current = translations[m.id]
+        if (current == "…") return
+        if (current != null) {
+            translations.remove(m.id)
+            return
+        }
+        translations[m.id] = "…"
+        scope.launch(Dispatchers.IO) {
+            val (p, model) = SmartFeatures.chooseAi()
+            val res = runCatching { SmartFeatures.translate(SmartFeatures.text(m), SmartFeatures.translateLang, p, model) }
+                .getOrElse { "" to "Error: ${it.message}" }
+            withContext(Dispatchers.Main) {
+                translations[m.id] = if (res.second.isEmpty()) res.first else "Error: ${res.second.removePrefix("Error:").trim()}"
+            }
+        }
+    }
 
     fun toggleEmojiPanel() {
         if (emojiOpen) {
@@ -505,6 +528,7 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
             return@Scaffold
         }
         Column(Modifier.padding(pad).fillMaxSize().background(C.chatBg)) {
+            MissedBanner(jid, chat?.name.orEmpty(), chat?.isGroup == true, missedUnread)
             LazyColumn(
                 state = listState, reverseLayout = true,
                 modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp),
@@ -575,6 +599,10 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
                                     Db.setSummary(m.id, out)
                                 }
                             },
+                            translation = translations[m.id], onTranslate = { toggleTranslation(m) },
+                            onHideTranslation = { translations.remove(m.id) },
+                            reminder = if (SmartFeatures.dateRemindersOn) SmartFeatures.futureDatetime(m) else null,
+                            onReminder = { SmartFeatures.futureDatetime(m)?.let { found -> reminderFor = m to found } },
                         )
                     }
                 }
@@ -606,6 +634,7 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
                     IconButton(onClick = { dismissClipImage() }) { Icon(Icons.Default.Close, "Ignorar") }
                 }
             }
+            AiExtraBar(jid, chat?.name.orEmpty(), messages, draft, onUseText = { draft = it }, onError = { notifyError(it) })
             ScheduleBar(scheduleAt, scheduledCount, onChange = { chooseScheduleTime() }, onClear = { scheduleAt = null }, onOpenList = onScheduled)
             Composer(
                 draft = draftState.value, onDraft = { draftState.value = it }, scope = scope, scheduled = scheduleAt != null,
@@ -669,6 +698,16 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
         }
     }
     viewerImage?.let { ImageViewer(it) { viewerImage = null } }
+    reminderFor?.let { (rm, found) ->
+        ReminderDialog(
+            rm, found, chat?.name.orEmpty(),
+            onSchedule = { at ->
+                scheduleAt = at
+                scope.launch { snackbar.showSnackbar("Escribí el mensaje: sale a la hora elegida.") }
+            },
+            onDismiss = { reminderFor = null },
+        )
+    }
 }
 
 @Composable

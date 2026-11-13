@@ -60,6 +60,9 @@
 
         <receiver android:name=".notify.NotificationReceiver" android:exported="false" />
 
+        <!-- Aviso de los recordatorios creados desde una fecha detectada en un mensaje -->
+        <receiver android:name=".data.Reminders$Receiver" android:exported="false" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.files"

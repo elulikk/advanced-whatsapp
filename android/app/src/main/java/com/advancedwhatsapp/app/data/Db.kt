@@ -307,6 +307,30 @@ object Db {
             arrayOf(jid),
         ).use { c -> buildList { while (c.moveToNext()) add(c.toMessage()) } }.reversed()
 
+    /** Los últimos [n] mensajes del chat en orden cronológico, sin reacciones (barato: lo usa «Sin responder»). */
+    fun lastMessages(jid: String, n: Int): List<Message> =
+        db.rawQuery("SELECT * FROM messages WHERE chat_jid = ? ORDER BY timestamp DESC LIMIT $n", arrayOf(jid))
+            .use { c -> buildList { while (c.moveToNext()) add(c.toMessage()) } }.reversed()
+
+    /** Mensajes cuyo texto o transcripción contiene alguno de los fragmentos (LIKE), sin los de chats bloqueados. */
+    fun searchMessages(likes: List<String>, scan: Int): List<Message> {
+        if (likes.isEmpty()) return emptyList()
+        val locked = ChatLock.locked.toList()
+        val args = mutableListOf<String>()
+        val cond = likes.joinToString(" OR ") { "(text LIKE ? OR transcript LIKE ?)" }
+        likes.forEach {
+            args += "%$it%"
+            args += "%$it%"
+        }
+        var q = "SELECT * FROM messages WHERE ($cond) AND COALESCE(media_type, 'text') != 'revoked'"
+        if (locked.isNotEmpty()) {
+            q += " AND chat_jid NOT IN (${locked.joinToString(",") { "?" }})"
+            args += locked
+        }
+        q += " ORDER BY timestamp DESC LIMIT $scan"
+        return db.rawQuery(q, args.toTypedArray()).use { c -> buildList { while (c.moveToNext()) add(c.toMessage()) } }
+    }
+
     fun getContacts(search: String = ""): List<Contact> {
         val args = mutableListOf<String>()
         var q = """SELECT c.jid AS jid, COALESCE(NULLIF(c.name,''), NULLIF(c.push_name,''), c.phone, c.jid) AS name,

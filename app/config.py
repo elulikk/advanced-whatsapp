@@ -222,6 +222,8 @@ PREF_DEFAULTS = {
     "close_to_tray": True,       # la X deja Advanced WhatsApp en la bandeja (sigue avisando)
     "status_receipts": True,     # al ver un estado, el contacto ve que lo viste
     "typing_indicator": True,    # mandar "escribiendo…" mientras escribo
+    "quick_replies": True,      # chips de respuestas rápidas sugeridas por IA sobre el campo de mensaje
+    "date_reminders": True,    # ⏰ en los mensajes que mencionan una fecha/hora para crear un recordatorio
     "auto_transcribe": True,     # transcribir solos los audios que llegan (y los que mando)
     "tags_palette_open": True,  # panel de tags abierto debajo de los filtros de la lista de chats
 }

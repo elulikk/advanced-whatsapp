@@ -95,6 +95,8 @@ class MainWindow(QMainWindow):
             alert_widget=self, tray_provider=lambda: self._tray, parent=self)
         self.notifications.open_chat_requested.connect(lambda jid: self.handle_uri(f"advancedwhatsapp://open?chat={jid}"))
         self._badge = TaskbarBadge()
+        from app.reminders import ReminderService   # recordatorios creados desde fechas detectadas en mensajes
+        self.reminder_service = ReminderService(self.notifications.notify_simple, self)
 
         self._connect_signals()
 

@@ -15,6 +15,8 @@ class App : Application() {
         if (isMainProcess()) {
             Db.init(this)
             createChannels()
+            // Recordatorios creados desde fechas detectadas: las alarmas se pierden al reiniciar el teléfono
+            kotlin.concurrent.thread { runCatching { com.advancedwhatsapp.app.data.Reminders.rescheduleAll() } }
         }
     }
 

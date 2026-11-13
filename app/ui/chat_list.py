@@ -10,8 +10,9 @@ from PySide6.QtGui import QPainter, QBrush, QColor, QFont, QPainterPath, QPixmap
 import time
 
 from app.db import (get_chats, get_total_unread_count, clear_chat_messages, delete_chat, mark_chat_as_read,
-                    mark_all_chats_as_read, set_chat_muted, is_chat_muted, db_conn)
+                    mark_all_chats_as_read, set_chat_muted, is_chat_muted, db_conn, get_chat)
 from app.config import get_pref
+from app.ai import smart_features
 from app.gateway_manager import GatewayManager
 from app.ui.theme import C, HEADER_H, R_LG, unread_badge_qss
 from app.ui.icons import icon, tool_button, pixmap
@@ -372,12 +373,17 @@ class ChatItemWidget(QWidget):
         if locked:
             self.lbl_preview.setText(chat_lock.LOCKED_PREVIEW)
             self.lbl_preview.setStyleSheet(f"font-size: 12px; color: {C['text_3']}; font-style: italic;")
+        elif self.ai_state not in AI_PREVIEW and chat_data.get("needs_reply"):
+            self.lbl_preview.setText("↩ " + _preview_text(chat_data))
+            self.lbl_preview.setToolTip("Te hicieron una pregunta o pedido y todavía no respondiste")
+            self.lbl_preview.setStyleSheet(f"font-size: 12px; color: {C['accent_hi']};")
         elif self.ai_state in AI_PREVIEW:
             txt, color = AI_PREVIEW[self.ai_state]
             self.lbl_preview.setText(txt)
             self.lbl_preview.setStyleSheet(f"font-size: 12px; color: {C[color]}; font-style: italic;")
         else:
             self.lbl_preview.setText(_preview_text(chat_data))
+            self.lbl_preview.setToolTip("")
             self.lbl_preview.setStyleSheet(f"font-size: 12px; color: {C['text'] if unread else C['text_2']};")
         self.lbl_time.setText(format_whatsapp_timestamp(chat_data.get("last_message_time", 0)))
         self.lbl_time.setStyleSheet(f"font-size: 11px; color: {C['accent'] if unread else C['text_3']};")
@@ -592,6 +598,9 @@ class ChatListPanel(QWidget):
         self.txt_search.setPlaceholderText("Buscar chat o número  (Ctrl+K)")
         self.txt_search.addAction(icon("search", C["text_3"], 16), QLineEdit.LeadingPosition)
         self.txt_search.setClearButtonEnabled(True)
+        act_ai = self.txt_search.addAction(icon("sparkle", C["accent"], 16), QLineEdit.TrailingPosition)
+        act_ai.setToolTip("Buscar con IA: por significado, también en las transcripciones de audios")
+        act_ai.triggered.connect(self._open_ai_search)
         self.txt_search.installEventFilter(self)
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
@@ -607,12 +616,15 @@ class ChatListPanel(QWidget):
         self.btn_filter_all = self._make_filter("Todos", True)
         self.btn_filter_unread = self._make_filter("No leídos", False)
         self.btn_filter_groups = self._make_filter("Grupos", False)
+        self.btn_filter_pending = self._make_filter("Sin responder", False)
         self.btn_filter_all.clicked.connect(lambda: self._set_filter("all"))
         self.btn_filter_unread.clicked.connect(lambda: self._set_filter("unread"))
         self.btn_filter_groups.clicked.connect(lambda: self._set_filter("groups"))
+        self.btn_filter_pending.clicked.connect(lambda: self._set_filter("pending"))
         chips.addWidget(self.btn_filter_all)
         chips.addWidget(self.btn_filter_unread)
         chips.addWidget(self.btn_filter_groups)
+        chips.addWidget(self.btn_filter_pending)
         chips.addStretch()
         # Red de seguridad: si algún chat quedó "sin leer" por error, se limpia todo de un clic
         self.btn_read_all = tool_button("check_all", "Marcar todos los chats como leídos",
@@ -768,8 +780,30 @@ class ChatListPanel(QWidget):
         self.reload_chats(select_jid=self._current_jid())
 
     def _fetch_chats(self, search: str, offset: int) -> list:
-        return get_chats(search=search, filter_unread=self._filter == "unread", groups_only=self._filter == "groups",
-                         limit=self._page_size, offset=offset)
+        if self._filter == "pending":
+            chats = smart_features.unanswered_chats(limit=self._page_size + 200 if search else self._page_size,
+                                                    offset=0 if search else offset)
+            if search:
+                chats = [c for c in chats if search.lower() in resolve_display_name(c).lower()][offset:offset + self._page_size]
+            return chats
+        chats = get_chats(search=search, filter_unread=self._filter == "unread", groups_only=self._filter == "groups",
+                          limit=self._page_size, offset=offset)
+        pending = smart_features.needs_reply_jids([c.get("jid") for c in chats])
+        for c in chats:
+            c["needs_reply"] = c.get("jid") in pending
+        return chats
+
+    def _open_ai_search(self):
+        from app.ui.ai_extras import AiSearchDialog
+        dlg = AiSearchDialog(self.txt_search.text().strip(), self)
+        dlg.chat_requested.connect(self._open_chat_by_jid)
+        dlg.exec()
+        dlg.deleteLater()
+
+    def _open_chat_by_jid(self, jid: str):
+        chat = get_chat(jid)
+        if chat:
+            self.chat_selected.emit(chat)
 
     def _on_search_changed(self, text: str):
         self._search_timer.start()
@@ -845,7 +879,8 @@ class ChatListPanel(QWidget):
         if empty:
             self.lbl_no_results.setText(
                 "No hay chats que coincidan." if search else
-                {"unread": "No tienes chats sin leer.", "groups": "Todavía no hay grupos."}.get(
+                {"unread": "No tienes chats sin leer.", "groups": "Todavía no hay grupos.",
+                 "pending": "No tenés nada sin responder. 🎉"}.get(
                     self._filter, "Todavía no hay chats."))
 
     def _on_scroll(self, value):
@@ -908,6 +943,7 @@ class ChatListPanel(QWidget):
         entry = self._chat_items.get(jid)
         if entry:
             item, widget = entry
+            chat_data["needs_reply"] = jid in smart_features.needs_reply_jids([jid])
             widget.update_info(chat_data)
             item.setData(Qt.UserRole, chat_data)
             row = self.list_widget.row(item)
