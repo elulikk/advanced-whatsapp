@@ -976,83 +976,113 @@ private fun Composer(
         return
     }
 
-    Row(Modifier.fillMaxWidth().background(C.surface).padding(4.dp), verticalAlignment = Alignment.Bottom) {
-        IconButton(onClick = onToggleAi) { Icon(Icons.Default.AutoAwesome, "Redactor con IA", tint = C.ember) }
-        IconButton(onClick = onToggleEmoji) {
-            Icon(if (emojiOpen) Icons.Default.Keyboard else Icons.Default.EmojiEmotions, if (emojiOpen) "Teclado" else "Emojis y stickers", tint = C.text2)
-        }
-        // Tocar el campo con el panel abierto lo cierra y vuelve el teclado
-        val fieldSource = remember { MutableInteractionSource() }
-        LaunchedEffect(fieldSource) {
-            fieldSource.interactions.collect { if (it is PressInteraction.Release) onFieldTap() }
-        }
-        BasicTextField(
-            state = fieldState,
-            interactionSource = fieldSource,
-            lineLimits = TextFieldLineLimits.MultiLine(maxHeightInLines = 6),
-            textStyle = LocalTextStyle.current.copy(color = C.text, fontSize = 16.sp),
-            cursorBrush = SolidColor(C.accent),
-            modifier = Modifier.weight(1f).heightIn(min = 48.dp, max = 160.dp)
-                .background(C.raised, RoundedCornerShape(22.dp))
-                .contentReceiver { content ->
-                    if (!content.hasMediaType(MediaType.Image)) return@contentReceiver content
-                    var image: Uri? = null
-                    val rest = content.consume { item ->
-                        val u = item.uri
-                        if (u != null && image == null) { image = u; true } else false
+    // Todo dentro de una sola "píldora" (como WhatsApp): emoji a la izquierda; IA, adjuntar y cámara a la derecha.
+    // Mientras escribís se esconden la IA y la cámara para que el texto tenga casi todo el ancho.
+    val typing = draft.text.isNotBlank()
+    val small = Modifier.size(40.dp)
+    Row(
+        Modifier.fillMaxWidth().background(C.surface).padding(horizontal = 6.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        Row(
+            Modifier.weight(1f).heightIn(min = 48.dp).background(C.raised, RoundedCornerShape(24.dp)).padding(horizontal = 4.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            IconButton(onClick = onToggleEmoji, modifier = small) {
+                Icon(
+                    if (emojiOpen) Icons.Default.Keyboard else Icons.Default.EmojiEmotions,
+                    if (emojiOpen) "Teclado" else "Emojis y stickers", tint = C.text2, modifier = Modifier.size(22.dp),
+                )
+            }
+            // Tocar el campo con el panel abierto lo cierra y vuelve el teclado
+            val fieldSource = remember { MutableInteractionSource() }
+            LaunchedEffect(fieldSource) {
+                fieldSource.interactions.collect { if (it is PressInteraction.Release) onFieldTap() }
+            }
+            BasicTextField(
+                state = fieldState,
+                interactionSource = fieldSource,
+                lineLimits = TextFieldLineLimits.MultiLine(maxHeightInLines = 8),
+                textStyle = LocalTextStyle.current.copy(color = C.text, fontSize = 16.sp, lineHeight = 21.sp),
+                cursorBrush = SolidColor(C.accent),
+                modifier = Modifier.weight(1f).heightIn(min = 40.dp, max = 220.dp)
+                    .contentReceiver { content ->
+                        if (!content.hasMediaType(MediaType.Image)) return@contentReceiver content
+                        var image: Uri? = null
+                        val rest = content.consume { item ->
+                            val u = item.uri
+                            if (u != null && image == null) { image = u; true } else false
+                        }
+                        image?.let(onPasteImage)
+                        rest
+                    },
+                decorator = { inner ->
+                    Box(Modifier.padding(horizontal = 4.dp, vertical = 9.dp), contentAlignment = Alignment.CenterStart) {
+                        if (fieldState.text.isEmpty()) Text("Mensaje", color = C.text3, fontSize = 16.sp)
+                        inner()
                     }
-                    image?.let(onPasteImage)
-                    rest
                 },
-            decorator = { inner ->
-                Box(Modifier.padding(horizontal = 16.dp, vertical = 13.dp), contentAlignment = Alignment.CenterStart) {
-                    if (fieldState.text.isEmpty()) Text("Mensaje", color = C.text3, fontSize = 16.sp)
-                    inner()
+            )
+            if (!typing) {
+                IconButton(onClick = onToggleAi, modifier = small) {
+                    Icon(Icons.Default.AutoAwesome, "Redactor con IA", tint = C.ember, modifier = Modifier.size(22.dp))
                 }
-            },
-        )
-        Box {
-            IconButton(onClick = { attachMenu = true }) { Icon(Icons.Default.AttachFile, "Adjuntar") }
-            DropdownMenu(expanded = attachMenu, onDismissRequest = { attachMenu = false }) {
-                DropdownMenuItem(text = { Text("Sacar una foto") }, onClick = {
-                    attachMenu = false
-                    onCamera()
-                })
-                DropdownMenuItem(text = { Text("Foto o video") }, onClick = {
-                    attachMenu = false
-                    onPickMedia()
-                })
-                DropdownMenuItem(text = { Text("Documento") }, onClick = {
-                    attachMenu = false
-                    onPickDocument()
-                })
-                DropdownMenuItem(text = { Text("Dictar a texto") }, onClick = {
-                    attachMenu = false
-                    beginRecording(true)
-                })
-                DropdownMenuItem(text = { Text("Programar envío") }, onClick = {
-                    attachMenu = false
-                    onChooseSchedule()
-                })
+            }
+            Box {
+                IconButton(onClick = { attachMenu = true }, modifier = small) {
+                    Icon(Icons.Default.AttachFile, "Adjuntar y más", tint = C.text2, modifier = Modifier.size(22.dp))
+                }
+                DropdownMenu(expanded = attachMenu, onDismissRequest = { attachMenu = false }) {
+                    if (typing) DropdownMenuItem(text = { Text("Redactor con IA") }, onClick = {
+                        attachMenu = false
+                        onToggleAi()
+                    })
+                    DropdownMenuItem(text = { Text("Sacar una foto") }, onClick = {
+                        attachMenu = false
+                        onCamera()
+                    })
+                    DropdownMenuItem(text = { Text("Foto o video") }, onClick = {
+                        attachMenu = false
+                        onPickMedia()
+                    })
+                    DropdownMenuItem(text = { Text("Documento") }, onClick = {
+                        attachMenu = false
+                        onPickDocument()
+                    })
+                    DropdownMenuItem(text = { Text("Dictar a texto") }, onClick = {
+                        attachMenu = false
+                        beginRecording(true)
+                    })
+                    DropdownMenuItem(text = { Text("Programar envío") }, onClick = {
+                        attachMenu = false
+                        onChooseSchedule()
+                    })
+                }
+            }
+            if (!typing) {
+                IconButton(onClick = onCamera, modifier = small) {
+                    Icon(Icons.Default.PhotoCamera, "Sacar una foto", tint = C.text2, modifier = Modifier.size(22.dp))
+                }
             }
         }
-        if (draft.text.isBlank()) {
-            IconButton(onClick = onCamera) { Icon(Icons.Default.PhotoCamera, "Sacar una foto") }
-            // Toque: nota de voz. Mantener apretado: dictar a texto.
-            Box(
-                Modifier.size(48.dp).clip(CircleShape).background(C.accent).combinedClickable(
-                    onClick = { beginRecording(false) },
-                    onLongClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        beginRecording(true)
-                    },
-                ),
-                contentAlignment = Alignment.Center,
-            ) { Icon(Icons.Default.Mic, "Grabar nota de voz (mantené apretado para dictar)", tint = C.onAccent) }
-        } else {
-            IconButton(onClick = onSend, modifier = Modifier.background(C.accent, CircleShape)) {
-                if (scheduled) Icon(Icons.Default.Schedule, "Programar", tint = C.onAccent)
-                else Icon(Icons.AutoMirrored.Filled.Send, "Enviar", tint = C.onAccent)
+        Box(Modifier.padding(start = 6.dp)) {
+            if (!typing) {
+                // Toque: nota de voz. Mantener apretado: dictar a texto.
+                Box(
+                    Modifier.size(48.dp).clip(CircleShape).background(C.accent).combinedClickable(
+                        onClick = { beginRecording(false) },
+                        onLongClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            beginRecording(true)
+                        },
+                    ),
+                    contentAlignment = Alignment.Center,
+                ) { Icon(Icons.Default.Mic, "Grabar nota de voz (mantené apretado para dictar)", tint = C.onAccent) }
+            } else {
+                IconButton(onClick = onSend, modifier = Modifier.size(48.dp).background(C.accent, CircleShape)) {
+                    if (scheduled) Icon(Icons.Default.Schedule, "Programar", tint = C.onAccent)
+                    else Icon(Icons.AutoMirrored.Filled.Send, "Enviar", tint = C.onAccent)
+                }
             }
         }
     }

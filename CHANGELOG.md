@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-15 — Android 0.5.1
+
+### Cambios
+- Campo de mensaje más compacto: emoji, IA, adjuntar y cámara quedan dentro de la misma píldora; mientras escribís se
+  esconden la IA y la cámara (la IA sigue en el menú de adjuntar) y el texto usa casi todo el ancho, con hasta 8 líneas visibles.
+- `tools/enviar.py`: mandar archivos o texto por WhatsApp desde la terminal con la app abierta (por defecto, a uno mismo).
+
 ## 2026-11-15 — Android 0.5.0 / PC
 
 ### Nuevo: actualizaciones automáticas

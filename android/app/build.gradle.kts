@@ -12,8 +12,8 @@ android {
         applicationId = "com.advancedwhatsapp.app"
         minSdk = 29          // Android 10: primera versión que graba OGG/Opus (notas de voz de WhatsApp)
         targetSdk = 34
-        versionCode = 7
-        versionName = "0.5.0"
+        versionCode = 8
+        versionName = "0.5.1"
         externalNativeBuild {
             cmake {
                 cppFlags += "-std=c++17"
