@@ -42,6 +42,9 @@ node --check gateway/server.js     # chequeo de sintaxis del gateway
   (`npm install --omit=dev` solo si cambió `package.json`). **Editar `gateway/server.js` y reabrir la app basta**: la huella
   (`gateway_build_id`) cambia y reemplaza el gateway viejo.
 - Copia de prueba junto a la real: `ADVANCEDWHATSAPP_WEBHOOK_PORT=5115` y `ADVANCEDWHATSAPP_GATEWAY_PORT=5116` (más otro `USERPROFILE`).
+- **Mandar algo por WhatsApp desde la terminal / otra sesión de Claude** (sin computer use, con la app abierta):
+  `python tools/enviar.py ARCHIVO [--a yo|NUMERO] [--texto "..."]`. Por defecto va a uno mismo; usa `POST /send`
+  del gateway con el token de `~/.magsapp/gateway.token`.
 - Logs: `~/.magsapp/app.log` (Python), `gateway.log` (Node), `gateway_stderr.log`, `npm_install.log`.
 
 ## Tests

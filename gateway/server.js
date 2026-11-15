@@ -2581,7 +2581,7 @@ app.get('/link-preview', async (req, res) => {
 // Envía un mensaje con el cuerpo de POST /send. Si algo falla lanza un error con httpStatus (404 = falta el archivo).
 async function sendWhatsApp(body, extraOpts = {}) {
     const { to, text, image_path, image_thumb, image_url, document_path, document_name, mimetype,
-            video_path, audio_path, audio_seconds, audio_waveform, sticker_path, quoted } = body;
+            video_path, audio_path, audio_seconds, audio_waveform, sticker_path, quoted, external } = body;
     const msgText = (text || '').trim();
     const fail = (httpStatus, message) => Object.assign(new Error(message), { httpStatus });
 
@@ -2675,7 +2675,9 @@ async function sendWhatsApp(body, extraOpts = {}) {
         result = await sock.sendMessage(jid, content, sendOpts);
     }
 
-    if (result?.key?.id) {
+    // external: lo manda otro programa (tools/enviar.py), no la ventana. No se marca como propio del bot para que
+    // messages.upsert lo entregue a la app como cualquier mensaje enviado desde el celular y aparezca en el chat.
+    if (result?.key?.id && !external) {
         sentBotMessageIds.add(result.key.id);
         if (sentBotMessageIds.size > 2000) {
             const first = sentBotMessageIds.values().next().value;
