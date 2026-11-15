@@ -58,7 +58,7 @@ def test_business_day_tag_expires():
     tid = tags.create_tag({"name": "Hábil", "expire_mode": "days", "expire_value": 10, "expire_business": 1})
     tags.assign_tag(jid, tid)
     now = time.time()
-    assert tags.purge_expired(now + 12 * 86400) == 0      # 10 hábiles son al menos 13 días corridos
+    assert tags.purge_expired(now + 11 * 86400) == 0      # 10 hábiles son al menos 12 días corridos (desde un domingo)
     assert tags.purge_expired(now + 15 * 86400) == 1
 
 

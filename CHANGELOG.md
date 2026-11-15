@@ -1,7 +1,8 @@
 # Changelog
 
-## Sin publicar — Actualizaciones automáticas
+## 2026-11-15 — Android 0.5.0 / PC
 
+### Nuevo: actualizaciones automáticas
 - **PC y Android buscan versiones nuevas en GitHub Releases** (`elulikk/advanced-whatsapp`; si el repo es privado, Ajustes lo avisa)
   al abrir (con demora) y cada 12 h, con la casilla «Buscar actualizaciones automáticamente» y el botón «Buscar actualizaciones»
   (Ajustes > Acerca de en PC, Ajustes en Android) que muestran las notas del release.
@@ -9,16 +10,16 @@
   verificación de tamaño y SHA-256, cierra la app y el gateway y lo instala en silencio; la app se reabre sola. En desarrollo solo avisa.
 - **Android**: notificación de versión nueva; baja el APK a la caché y abre el instalador del sistema.
 - **Publicar**: `python tools/publicar_release.py pc|android [--publicar]` (tags `pc-v<ver>` y `android-v<ver>`; ver `docs/ARQUITECTURA.md`).
-## Sin publicar — Leer imágenes
 
+### Nuevo: leer imágenes
 - **Leer imágenes con IA** (PC y Android): en la burbuja de una foto ya descargada, «Leer imagen» genera una descripción corta y el
   texto que contenga (OCR) con el modelo con visión de tu proveedor (Gemini, OpenAI, Claude o Groq; los que no tienen clave se saltan).
   Se muestra en un bloque plegable «Descripción / Texto» con «Copiar» y «Rehacer».
 - **Buscable**: lo leído entra en «Buscar con IA» y en los destacados, igual que las transcripciones de audios.
 - **Leer imágenes automáticamente** (Ajustes → IA, apagado por defecto): las fotos se leen solas al descargarlas, en segundo plano y
   con 2 lecturas a la vez como máximo. Nunca se baja una foto solo para leerla.
-## Sin publicar — Exportar chat
 
+### Nuevo: exportar chat
 - **Exportar chat…** (PC: menú ⋮ del chat; Android: menú ⋮ del chat): elegís formato **HTML** (burbujas con estilo, imágenes
   incrustadas o en una carpeta al lado), **PDF** o **TXT** (estilo export de WhatsApp: `dd/mm/aa hh:mm - Nombre: texto`).
 - Opciones: todo el chat / último mes / entre fechas; multimedia ya descargada (solo baja lo que falta si tildás «Descargar lo
@@ -27,6 +28,9 @@
 - Se hace en segundo plano con progreso y botón Cancelar; los mensajes se leen por páginas, así que un chat de 100 mil mensajes
   no traba la app ni se carga entero en memoria. PC: diálogo de guardado (por defecto Documentos). Android: queda en
   Descargas/AdvancedWhatsapp y ofrece compartir el archivo.
+
+### Arreglos
+- Test de tags con días hábiles que fallaba si se corría un fin de semana.
 
 ## 2026-11-12 — Android 0.4.0 / PC
 

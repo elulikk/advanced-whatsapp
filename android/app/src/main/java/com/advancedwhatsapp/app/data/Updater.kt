@@ -111,7 +111,8 @@ object Updater {
                 if (apk != null) break
             }
             val a = apk ?: continue
-            val url = a.optString("browser_download_url").ifEmpty { continue }
+            val url = a.optString("browser_download_url")
+            if (url.isEmpty()) continue
             var sha = ""
             for (j in 0 until assets.length()) {
                 val s = assets.optJSONObject(j) ?: continue
