@@ -46,7 +46,7 @@ from app.ai.ai_service import AIService
 from app.ai.transcription import transcribe_audio, pcm_to_wav, merge_dictation
 from app.ai.reply_polisher import CONTEXT_MESSAGES, MODES, DEFAULT_MODE
 from app.media_service import (
-    media_signals, request_media, request_transcript, is_pending, get_error, unavailable_reason
+    media_signals, request_media, request_transcript, request_image_read, is_pending, get_error, unavailable_reason
 )
 from app import link_preview, audio_queue, thumb_cache
 from app.ui.chat_list import AvatarWidget, format_hour, format_day_label, resolve_display_name
@@ -407,6 +407,7 @@ class ChatViewPanel(QWidget):
         self._media_refresh_timer.timeout.connect(self._refresh_keep_scroll)
         media_signals.media_ready.connect(self._on_media_event)
         media_signals.transcript_ready.connect(self._on_media_event)
+        media_signals.image_read_ready.connect(self._on_media_event)
         media_signals.job_failed.connect(self._on_media_event)
         message_summary.summary_signals.summary_ready.connect(self._on_media_event)
         self._summary_hidden: set = set()   # mensajes cuyo resumen se ocultó (solo en esta sesión)
@@ -1357,6 +1358,13 @@ class ChatViewPanel(QWidget):
                     request_media(msg)
             elif action == "transcribe":
                 request_transcript(msg)
+            elif action == "readimg":
+                request_image_read(msg)
+                self._on_media_event(msg["id"])   # muestra «Leyendo imagen…» ya
+            elif action == "copyimg":
+                part = (msg.get("image_desc") if url.query() == "d" else msg.get("image_ocr")) or ""
+                if part.strip():
+                    QGuiApplication.clipboard().setText(part.strip())
             elif action in ("original", "history"):
                 from app.ui.extras_dialogs import OriginalDialog
                 OriginalDialog(msg, "revoked" if action == "original" else "edits", self).exec()
@@ -1521,6 +1529,39 @@ class ChatViewPanel(QWidget):
         rows.append(f'<span style="font-size: 10px;"><a href="advancedwhatsapp://resummarize/{mid}" style="{link}">Rehacer</a>'
                     f' · <a href="advancedwhatsapp://summarize/{mid}" style="{link}">Ocultar</a></span>')
         return '<div style="margin-top: 4px;"></div>' + self._panel_html('<br>'.join(rows), accent=C["accent"])
+
+    def _image_read_html(self, msg: dict, has_file: bool) -> str:
+        """Bloque plegable «Descripción / Texto» de una foto (lo que leyó la IA), o el enlace para generarlo.
+        Misma mecánica que la transcripción de audios; solo se ofrece si la foto ya está en disco."""
+        mid = msg.get("id")
+        desc, ocr = (msg.get("image_desc") or "").strip(), (msg.get("image_ocr") or "").strip()
+        link = f'color: {C["link"]};'
+        if desc or ocr:
+            key = f"i/{mid}"
+            open_ = key in self._expanded_folds
+            body = ""
+            if open_:
+                rows = []
+                for title, text, which in (("Descripción", desc, "d"), ("Texto", ocr, "t")):
+                    if text:
+                        rows.append(
+                            f'<span style="color: {C["accent_hi"]}; font-size: 10px; font-weight: 600;">{title.upper()}</span> '
+                            f'<a href="advancedwhatsapp://copyimg/{mid}?{which}" style="{link} font-size: 10px;">Copiar</a><br>'
+                            f'<span style="color: {C["text"]};">{html.escape(text).replace(chr(10), "<br>")}</span>')
+                rows.append(f'<a href="advancedwhatsapp://readimg/{mid}" style="{link} font-size: 10px;">Rehacer</a>')
+                body = "<br>" + "<br>".join(rows)
+            return '<div style="margin-top: 4px;"></div>' + self._panel_html(
+                self._fold_header(key, "DESCRIPCIÓN / TEXTO", open_) + body, accent=C["accent"])
+        if is_pending("readimg", mid):
+            return f'<div style="color: {C["text_2"]}; font-size: 11px; margin-top: 3px;"><i>Leyendo imagen…</i></div>'
+        if not has_file:
+            return ""
+        err = get_error("readimg", mid)
+        if err:
+            return (f'<div style="color: #e58a84; font-size: 11px; margin-top: 3px;">No se pudo leer la imagen: '
+                    f'{html.escape(err)[:160]} · <a href="advancedwhatsapp://readimg/{mid}" style="{link}">Reintentar</a></div>')
+        return (f'<div style="margin-top: 3px;"><a href="advancedwhatsapp://readimg/{mid}" '
+                f'style="{link} font-size: 11px;">Leer imagen</a></div>')
 
     @staticmethod
     def _fold_header(key: str, title: str, expanded: bool) -> str:
@@ -1796,6 +1837,8 @@ class ChatViewPanel(QWidget):
                 if poll:
                     media_html = panel(polls.poll_html(poll, C["accent"], C["text_2"]))
 
+            if media_type == "image":
+                transcript_html = self._image_read_html(msg, has_file)
             if transcript_html:
                 media_html += transcript_html
 

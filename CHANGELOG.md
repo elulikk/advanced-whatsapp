@@ -1,5 +1,14 @@
 # Changelog
 
+## Sin publicar — Leer imágenes
+
+- **Leer imágenes con IA** (PC y Android): en la burbuja de una foto ya descargada, «Leer imagen» genera una descripción corta y el
+  texto que contenga (OCR) con el modelo con visión de tu proveedor (Gemini, OpenAI, Claude o Groq; los que no tienen clave se saltan).
+  Se muestra en un bloque plegable «Descripción / Texto» con «Copiar» y «Rehacer».
+- **Buscable**: lo leído entra en «Buscar con IA» y en los destacados, igual que las transcripciones de audios.
+- **Leer imágenes automáticamente** (Ajustes → IA, apagado por defecto): las fotos se leen solas al descargarlas, en segundo plano y
+  con 2 lecturas a la vez como máximo. Nunca se baja una foto solo para leerla.
+
 ## 2026-11-12 — Android 0.4.0 / PC
 
 ### Nuevo: IA

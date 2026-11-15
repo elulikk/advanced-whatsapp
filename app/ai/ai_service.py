@@ -17,6 +17,12 @@ ANTHROPIC_API = "https://api.anthropic.com/v1"
 ANTHROPIC_VERSION = "2023-06-01"
 ANTHROPIC_FALLBACK_MODELS = ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5", "claude-fable-5-1"]
 
+# Visión: orden de respaldo y modelos que sabemos que leen imágenes (Groq/OpenAI mezclan modelos de solo texto)
+VISION_ORDER = ["gemini", "openai", "anthropic", "groq"]
+VISION_OPENAI_HINTS = ("gpt-4o", "gpt-4.1", "gpt-4-turbo", "gpt-5", "o4", "gpt-4-vision")
+VISION_GROQ_HINTS = ("llama-4", "vision", "scout", "maverick")
+GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+
 # Claves de API con formato conocido (OpenAI/Anthropic sk-..., Groq gsk_..., Google AIza...): nunca deben llegar a logs ni a la UI
 _KEY_PATTERN = re.compile(r"(?<![A-Za-z0-9])(?:sk-[A-Za-z0-9_-]{10,}|gsk_[A-Za-z0-9]{10,}|AIza[A-Za-z0-9_-]{20,})")
 
@@ -376,6 +382,92 @@ class AIService:
             return "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
         except Exception as e:
             return self._format_error("Anthropic", e, model)
+
+    # ─── VISIÓN (leer imágenes) ────────────────────────────────────────────────
+
+    def _vision_model(self, provider: str) -> str:
+        """Modelo con visión del proveedor: el configurado si sabemos que ve imágenes; si no, uno por defecto."""
+        configured = (self.config.get("IA", "model", fallback="") if self._active_provider() == provider else "")
+        configured = configured or self.config.get(provider.upper(), "model", fallback="")
+        low = configured.lower()
+        if provider == "gemini":
+            return configured if "gemini" in low else "gemini-2.5-flash"
+        if provider == "anthropic":
+            return configured if "claude" in low else "claude-sonnet-5-5"
+        if provider == "openai":
+            return configured if any(k in low for k in VISION_OPENAI_HINTS) else "gpt-4o-mini"
+        return configured if any(k in low for k in VISION_GROQ_HINTS) else GROQ_VISION_MODEL
+
+    def _active_provider(self) -> str:
+        p = self.config.get("IA", "provider", fallback="Gemini").strip().lower()
+        return "anthropic" if ("anthropic" in p or "claude" in p) else "groq" if "groq" in p else "openai" if "openai" in p else "gemini"
+
+    def _has_key(self, provider: str) -> bool:
+        if provider == "gemini":
+            return bool(self.config.get("GEMINI", "api_key", fallback="").strip())
+        if provider == "anthropic":
+            return bool(self._anthropic_key())
+        return bool(self.config.get(provider.upper(), "api_key", fallback="").strip())
+
+    def vision_providers(self) -> List[str]:
+        """Proveedores con clave que pueden leer imágenes, el activo primero. Los que no tienen clave se saltan."""
+        order = [self._active_provider()] + [p for p in VISION_ORDER if p != self._active_provider()]
+        return [p for p in order if self._has_key(p)]
+
+    def has_vision_key(self) -> bool:
+        return bool(self.vision_providers())
+
+    def _vision_request(self, provider: str, prompt: str, data: bytes, mime: str, timeout: int) -> str:
+        import base64
+        model = self._vision_model(provider)
+        b64 = base64.b64encode(data).decode("ascii")
+        try:
+            if provider == "gemini":
+                if not self._ensure_gemini():
+                    return "Error: No se ha configurado la API Key de Google Gemini."
+                import google.generativeai as genai
+                resp = genai.GenerativeModel(model).generate_content(
+                    [prompt, {"mime_type": mime, "data": data}], request_options={"timeout": timeout})
+                return resp.text or ""
+            if provider == "anthropic":
+                body = {"model": model, "max_tokens": 1024, "messages": [{"role": "user", "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}},
+                    {"type": "text", "text": prompt}]}]}
+                res = requests.post(f"{ANTHROPIC_API}/messages", headers=self._anthropic_headers(self._anthropic_key()),
+                                    json=body, timeout=timeout)
+                if not res.ok:
+                    raise RuntimeError(f"{res.status_code} {res.reason}")
+                return "".join(b.get("text", "") for b in res.json().get("content", []) if b.get("type") == "text")
+            # OpenAI y Groq comparten el formato de chat con image_url
+            url = ("https://api.openai.com/v1/chat/completions" if provider == "openai"
+                   else "https://api.groq.com/openai/v1/chat/completions")
+            key = self.config.get(provider.upper(), "api_key", fallback="").strip()
+            body = {"model": model, "temperature": 0.2, "messages": [{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}]}]}
+            res = requests.post(url, headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                                json=body, timeout=timeout)
+            res.raise_for_status()
+            return res.json()["choices"][0]["message"]["content"] or ""
+        except Exception as e:
+            return self._format_error(provider.capitalize(), e, model)
+
+    def generate_vision_completion(self, prompt: str, image_bytes: bytes, mime: str = "image/jpeg",
+                                   timeout: int = 60) -> str:
+        """Pregunta sobre una imagen. Prueba el proveedor activo y, si falla, los demás con clave y visión
+        (saltando los que no tienen clave). Devuelve el texto o un mensaje de error (is_error_response)."""
+        if not self.is_enabled():
+            return "La Inteligencia Artificial se encuentra desactivada en los ajustes."
+        providers = self.vision_providers()
+        if not providers:
+            return "Error: Configura una API key de Gemini, OpenAI, Anthropic o Groq para leer imágenes."
+        last = ""
+        for p in providers:
+            out = self._vision_request(p, prompt, image_bytes, mime, timeout)
+            if out and not self.is_error_response(out):
+                return out
+            last = out or last
+        return last or "Error: Ningún proveedor de IA pudo leer la imagen."
 
     # ─── VERIFICACIÓN Y PRUEBAS DE CONEXIÓN (API HEALTH CHECK) ────────────────
 

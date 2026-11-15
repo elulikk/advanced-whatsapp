@@ -5,6 +5,7 @@ import com.advancedwhatsapp.app.App
 import com.advancedwhatsapp.app.AppState
 import com.advancedwhatsapp.app.Prefs
 import com.advancedwhatsapp.app.ai.AutoTranscriber
+import com.advancedwhatsapp.app.ai.ImageReader
 import com.advancedwhatsapp.app.data.Db
 import com.advancedwhatsapp.app.data.Extras
 import com.advancedwhatsapp.app.data.LinkPreviews
@@ -141,7 +142,10 @@ class WebhookServer {
             }
             "connection" -> {
                 AppState.updateConnection(d)
-                if (d.optString("status") == "connected") AutoTranscriber.backlogOnce()
+                if (d.optString("status") == "connected") {
+                    AutoTranscriber.backlogOnce()
+                    ImageReader.backlogOnce()
+                }
             }
             "poll" -> d.str("id")?.let { Db.setPoll(it, d.toString()) }
             "bulk" -> Extras.bulkDone.value = d

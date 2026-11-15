@@ -15,7 +15,7 @@ from app import organization as org
 from app.config import APP_NAME, get_pref, set_pref
 from app.db import get_or_create_chat, get_chats, get_chat, mark_chat_as_read
 from app.gateway_manager import GatewayManager
-from app.media_service import auto_transcribe, auto_transcribe_backlog
+from app.media_service import auto_transcribe, auto_transcribe_backlog, auto_read_image, auto_read_images_backlog
 from app.webhook_server import signals, WebhookServer
 from app.notifications import NotificationCenter
 from app.windows_integration import TaskbarBadge
@@ -534,6 +534,9 @@ class MainWindow(QMainWindow):
             # Audio nuevo (recibido o enviado por mí): se baja y transcribe solo, en segundo plano
             auto_transcribe({"id": data.get("message_id"), "media_type": "audio",
                              "media_path": data.get("media_path"), "media_raw": data.get("media_raw")})
+        if data.get("is_new") and data.get("media_type") == "image" and data.get("media_path"):
+            # Foto ya en disco (la que mandé yo): se lee sola si «Leer imágenes automáticamente» está activo
+            auto_read_image({"id": data.get("message_id"), "media_type": "image", "media_path": data.get("media_path")})
         active_chat = self.chat_view_panel.current_chat
 
         if active_chat and (active_chat.get("jid") == chat_jid or (chat_jid and chat_jid.startswith(active_chat.get("jid").split("@")[0]))):
@@ -569,6 +572,7 @@ class MainWindow(QMainWindow):
     def _transcribe_backlog(self):
         try:
             auto_transcribe_backlog()
+            auto_read_images_backlog()
         except Exception as e:
             print(f"[Advanced WhatsApp] transcripción automática pendiente: {e}")
 

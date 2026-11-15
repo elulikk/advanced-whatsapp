@@ -27,7 +27,10 @@ object MessageSummary {
             "ESPERA: <qué espera o pide (respuesta, decisión, acción, plazo); si no pide nada, «Nada en particular»>"
 
     fun messageText(m: Message): String = when (m.mediaType.lowercase()) {
-        "revoked", "sticker" -> ""
+        "revoked" -> ""
+        // foto o sticker: pie + lo que leyó la IA (descripción y texto); sin lectura, solo el pie de la foto
+        "image", "sticker" -> listOf(if (m.mediaType == "image") m.text.trim() else "", m.imageDesc?.trim().orEmpty(), m.imageOcr?.trim().orEmpty())
+            .filter { it.isNotEmpty() }.joinToString(" · ")
         "audio" -> m.transcript?.trim().orEmpty().let { if (it.startsWith("(sin voz")) "" else it }
         else -> m.text.trim()
     }

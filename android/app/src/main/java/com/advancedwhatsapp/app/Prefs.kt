@@ -57,6 +57,11 @@ object Prefs {
         get() = p.getBoolean("auto_transcribe", true)
         set(v) = p.edit().putBoolean("auto_transcribe", v).apply()
 
+    /** Leer con IA (descripción + texto) las fotos al descargarlas. Apagado por defecto: gasta cuota del proveedor. */
+    var autoReadImages: Boolean
+        get() = p.getBoolean("auto_read_images", false)
+        set(v) = p.edit().putBoolean("auto_read_images", v).apply()
+
     /** Al terminar una nota de voz suena la siguiente del chat (si es otro audio ya bajado). */
     var audioAutoplay: Boolean
         get() = p.getBoolean("audio_autoplay", true)

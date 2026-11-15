@@ -196,6 +196,16 @@ class SettingsPanel(QWidget):
             "Las notas de voz que llegan (y las que mandás) se transcriben solas en segundo plano. "
             "Necesita una clave de Groq u OpenAI. Si falla alguna, queda el botón «Transcribir» en el mensaje."))
 
+        # Leer imágenes: descripción y texto de las fotos ya descargadas (apagado por defecto: gasta cuota de IA)
+        self.check_auto_read_images = QCheckBox("Leer imágenes automáticamente")
+        self.check_auto_read_images.setChecked(get_pref("auto_read_images"))
+        self.check_auto_read_images.toggled.connect(lambda on: set_pref("auto_read_images", on))
+        c_layout.addWidget(self.check_auto_read_images)
+        c_layout.addWidget(self._hint(
+            "Las fotos que se descargan se leen solas en segundo plano (descripción y texto) para poder buscarlas por "
+            "contenido. Usa tu proveedor de IA con visión y gasta cuota; nunca baja una foto solo para leerla. "
+            "También podés leer una a mano con «Leer imagen» en la burbuja."))
+
         # IA extra: respuestas rápidas, recordatorios detectados e idioma de traducción
         from app.ai import smart_features
         self.check_quick_replies = QCheckBox("Sugerir respuestas rápidas sobre el campo de mensaje")

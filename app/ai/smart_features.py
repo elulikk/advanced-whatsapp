@@ -78,8 +78,14 @@ def strip_accents(text: str) -> str:
 def _msg_text(m: Dict) -> str:
     """Texto de un mensaje para analizarlo: el texto, o la transcripción de una nota de voz."""
     mt = (m.get("media_type") or "text").lower()
-    if mt in ("revoked", "sticker"):
+    if mt == "revoked":
         return ""
+    if mt in ("image", "sticker"):
+        # lo que la IA leyó de la foto (descripción + texto); sin eso, el pie de foto si lo hay
+        parts = [(m.get("image_desc") or "").strip(), (m.get("image_ocr") or "").strip()]
+        parts = [p for p in parts if p]
+        cap = (m.get("text") or "").strip() if mt == "image" else ""
+        return " · ".join(([cap] if cap else []) + parts)
     if mt == "audio":
         t = (m.get("transcript") or "").strip()
         return "" if t.startswith("(sin voz") else t
@@ -602,7 +608,7 @@ def _stem(word: str) -> str:
 
 
 def build_expand_prompt(query: str) -> str:
-    return ("Voy a buscar mensajes de WhatsApp (incluidas transcripciones de audios) por significado. Dame hasta 12 "
+    return ("Voy a buscar mensajes de WhatsApp (incluidas transcripciones de audios y lo que dicen o muestran las fotos) por significado. Dame hasta 12 "
             "palabras sueltas, en español rioplatense, que probablemente aparezcan en el mensaje que busco: sinónimos, "
             "formas relacionadas y términos concretos que se usarían de verdad al escribirlo. Responde SOLO con las "
             "palabras separadas por comas, sin explicaciones.\n\n"
@@ -626,11 +632,12 @@ def search_candidates(terms: List[str], limit: int = SEARCH_CANDIDATES, scan: in
     stems = list(dict.fromkeys(_stem(t) for t in terms if t))
     if not stems:
         return []
-    cond = " OR ".join("(m.text LIKE ? OR m.transcript LIKE ?)" for _ in stems)
+    cond = " OR ".join("(m.text LIKE ? OR m.transcript LIKE ? OR m.image_desc LIKE ? OR m.image_ocr LIKE ?)"
+                       for _ in stems)
     params: list = []
     for s in stems:
         like = f"%{s.replace('n', '_')}%"   # «_» deja pasar la ñ (el texto guardado conserva los acentos y las ñ)
-        params += [like, like]
+        params += [like, like, like, like]
     with db.db_conn() as conn:
         rows = conn.execute(
             "SELECT m.*, c.name AS chat_name, c.custom_name AS chat_custom_name, c.is_group AS chat_is_group "
@@ -641,7 +648,8 @@ def search_candidates(terms: List[str], limit: int = SEARCH_CANDIDATES, scan: in
     scored = []
     for r in rows:
         d = dict(r)
-        hay = strip_accents(f"{d.get('text') or ''} {d.get('transcript') or ''}").lower()
+        hay = strip_accents(f"{d.get('text') or ''} {d.get('transcript') or ''} {d.get('image_desc') or ''} "
+                            f"{d.get('image_ocr') or ''}").lower()
         score = sum(1 for s in stems if s in hay)
         if score:
             scored.append((score, d.get("timestamp") or 0, d))
@@ -654,7 +662,8 @@ def candidate_line(i: int, m: Dict, width: int = 220) -> str:
     if len(text) > width:
         text = text[:width] + "…"
     who = "Yo" if m.get("from_me") else (m.get("sender_name") or m.get("chat_custom_name") or m.get("chat_name") or "Contacto")
-    kind = " (audio transcripto)" if (m.get("media_type") or "") == "audio" else ""
+    mt = m.get("media_type") or ""
+    kind = " (audio transcripto)" if mt == "audio" else " (imagen)" if mt in ("image", "sticker") else ""
     return f"{i}. [{who}]{kind} {text}"
 
 

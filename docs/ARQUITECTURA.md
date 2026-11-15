@@ -265,3 +265,26 @@ Los `.webp` de stickers viajan solo la primera vez (hasta 20 MB por documento) o
 «Enviar al celular» (Configuración > Copias y sincronización, o menú de la bandeja): arrastrar o elegir archivos; `sync.send_files_to_phone`
 los manda como documentos a «Mi número». En Android, las burbujas de documentos de ese chat llevan el botón «Guardar en Descargas»
 (Descargas/AdvancedWhatsapp).
+
+## Leer imágenes (IA con visión)
+
+Descripción corta + texto (OCR) de fotos **ya descargadas**; nunca se baja una imagen solo para analizarla.
+
+- **Visión**: `AIService.generate_vision_completion(prompt, bytes, mime)` (PC) / `AiService.askImage` (Android) prueban el proveedor
+  activo y siguen con los demás que tengan clave, en el orden Gemini → OpenAI → Claude → Groq; saltan los que no tienen clave y,
+  si el modelo configurado no ve imágenes, usan uno que sí (`gpt-4o-mini`, `gemini-2.5-flash`, `claude-sonnet-5-5`, `llama-4-scout` en Groq).
+- **Lectura**: `app/ai/image_reader.py` (PC) / `ai/ImageReader.kt` (Android) achican la imagen a 1568 px, piden `DESCRIPCION:` /
+  `TEXTO:` (`NINGUNO` = sin texto) y lo parsean (`parse_reading` / `parseReading`, tolera respuestas sin formato).
+- **Base**: columnas `image_desc`, `image_ocr` (y `image_failed` solo en PC), agregadas con `ALTER TABLE` idempotente. Android guarda
+  los ids fallidos en preferencias (`auto_read_failed`). Al eliminar un mensaje para todos se borran.
+- **Búsqueda**: `search_candidates` / `searchMessages` (Buscar con IA), destacados y las líneas de candidatos
+  (`(imagen)`) incluyen `image_desc` e `image_ocr`, igual que `transcript`. `smart_features._msg_text` / `MessageSummary.messageText`
+  devuelven pie + descripción + texto.
+- **Cola**: PC: `media_service` con una cola aparte (`_img_jobs`, 2 hilos como máximo) para que leer no frene las descargas;
+  señal `image_read_ready`. Android: `ImageReader` con 2 hilos y `working` / `errors` como `StateFlow` que lee la burbuja.
+- **Automático** (ajuste «Leer imágenes automáticamente», `auto_read_images` / `Prefs.autoReadImages`, **apagado por defecto**):
+  al terminar la descarga de una foto, al enviar una foto propia y, al conectar, las de los últimos 3 días que ya estén en disco
+  (hasta 15). Una lectura automática que falla no se reintenta sola; queda el botón manual.
+- **UI**: en la burbuja de una foto, enlace «Leer imagen» → bloque plegable «Descripción / Texto» con «Copiar» por parte y «Rehacer»
+  (`advancedwhatsapp://readimg/<id>` y `copyimg/<id>?d|t` en PC; `ui/ImageReadUi.kt` en Android). Los stickers se leen
+  (backend y búsqueda) pero no tienen bloque en la burbuja.

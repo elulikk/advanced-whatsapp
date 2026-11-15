@@ -5,6 +5,7 @@ import android.provider.OpenableColumns
 import com.advancedwhatsapp.app.App
 import com.advancedwhatsapp.app.Prefs
 import com.advancedwhatsapp.app.ai.AutoTranscriber
+import com.advancedwhatsapp.app.ai.ImageReader
 import com.advancedwhatsapp.app.gateway.GatewayClient
 import com.advancedwhatsapp.app.gateway.GatewayException
 import org.json.JSONArray
@@ -40,6 +41,7 @@ object Actions {
             quotedSender = quoted?.let { if (it.fromMe) "Yo" else it.senderName },
         )
         if (mediaType == "audio") AutoTranscriber.enqueue(id)
+        if (mediaType == "image") ImageReader.autoEnqueue(id)
     }
 
     fun sendText(to: String, text: String, quoted: Message? = null, at: Long? = null) {
@@ -114,6 +116,7 @@ object Actions {
         val path = res.optString("media_path")
         if (path.isEmpty()) throw GatewayException("No se pudo descargar el archivo.")
         Db.setMediaPath(m.id, path)
+        if (m.mediaType == "image") ImageReader.autoEnqueue(m.id)
         return path
     }
 
