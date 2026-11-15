@@ -1,5 +1,16 @@
 # Changelog
 
+## Sin publicar — Exportar chat
+
+- **Exportar chat…** (PC: menú ⋮ del chat; Android: menú ⋮ del chat): elegís formato **HTML** (burbujas con estilo, imágenes
+  incrustadas o en una carpeta al lado), **PDF** o **TXT** (estilo export de WhatsApp: `dd/mm/aa hh:mm - Nombre: texto`).
+- Opciones: todo el chat / último mes / entre fechas; multimedia ya descargada (solo baja lo que falta si tildás «Descargar lo
+  que falte»); transcripciones de audios; resúmenes de IA; mensajes eliminados y ediciones conservados.
+- Chats bloqueados: pide la contraseña antes de exportar.
+- Se hace en segundo plano con progreso y botón Cancelar; los mensajes se leen por páginas, así que un chat de 100 mil mensajes
+  no traba la app ni se carga entero en memoria. PC: diálogo de guardado (por defecto Documentos). Android: queda en
+  Descargas/AdvancedWhatsapp y ofrece compartir el archivo.
+
 ## 2026-11-12 — Android 0.4.0 / PC
 
 ### Nuevo: IA

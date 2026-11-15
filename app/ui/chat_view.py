@@ -2511,6 +2511,7 @@ class ChatViewPanel(QWidget):
         act_starred = menu.addAction(icon("star"), "Mensajes destacados…")
         act_tpl = menu.addAction(icon("edit"), "Plantillas y atajos…")
         act_many = menu.addAction(icon("forward"), "Enviar a varios…")
+        act_export = menu.addAction(icon("download"), "Exportar chat…")
         menu.addSeparator()
         act_clear = menu.addAction(icon("eraser", C["danger"], active_color=C["danger"]), "Vaciar chat…")
         act = menu.exec(menu_below(menu, self.btn_options))
@@ -2538,6 +2539,9 @@ class ChatViewPanel(QWidget):
             self._open_gallery()
         elif act == act_silent:
             _org.set_silent_read(jid, act_silent.isChecked())
+        elif act == act_export:
+            from app.ui.export_dialog import export_chat_flow
+            export_chat_flow(self, self.current_chat or {})
         elif act == act_clear:
             self._clear_current_chat()
 

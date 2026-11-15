@@ -265,3 +265,23 @@ Los `.webp` de stickers viajan solo la primera vez (hasta 20 MB por documento) o
 «Enviar al celular» (Configuración > Copias y sincronización, o menú de la bandeja): arrastrar o elegir archivos; `sync.send_files_to_phone`
 los manda como documentos a «Mi número». En Android, las burbujas de documentos de ese chat llevan el botón «Guardar en Descargas»
 (Descargas/AdvancedWhatsapp).
+
+## Exportar chat
+
+`app/chat_export.py` (PC) y `android/.../data/ChatExport.kt` (Android) hacen lo mismo; la interfaz está en `app/ui/export_dialog.py`
+y `android/.../ui/ExportUi.kt` (entrada: «Exportar chat…» en el menú ⋮ del chat).
+
+- **Lectura por páginas**: `iter_pages` / `Db.exportPage` leen 500 mensajes por vez con paginación por clave `(timestamp, rowid)`
+  (sin `OFFSET`) y el rango de fechas en el `WHERE`; el archivo se escribe a medida que llegan. Memoria constante.
+- **Formatos**: TXT `dd/mm/aa hh:mm - Nombre: texto` (CRLF, líneas siguientes sin prefijo, notas con sangría); HTML en un archivo
+  (imágenes de hasta 1,5 MB incrustadas como `data:`; el resto de la multimedia, en PC, se copia a `<nombre>_archivos/`; Android solo
+  incrusta imágenes); PDF dibujado a mano con `QPdfWriter`+`QPainter` (PC) o `PdfDocument` (Android), pasando de página sobre la marcha.
+- **Opciones** (`ExportOptions` / `ChatExport.Options`): rango, multimedia ya descargada, `download_missing` (único caso en que se
+  baja algo, vía el `downloader` que da la interfaz), transcripciones, resúmenes IA y `include_deleted` (contenido de `revoked_orig`
+  y versiones de `message_edits`; apagado, los eliminados quedan como «Mensaje eliminado»). Los documentos `awsync-*` se omiten.
+- **Chats bloqueados**: la interfaz pide la contraseña (`lock_dialogs.ask_current_password` / `AskPasswordDialog`) siempre, aunque el
+  chat esté abierto en la sesión.
+- **Segundo plano**: PC corre en un hilo con `Signal` de progreso y cancelación (`threading.Event`); Android en `Dispatchers.IO`.
+  Se escribe a `<destino>.part` (PC) o a `cacheDir/exports` (Android) y se renombra/copia al terminar; al cancelar o fallar se borra.
+  Android copia a Descargas/AdvancedWhatsapp (`Downloads.saveCopy`) y comparte con `FileProvider` (`cache-path exports/` en `file_paths.xml`).
+- Tests: `tests/test_chat_export.py` (pytest) y `ChatExportTest.kt` (JUnit, parte pura).

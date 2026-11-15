@@ -496,7 +496,9 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
     }
 
     var editingContact by remember { mutableStateOf(false) }
+    var exportingChat by remember { mutableStateOf(false) }
     if (editingContact) ContactEditDialog(jid) { editingContact = false }
+    if (exportingChat) ExportChatFlow(jid, chat?.name.orEmpty()) { exportingChat = false }
     var silentRead by remember(jid) { mutableStateOf(Organization.isSilentRead(jid)) }   // lectura invisible solo en este chat
     val hasNote = chat?.notes?.isNotBlank() == true
     Scaffold(
@@ -538,6 +540,7 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
                             silentRead = !silentRead
                             Organization.setSilentRead(jid, silentRead)
                         })
+                        DropdownMenuItem(text = { Text("Exportar chat…") }, onClick = { close(); exportingChat = true })
                         DropdownMenuItem(text = { Text(if (chat?.archived == true) "Sacar de Archivados" else "Archivar chat") }, onClick = {
                             close()
                             Organization.setArchived(jid, chat?.archived != true)

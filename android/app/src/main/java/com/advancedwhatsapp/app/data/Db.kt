@@ -254,6 +254,35 @@ object Db {
         (listOf(jid) + types).toTypedArray(),
     ).use { c -> buildList { while (c.moveToNext()) add(c.toMessage()) } }
 
+    /** Cantidad de mensajes de un chat en un rango de fechas (segundos, ambos inclusivos; null = sin límite). Exportar chat. */
+    fun countInRange(jid: String, since: Long?, until: Long?): Int {
+        val (where, args) = rangeWhere(jid, since, until)
+        return db.rawQuery("SELECT COUNT(*) FROM messages WHERE $where", args.toTypedArray()).use { if (it.moveToFirst()) it.getInt(0) else 0 }
+    }
+
+    /**
+     * Una página de mensajes en orden cronológico para exportar, paginada por clave (timestamp, rowid): barata aunque el chat
+     * tenga 100 mil mensajes. Devuelve (rowid, mensaje); para la página siguiente pasar el último (timestamp, rowid).
+     */
+    fun exportPage(jid: String, since: Long?, until: Long?, afterTs: Long, afterRid: Long, limit: Int): List<Pair<Long, Message>> {
+        val (where, args) = rangeWhere(jid, since, until)
+        val rows = db.rawQuery(
+            "SELECT rowid AS _rid, * FROM messages WHERE $where AND (timestamp > ? OR (timestamp = ? AND rowid > ?)) " +
+                "ORDER BY timestamp, rowid LIMIT $limit",
+            (args + listOf(afterTs.toString(), afterTs.toString(), afterRid.toString())).toTypedArray(),
+        ).use { c -> buildList { while (c.moveToNext()) add(c.getLong(c.getColumnIndexOrThrow("_rid")) to c.toMessage()) } }
+        val withReacts = withReactions(rows.map { it.second })
+        return rows.mapIndexed { i, r -> r.first to withReacts[i] }
+    }
+
+    private fun rangeWhere(jid: String, since: Long?, until: Long?): Pair<String, List<String>> {
+        var where = "chat_jid = ?"
+        val args = mutableListOf(jid)
+        if (since != null) { where += " AND timestamp >= ?"; args += since.toString() }
+        if (until != null) { where += " AND timestamp <= ?"; args += until.toString() }
+        return where to args
+    }
+
     /** Mensajes de un chat cuyo texto contiene [pattern] (LIKE), del más nuevo al más viejo (links de la galería). */
     fun messagesLike(jid: String, pattern: String, limit: Int, offset: Int): List<Message> = db.rawQuery(
         "SELECT * FROM messages WHERE chat_jid = ? AND text LIKE ? ORDER BY timestamp DESC LIMIT $limit OFFSET $offset",
