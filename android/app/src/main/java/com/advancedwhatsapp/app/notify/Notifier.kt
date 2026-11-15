@@ -25,6 +25,7 @@ import com.advancedwhatsapp.app.Prefs
 import com.advancedwhatsapp.app.R
 import com.advancedwhatsapp.app.data.Actions
 import com.advancedwhatsapp.app.data.Chat
+import com.advancedwhatsapp.app.data.ChatLock
 import com.advancedwhatsapp.app.data.Db
 import com.advancedwhatsapp.app.data.Photos
 import com.advancedwhatsapp.app.ui.MainActivity
@@ -37,11 +38,14 @@ object Notifier {
     private val nm get() = ctx.getSystemService(NotificationManager::class.java)
     private fun idFor(jid: String) = jid.hashCode() and 0x7fffffff or 0x10000
     const val EXTRA_CHAT = "chat_jid"
+    private const val UPDATE_ID = 0x7001
 
     /** alert = false actualiza lo que ya se ve sin volver a sonar. */
     fun message(jid: String, alert: Boolean = true) {
         if (!Prefs.notifications) return
         if (AppState.inForeground && AppState.activeChat == jid) return
+        if (jid.endsWith("@g.us") && !Prefs.notifyGroups) return
+        if (ChatLock.isHidden(jid)) return   // chat oculto: ninguna notificación, ni "Nuevo mensaje"
         val chat = Db.getChat(jid) ?: return
         if (chat.isMuted) return
         val pending = Db.unreadMessages(jid).filter { it.mediaType != "revoked" }
@@ -54,8 +58,9 @@ object Notifier {
         val style = Notification.MessagingStyle(me)
         if (chat.isGroup) style.setConversationTitle(chat.name).setGroupConversation(true)
         val members = HashMap<String, Person>()
-        for (m in pending) {
-            val text = Db.preview(m.mediaType, m.text).ifEmpty { "Mensaje" }
+        val locked = ChatLock.isLocked(jid)
+        for (m in if (locked) pending.takeLast(1) else pending) {
+            val text = if (locked) ChatLock.LOCKED_NOTIFICATION else Db.preview(m.mediaType, m.text).ifEmpty { "Mensaje" }
             val sender = if (!chat.isGroup) person else members.getOrPut(m.senderJid ?: m.senderName.orEmpty()) {
                 Person.Builder().setName(m.senderName?.ifEmpty { null } ?: "Alguien").setKey(m.senderJid).build()
             }
@@ -112,6 +117,23 @@ object Notifier {
                 .setContentIntent(openChat(jid))
                 .setAutoCancel(true)
                 .setOnlyAlertOnce(true)
+                .build()
+        )
+    }
+
+    /** Aviso de versión nueva: al tocarlo abre la app (Ajustes > Actualizaciones). */
+    fun updateAvailable(version: String) {
+        nm.notify(
+            UPDATE_ID,
+            Notification.Builder(ctx, App.CH_UPDATES)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setColor(ACCENT)
+                .setContentTitle("Hay una versión nueva: $version")
+                .setContentText("Abrí Ajustes para ver las novedades y actualizar.")
+                .setContentIntent(PendingIntent.getActivity(
+                    ctx, UPDATE_ID, Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
+                .setAutoCancel(true)
                 .build()
         )
     }
@@ -208,6 +230,20 @@ object Notifier {
     }
 
     fun cancel(jid: String) = nm.cancel(idFor(jid))
+
+    /**
+     * El globo del ícono sale de las notificaciones que siguen puestas: se quitan las de los chats ya leídos y se
+     * actualiza el número de las demás. Va al abrir la app, al leer un chat y al leer desde el teléfono.
+     */
+    fun sync() {
+        runCatching {
+            for (sbn in nm.activeNotifications) {
+                if (sbn.notification.channelId != App.CH_MESSAGES) continue
+                val jid = sbn.notification.shortcutId ?: continue   // las de aviso de falla no llevan atajo: se dejan
+                refresh(jid)
+            }
+        }
+    }
 
     private fun openChat(jid: String): PendingIntent = PendingIntent.getActivity(
         ctx, idFor(jid),

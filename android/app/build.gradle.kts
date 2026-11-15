@@ -12,8 +12,8 @@ android {
         applicationId = "com.advancedwhatsapp.app"
         minSdk = 29          // Android 10: primera versión que graba OGG/Opus (notas de voz de WhatsApp)
         targetSdk = 34
-        versionCode = 3
-        versionName = "0.2.1"
+        versionCode = 8
+        versionName = "0.5.1"
         externalNativeBuild {
             cmake {
                 cppFlags += "-std=c++17"
@@ -86,7 +86,7 @@ val gatewayZip = tasks.register<Zip>("gatewayZip") {
     archiveFileName.set("gateway.zip")
     destinationDirectory.set(gatewayOut.map { it.dir("assets") })
     from(gatewayDir) {
-        include("server.js", "package.json", "node_modules/**")
+        include("server.js", "extras.js", "package.json", "node_modules/**")
         exclude("**/*.md", "**/*.map", "**/*.d.ts", "**/*.d.cts", "**/*.d.mts", "**/*.ts.map",
             "**/test/**", "**/tests/**", "**/.github/**", "**/docs/**")
     }
@@ -107,8 +107,10 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
     implementation("androidx.navigation:navigation-compose:2.8.2")
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.biometric:biometric:1.1.0")   // huella para abrir chats bloqueados
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
+    implementation("io.coil-kt:coil-gif:2.7.0")            // stickers animados (.webp) en las burbujas
     testImplementation("junit:junit:4.13.2")
 }

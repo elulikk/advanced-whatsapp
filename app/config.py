@@ -218,10 +218,19 @@ PREF_DEFAULTS = {
     "notify_sound": True,        # sonido de la notificación (y aviso suave con la ventana abierta)
     "notify_preview": True,      # mostrar el texto del mensaje en la notificación
     "notify_calls": True,        # aviso de llamada entrante
+    "notify_groups": False,      # notificaciones de grupos (y que sumen en el contador del ícono)
     "close_to_tray": True,       # la X deja Advanced WhatsApp en la bandeja (sigue avisando)
     "status_receipts": True,     # al ver un estado, el contacto ve que lo viste
     "typing_indicator": True,    # mandar "escribiendo…" mientras escribo
-    "tags_palette_open": True,   # panel de tags abierto debajo de los filtros de la lista de chats
+    "quick_replies": True,      # chips de respuestas rápidas sugeridas por IA sobre el campo de mensaje
+    "date_reminders": True,    # ⏰ en los mensajes que mencionan una fecha/hora para crear un recordatorio
+    "auto_transcribe": True,     # transcribir solos los audios que llegan (y los que mando)
+    "auto_update": True,         # buscar versiones nuevas en GitHub al abrir y cada 12 h (Ajustes > Acerca de)
+    "auto_read_images": False,   # leer con IA (descripción + texto) las fotos al descargarlas; apagado para no gastar cuota
+    "keep_deleted": True,        # conservar el contenido de mensajes eliminados y las versiones anteriores de los editados
+    "tags_palette_open": True,  # panel de tags abierto debajo de los filtros de la lista de chats
+    "audio_autoplay": True,     # al terminar una nota de voz suena la siguiente del chat
+    "link_previews": True,      # tarjeta con tÃ­tulo, descripciÃ³n e imagen de los links
 }
 
 _pref_cache = {}
@@ -243,6 +252,20 @@ def set_pref(key: str, value: bool) -> bool:
     cfg = load_app_config()
     cfg.set("GENERAL", key, "true" if value else "false")
     _pref_cache[key] = bool(value)
+    return save_app_config(cfg)
+
+
+def get_setting(key: str, default: str = "") -> str:
+    """Valor de texto suelto de la secciÃ³n [GENERAL] de config.ini (para nÃºmeros y cosas que no son un sÃ­/no)."""
+    try:
+        return load_app_config().get("GENERAL", key, fallback=default)
+    except Exception:
+        return default
+
+
+def set_setting(key: str, value) -> bool:
+    cfg = load_app_config()
+    cfg.set("GENERAL", key, str(value))
     return save_app_config(cfg)
 
 

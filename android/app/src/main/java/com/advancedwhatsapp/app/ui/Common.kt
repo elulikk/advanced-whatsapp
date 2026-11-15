@@ -1,8 +1,11 @@
 package com.advancedwhatsapp.app.ui
 
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
-import android.webkit.MimeTypeMap
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -33,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import coil.compose.AsyncImage
+import com.advancedwhatsapp.app.data.Downloads
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -122,14 +126,33 @@ fun dayKey(ts: Long): String = SimpleDateFormat("yyyyMMdd", Locale.US).format(Da
 
 fun toast(c: Context, text: String) = Toast.makeText(c, text, Toast.LENGTH_LONG).show()
 
-/** Abre un archivo recibido o enviado con la app que corresponda. */
-fun openFile(c: Context, path: String) {
+/**
+ * Abre un archivo recibido o enviado con la app que corresponda, con el MIME según su nombre.
+ * Un APK pide el permiso de instalar apps de orígenes desconocidos si todavía no está dado.
+ */
+fun openFile(c: Context, path: String, name: String? = null) {
     val file = File(path)
-    val uri = FileProvider.getUriForFile(c, "${c.packageName}.files", file)
-    val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(file.extension.lowercase()) ?: "*/*"
-    val i = Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    runCatching { c.startActivity(i) }.onFailure { toast(c, "No hay ninguna app para abrir este archivo.") }
+    val mime = Downloads.mimeOf(file.name).takeIf { it != "application/octet-stream" }
+        ?: name?.let { Downloads.mimeOf(it) } ?: "*/*"
+    if (mime == APK_MIME && Build.VERSION.SDK_INT >= 26 && !c.packageManager.canRequestPackageInstalls()) {
+        toast(c, "Para instalar esta app, permití instalar desde Advanced WhatsApp y volvé a tocar el archivo.")
+        runCatching {
+            c.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${c.packageName}")))
+        }
+        return
+    }
+    try {
+        val uri = FileProvider.getUriForFile(c, "${c.packageName}.files", file)
+        val i = Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        c.startActivity(i)
+    } catch (e: ActivityNotFoundException) {
+        toast(c, "No hay ninguna app para abrir este archivo.")
+    } catch (e: Exception) {
+        toast(c, "No se pudo abrir el archivo: ${e.message}")
+    }
 }
+
+private const val APK_MIME = "application/vnd.android.package-archive"
 
 /** Selector compacto: un botón con el valor actual que despliega las opciones. */
 @Composable

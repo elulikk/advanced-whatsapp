@@ -136,6 +136,7 @@ class VoicePlayer(QObject):
     progress_changed = Signal(str)  # msg_id: avanzó la posición
     peaks_ready = Signal(str)     # msg_id: ya hay onda y duración
     speed_changed = Signal()      # cambió la velocidad (vale para todas las notas)
+    finished = Signal(str)        # msg_id: la nota terminó sola (para pasar a la siguiente)
 
     _instance: Optional["VoicePlayer"] = None
 
@@ -162,7 +163,7 @@ class VoicePlayer(QObject):
         self._current_path: Optional[str] = None
         self._pending_seek: Optional[float] = None
         self._resume_after_seek = False
-        self.speed = 1.0
+        self.speed = self._saved_speed()
         self._cache: Dict[str, Tuple[List[float], int]] = {}   # path -> (peaks, duración ms)
         self._decode_queue: List[Tuple[str, str]] = []         # (msg_id, path)
         self._decoding: Optional[Tuple[str, str]] = None
@@ -221,9 +222,24 @@ class VoicePlayer(QObject):
         i = SPEEDS.index(self.speed) if self.speed in SPEEDS else 0
         self.set_speed(SPEEDS[(i + 1) % len(SPEEDS)])
 
+    @staticmethod
+    def _saved_speed() -> float:
+        """La velocidad elegida la última vez (se recuerda entre notas y entre sesiones)."""
+        try:
+            from app.config import get_setting
+            rate = float(get_setting("audio_speed", "1") or 1)
+            return rate if rate in SPEEDS else 1.0
+        except Exception:
+            return 1.0
+
     def set_speed(self, rate: float):
         self.speed = rate
         self._player.setPlaybackRate(rate)
+        try:
+            from app.config import set_setting
+            set_setting("audio_speed", rate)
+        except Exception:
+            pass
         self.speed_changed.emit()
 
     def _start(self, msg_id: str, path: str, fraction: float):
@@ -260,6 +276,7 @@ class VoicePlayer(QObject):
             self._player.setPosition(0)
             self.progress_changed.emit(mid)
             self.state_changed.emit(mid)
+            self.finished.emit(mid)
 
     def _on_error(self, error, message=""):
         print(f"[Advanced WhatsApp Audio] error de reproducción: {message}")

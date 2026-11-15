@@ -4,6 +4,8 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import com.advancedwhatsapp.app.App
 import com.advancedwhatsapp.app.Prefs
+import com.advancedwhatsapp.app.ai.AutoTranscriber
+import com.advancedwhatsapp.app.ai.ImageReader
 import com.advancedwhatsapp.app.gateway.GatewayClient
 import com.advancedwhatsapp.app.gateway.GatewayException
 import org.json.JSONArray
@@ -38,6 +40,8 @@ object Actions {
             quotedText = quoted?.let { Db.preview(it.mediaType, it.text) },
             quotedSender = quoted?.let { if (it.fromMe) "Yo" else it.senderName },
         )
+        if (mediaType == "audio") AutoTranscriber.enqueue(id)
+        if (mediaType == "image") ImageReader.autoEnqueue(id)
     }
 
     fun sendText(to: String, text: String, quoted: Message? = null, at: Long? = null) {
@@ -67,9 +71,22 @@ object Actions {
         saveSent(to, body, "", "audio", file.path, quoted, at)
     }
 
+    /** Manda un sticker de la biblioteca (webp 512x512). Se copia a enviados: el mensaje conserva su archivo aunque se borre de la biblioteca. */
+    fun sendSticker(to: String, sticker: Sticker, quoted: Message?, at: Long? = null) {
+        val name = if (at != null) "sticker_${sticker.id}_${System.currentTimeMillis()}.webp" else "sticker_${sticker.id}.webp"
+        val copy = File(App.sentDir, name)
+        if (!copy.exists()) sticker.file.copyTo(copy, overwrite = true)
+        val body = JSONObject().put("to", to).put("sticker_path", copy.path)
+        if (sticker.animated) body.put("sticker_animated", true)
+        quotedJson(quoted)?.let { body.put("quoted", it) }
+        saveSent(to, body, "", "sticker", copy.path, quoted, at)
+        StickerLibrary.markUsed(sticker.id)
+    }
+
     fun markRead(jid: String) {
         val ids = Db.markChatRead(jid)
-        if (ids.isEmpty() || !Prefs.readReceipts) return
+        com.advancedwhatsapp.app.notify.Notifier.cancel(jid)   // leído: que la notificación (y el globo del ícono) baje
+        if (ids.isEmpty() || !Prefs.readReceipts || Organization.isSilentRead(jid)) return   // lectura invisible: ni global ni por chat
         // Los leídos se reintentan solos en la siguiente apertura si no hay conexión
         runCatching { GatewayClient.post("/read", JSONObject().put("to", jid).put("messages", JSONArray(ids))) }
     }
@@ -99,6 +116,7 @@ object Actions {
         val path = res.optString("media_path")
         if (path.isEmpty()) throw GatewayException("No se pudo descargar el archivo.")
         Db.setMediaPath(m.id, path)
+        if (m.mediaType == "image") ImageReader.autoEnqueue(m.id)
         return path
     }
 

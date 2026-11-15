@@ -4,7 +4,11 @@ import android.util.Log
 import com.advancedwhatsapp.app.App
 import com.advancedwhatsapp.app.AppState
 import com.advancedwhatsapp.app.Prefs
+import com.advancedwhatsapp.app.ai.AutoTranscriber
+import com.advancedwhatsapp.app.ai.ImageReader
 import com.advancedwhatsapp.app.data.Db
+import com.advancedwhatsapp.app.data.Extras
+import com.advancedwhatsapp.app.data.LinkPreviews
 import com.advancedwhatsapp.app.notify.Notifier
 import org.json.JSONArray
 import org.json.JSONObject
@@ -136,7 +140,15 @@ class WebhookServer {
                     Db.setReaction(id, who, d.optString("emoji"), d.optLong("timestamp"), d.str("chat_jid"))
                 }
             }
-            "connection" -> AppState.updateConnection(d)
+            "connection" -> {
+                AppState.updateConnection(d)
+                if (d.optString("status") == "connected") {
+                    AutoTranscriber.backlogOnce()
+                    ImageReader.backlogOnce()
+                }
+            }
+            "poll" -> d.str("id")?.let { Db.setPoll(it, d.toString()) }
+            "bulk" -> Extras.bulkDone.value = d
             "presence" -> AppState.updatePresence(d)
             "call" -> Notifier.call(d)
             "contact_status" -> AppState.statusChanged()
@@ -152,6 +164,11 @@ class WebhookServer {
     private fun incoming(d: JSONObject) {
         val id = d.str("message_id") ?: return
         val chat = d.str("chat_jid") ?: return
+        // Documento de sincronización de la PC: se procesa aparte y nunca se muestra como mensaje
+        if (com.advancedwhatsapp.app.data.Sync.isSyncDoc(d)) {
+            pool.execute { runCatching { com.advancedwhatsapp.app.data.Sync.handleIncoming(d) } }
+            return
+        }
         val sender = d.str("sender_jid") ?: chat
         val push = d.optString("push_name").takeUnless { d.isNull("push_name") }.orEmpty()
         val fromMe = d.optBoolean("from_me")
@@ -179,19 +196,24 @@ class WebhookServer {
             status = if (fromMe) "sent" else "delivered", chatName = d.str("chat_name"),
             mediaRaw = d.str("media_raw"), alreadyRead = d.optBoolean("already_read"),
         )
+        if (saved) d.optJSONObject("poll")?.let { Db.setPoll(id, it.toString()) }
+        if (saved && d.has("link_preview")) LinkPreviews.storeEvent(d)
         val isNew = !existed && !d.optBoolean("edited") && !d.optBoolean("revoked")
         if (saved && isNew && !fromMe && d.optString("upsert_type") == "notify" && !d.optBoolean("already_read")) {
             Notifier.message(chat)
         }
+        if (saved && isNew && (d.str("media_type") ?: "text") == "audio") AutoTranscriber.enqueue(id)
     }
 
     private fun readElsewhere(chats: JSONArray?) {
         if (chats == null) return
+        var changed = false
         for (i in 0 until chats.length()) {
             val ch = chats.getJSONObject(i)
             val ids = ch.optJSONArray("message_ids")
             if (ids != null && ids.length() > 0) {
                 Db.markMessagesReadElsewhere(List(ids.length()) { ids.getString(it) })
+                changed = true
             }
             for (jid in listOfNotNull(ch.str("chat_jid"), ch.str("alt_jid"))) {
                 if (ch.optBoolean("all")) {
@@ -202,6 +224,7 @@ class WebhookServer {
                 }
             }
         }
+        if (changed) Notifier.sync()   // leíste desde el teléfono: bajan las notificaciones y el globo del ícono
     }
 
     private fun JSONObject.str(k: String): String? = if (isNull(k)) null else optString(k).ifEmpty { null }

@@ -24,6 +24,10 @@ data class Chat(
     val avatarPath: String?,
     val mutedUntil: Long,
     val tabId: Long = 0,
+    val waName: String = "",       // nombre que manda WhatsApp (name es el que se muestra: el propio si hay)
+    val customName: String = "",
+    val notes: String = "",
+    val archived: Boolean = false,
 ) {
     val isMuted: Boolean
         get() = mutedUntil == -1L || mutedUntil > System.currentTimeMillis() / 1000
@@ -48,7 +52,19 @@ data class Message(
     val summary: String?,
     val edited: Boolean,
     val reactions: List<String> = emptyList(),
+    val starredAt: Long = 0,          // destacado (epoch ms); 0 = no
+    val pinnedAt: Long = 0,           // fijado en el chat (epoch ms); 0 = no
+    val hasOriginal: Boolean = false, // eliminado por el remitente pero con el contenido original conservado
+    val pollJson: String? = null,     // encuesta con opciones y votos
+    val imageDesc: String? = null,    // descripción de la foto leída por IA (Leer imágenes)
+    val imageOcr: String? = null,     // texto que contiene la foto, leído por IA
 )
+
+/** Un mensaje destacado con el nombre de su chat. */
+data class StarredItem(val message: Message, val chatName: String)
+
+/** Datos del contacto que edita el usuario; se guardan solo en este teléfono y prevalecen sobre los de WhatsApp. */
+data class ContactInfo(val jid: String, val waName: String, val customName: String, val notes: String, val phone: String?)
 
 data class Contact(val jid: String, val name: String, val phone: String?, val avatarPath: String?)
 
@@ -63,12 +79,20 @@ sealed interface ChatFilter {
     data object Unread : ChatFilter
     data object Groups : ChatFilter
     data class Tab(val id: Long) : ChatFilter
+    data object Archived : ChatFilter
+    data class Folder(val id: Long) : ChatFilter
 }
 
 /** Base local: misma estructura y mismas reglas que app/db.py en la PC. */
 object Db {
     private lateinit var helper: SQLiteOpenHelper
     private val db: SQLiteDatabase get() = helper.writableDatabase
+
+    /** Acceso directo para las consultas propias de otros módulos (estadísticas, limpieza, audios en cadena). */
+    val handle: SQLiteDatabase get() = db
+
+    /** Avisa a las pantallas que algo cambió fuera de Db (p. ej. la limpieza de multimedia). */
+    fun announceChange(jid: String = "") = notifyChange(jid)
 
     /** Avisa a las pantallas que algo cambió (jid del chat, o "" si cambió más de uno). */
     val changes = MutableSharedFlow<String>(extraBufferCapacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
@@ -88,7 +112,7 @@ object Db {
     private val RESERVED_TAB_NAMES = listOf("todos", "no leídos", "grupos")
 
     fun init(c: Context) {
-        helper = object : SQLiteOpenHelper(c, "magsapp.db", null, 2) {
+        helper = object : SQLiteOpenHelper(c, "magsapp.db", null, 4) {
             override fun onConfigure(d: SQLiteDatabase) {
                 d.enableWriteAheadLogging()
             }
@@ -99,7 +123,8 @@ object Db {
                         jid TEXT PRIMARY KEY, name TEXT, phone TEXT, unread_count INTEGER DEFAULT 0,
                         last_message_text TEXT, last_message_time INTEGER DEFAULT 0, is_pinned INTEGER DEFAULT 0,
                         avatar_path TEXT, muted_until INTEGER DEFAULT 0, updated_at INTEGER DEFAULT 0,
-                        tab_id INTEGER DEFAULT 0)"""
+                        tab_id INTEGER DEFAULT 0, custom_name TEXT, notes TEXT, manual_unread INTEGER DEFAULT 0,
+                        is_archived INTEGER DEFAULT 0)"""
                 )
                 d.execSQL(
                     """CREATE TABLE messages (
@@ -122,6 +147,7 @@ object Db {
                 d.execSQL("CREATE INDEX idx_chats_time ON chats(last_message_time DESC)")
                 d.execSQL("CREATE INDEX idx_contacts_name ON contacts(name)")
                 createTabs(d)
+                createOrganization(d)
             }
 
             override fun onUpgrade(d: SQLiteDatabase, o: Int, n: Int) {
@@ -129,6 +155,26 @@ object Db {
                     d.execSQL("ALTER TABLE chats ADD COLUMN tab_id INTEGER DEFAULT 0")
                     createTabs(d)
                 }
+                if (o < 3) {
+                    for (col in listOf("custom_name TEXT", "notes TEXT", "manual_unread INTEGER DEFAULT 0")) {
+                        runCatching { d.execSQL("ALTER TABLE chats ADD COLUMN $col") }
+                    }
+                }
+                if (o < 4) {
+                    runCatching { d.execSQL("ALTER TABLE chats ADD COLUMN is_archived INTEGER DEFAULT 0") }
+                    createOrganization(d)
+                }
+            }
+
+            /** Carpetas inteligentes, lectura invisible por chat e índice de archivados (idempotente). */
+            private fun createOrganization(d: SQLiteDatabase) {
+                d.execSQL(
+                    """CREATE TABLE IF NOT EXISTS smart_folders (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, rules TEXT NOT NULL DEFAULT '{}',
+                        sort_order INTEGER DEFAULT 0)"""
+                )
+                d.execSQL("CREATE TABLE IF NOT EXISTS chat_silent_read (chat_jid TEXT PRIMARY KEY)")
+                d.execSQL("CREATE INDEX IF NOT EXISTS idx_chats_archived ON chats(is_archived)")
             }
 
             private fun createTabs(d: SQLiteDatabase) {
@@ -137,7 +183,19 @@ object Db {
                 d.execSQL("CREATE INDEX idx_chats_tab ON chats(tab_id)")
             }
         }
+        ensureExtras(db)
         mergeLidDuplicates(db, null)
+        recomputeUnread()
+    }
+
+    /** Columnas y tabla de la mensajería extra: destacados, fijados, eliminados conservados, ediciones y encuestas. */
+    private fun ensureExtras(d: SQLiteDatabase) {
+        for (col in listOf("starred_at INTEGER DEFAULT 0", "pinned_at INTEGER DEFAULT 0", "revoked_orig TEXT", "poll_json TEXT",
+            "image_desc TEXT", "image_ocr TEXT")) {
+            runCatching { d.execSQL("ALTER TABLE messages ADD COLUMN $col") }
+        }
+        d.execSQL("CREATE TABLE IF NOT EXISTS message_edits (message_id TEXT NOT NULL, text TEXT, edited_at INTEGER DEFAULT 0)")
+        d.execSQL("CREATE INDEX IF NOT EXISTS idx_message_edits_msg ON message_edits(message_id)")
     }
 
     private fun notifyChange(jid: String = "") {
@@ -155,9 +213,12 @@ object Db {
     // ─── Lectura ─────────────────────────────────────────────────────────────
 
     private fun Cursor.toChat() = Chat(
-        jid = str("jid")!!, name = str("name").orEmpty(), phone = str("phone"), unread = lng("unread_count").toInt(),
+        jid = str("jid")!!, name = str("custom_name")?.takeIf { it.isNotBlank() } ?: str("name").orEmpty(),
+        phone = str("phone"), unread = lng("unread_count").toInt(),
         lastText = str("last_message_text").orEmpty(), lastTime = lng("last_message_time"), pinned = lng("is_pinned") != 0L,
         avatarPath = str("avatar_path"), mutedUntil = lng("muted_until"), tabId = lng("tab_id"),
+        waName = str("name").orEmpty(), customName = str("custom_name").orEmpty(), notes = str("notes").orEmpty(),
+        archived = lng("is_archived") != 0L,
     )
 
     private fun Cursor.toMessage() = Message(
@@ -166,6 +227,8 @@ object Db {
         mediaPath = str("media_path"), mediaRaw = str("media_raw"), quotedText = str("quoted_text"),
         quotedSender = str("quoted_sender"), timestamp = lng("timestamp"), status = str("status") ?: "sent",
         transcript = str("transcript"), summary = str("summary"), edited = lng("edited") != 0L,
+        starredAt = lng("starred_at"), pinnedAt = lng("pinned_at"), hasOriginal = !str("revoked_orig").isNullOrEmpty(),
+        pollJson = str("poll_json"), imageDesc = str("image_desc"), imageOcr = str("image_ocr"),
     )
 
     /**
@@ -178,15 +241,77 @@ object Db {
         ChatFilter.Unread -> "$VISIBLE AND unread_count != 0"
         ChatFilter.Groups -> "$GROUP AND tab_id = 0"
         is ChatFilter.Tab -> "$VISIBLE AND tab_id = ${filter.id}"
+        ChatFilter.Archived -> "$VISIBLE AND is_archived = 1"
+        is ChatFilter.Folder -> VISIBLE   // las reglas de la carpeta se suman en getChats (leen la base)
     }
+
+    /** Acceso directo a la base para Organization.kt y las copias/sincronización (Backup.kt). */
+    fun raw(): SQLiteDatabase = db
+
+    fun changed(jid: String = "") = notifyChange(jid)
+
+    /** Mensajes de un chat de ciertos tipos, del más nuevo al más viejo (galería). */
+    fun messagesOfTypes(jid: String, types: List<String>, limit: Int, offset: Int): List<Message> = db.rawQuery(
+        "SELECT * FROM messages WHERE chat_jid = ? AND media_type IN (${types.joinToString(",") { "?" }}) " +
+            "ORDER BY timestamp DESC LIMIT $limit OFFSET $offset",
+        (listOf(jid) + types).toTypedArray(),
+    ).use { c -> buildList { while (c.moveToNext()) add(c.toMessage()) } }
+
+    /** Cantidad de mensajes de un chat en un rango de fechas (segundos, ambos inclusivos; null = sin límite). Exportar chat. */
+    fun countInRange(jid: String, since: Long?, until: Long?): Int {
+        val (where, args) = rangeWhere(jid, since, until)
+        return db.rawQuery("SELECT COUNT(*) FROM messages WHERE $where", args.toTypedArray()).use { if (it.moveToFirst()) it.getInt(0) else 0 }
+    }
+
+    /**
+     * Una página de mensajes en orden cronológico para exportar, paginada por clave (timestamp, rowid): barata aunque el chat
+     * tenga 100 mil mensajes. Devuelve (rowid, mensaje); para la página siguiente pasar el último (timestamp, rowid).
+     */
+    fun exportPage(jid: String, since: Long?, until: Long?, afterTs: Long, afterRid: Long, limit: Int): List<Pair<Long, Message>> {
+        val (where, args) = rangeWhere(jid, since, until)
+        val rows = db.rawQuery(
+            "SELECT rowid AS _rid, * FROM messages WHERE $where AND (timestamp > ? OR (timestamp = ? AND rowid > ?)) " +
+                "ORDER BY timestamp, rowid LIMIT $limit",
+            (args + listOf(afterTs.toString(), afterTs.toString(), afterRid.toString())).toTypedArray(),
+        ).use { c -> buildList { while (c.moveToNext()) add(c.getLong(c.getColumnIndexOrThrow("_rid")) to c.toMessage()) } }
+        val withReacts = withReactions(rows.map { it.second })
+        return rows.mapIndexed { i, r -> r.first to withReacts[i] }
+    }
+
+    private fun rangeWhere(jid: String, since: Long?, until: Long?): Pair<String, List<String>> {
+        var where = "chat_jid = ?"
+        val args = mutableListOf(jid)
+        if (since != null) { where += " AND timestamp >= ?"; args += since.toString() }
+        if (until != null) { where += " AND timestamp <= ?"; args += until.toString() }
+        return where to args
+    }
+
+    /** Mensajes de un chat cuyo texto contiene [pattern] (LIKE), del más nuevo al más viejo (links de la galería). */
+    fun messagesLike(jid: String, pattern: String, limit: Int, offset: Int): List<Message> = db.rawQuery(
+        "SELECT * FROM messages WHERE chat_jid = ? AND text LIKE ? ORDER BY timestamp DESC LIMIT $limit OFFSET $offset",
+        arrayOf(jid, pattern),
+    ).use { c -> buildList { while (c.moveToNext()) add(c.toMessage()) } }
 
     fun getChats(search: String = "", filter: ChatFilter? = null, limit: Int = 300): List<Chat> {
         val where = StringBuilder(filterSql(filter, search.isNotBlank()))
         val args = mutableListOf<String>()
         if (search.isNotBlank()) {
-            where.append(" AND (name LIKE ? OR phone LIKE ? OR last_message_text LIKE ?)")
-            repeat(3) { args += "%${search.trim()}%" }
+            val lockedJids = ChatLock.locked.toList()
+            if (lockedJids.isEmpty()) {
+                where.append(" AND (name LIKE ? OR custom_name LIKE ? OR phone LIKE ? OR last_message_text LIKE ?)")
+                repeat(4) { args += "%${search.trim()}%" }
+            } else {
+                // El texto del último mensaje de un chat bloqueado no es buscable (se vería en los resultados)
+                where.append(" AND (name LIKE ? OR custom_name LIKE ? OR phone LIKE ? OR (last_message_text LIKE ? AND jid NOT IN (${lockedJids.joinToString(",") { "?" }})))")
+                repeat(4) { args += "%${search.trim()}%" }
+                args += lockedJids
+            }
         }
+        // Archivados: solo se ven en su pestaña (y al buscar, para que nunca se pierda un chat)
+        if (filter != null && filter != ChatFilter.Archived && search.isBlank()) where.append(" AND COALESCE(is_archived, 0) = 0")
+        if (filter is ChatFilter.Folder) where.append(" AND (${Organization.folderWhere(filter.id)})")
+        // Chats ocultos: no salen en la lista ni en la búsqueda hasta escribir el código secreto
+        where.append(Organization.hiddenClause())
         return db.rawQuery(
             "SELECT * FROM chats WHERE $where ORDER BY is_pinned DESC, last_message_time DESC, updated_at DESC LIMIT $limit",
             args.toTypedArray(),
@@ -258,6 +383,11 @@ object Db {
         return withReactions(rows).reversed()
     }
 
+    /** Todos los stickers del historial (recibidos y enviados), del más nuevo al más viejo. */
+    fun stickerMessages(): List<Message> =
+        db.rawQuery("SELECT * FROM messages WHERE media_type = 'sticker' ORDER BY timestamp DESC", null)
+            .use { c -> buildList { while (c.moveToNext()) add(c.toMessage()) } }
+
     fun getMessage(id: String): Message? =
         db.rawQuery("SELECT * FROM messages WHERE id = ?", arrayOf(id)).use { if (it.moveToFirst()) it.toMessage() else null }
 
@@ -279,6 +409,27 @@ object Db {
             "SELECT * FROM messages WHERE chat_jid = ? AND from_me = 0 AND status != 'read' ORDER BY timestamp DESC LIMIT $limit",
             arrayOf(jid),
         ).use { c -> buildList { while (c.moveToNext()) add(c.toMessage()) } }.reversed()
+
+    /** Los últimos [n] mensajes del chat en orden cronológico, sin reacciones (barato: lo usa «Sin responder»). */
+    fun lastMessages(jid: String, n: Int): List<Message> =
+        db.rawQuery("SELECT * FROM messages WHERE chat_jid = ? ORDER BY timestamp DESC LIMIT $n", arrayOf(jid))
+            .use { c -> buildList { while (c.moveToNext()) add(c.toMessage()) } }.reversed()
+
+    /** Mensajes cuyo texto o transcripción contiene alguno de los fragmentos (LIKE), sin los de chats bloqueados. */
+    fun searchMessages(likes: List<String>, scan: Int): List<Message> {
+        if (likes.isEmpty()) return emptyList()
+        val locked = ChatLock.locked.toList()
+        val args = mutableListOf<String>()
+        val cond = likes.joinToString(" OR ") { "(text LIKE ? OR transcript LIKE ? OR image_desc LIKE ? OR image_ocr LIKE ?)" }
+        likes.forEach { like -> repeat(4) { args += "%$like%" } }
+        var q = "SELECT * FROM messages WHERE ($cond) AND COALESCE(media_type, 'text') != 'revoked'"
+        if (locked.isNotEmpty()) {
+            q += " AND chat_jid NOT IN (${locked.joinToString(",") { "?" }})"
+            args += locked
+        }
+        q += " ORDER BY timestamp DESC LIMIT $scan"
+        return db.rawQuery(q, args.toTypedArray()).use { c -> buildList { while (c.moveToNext()) add(c.toMessage()) } }
+    }
 
     fun getContacts(search: String = ""): List<Contact> {
         val args = mutableListOf<String>()
@@ -336,6 +487,18 @@ object Db {
         }
     }
 
+    /** Después de unir una copia: vistas previas y contadores de los chats tocados. */
+    fun refreshAfterMerge(jids: Collection<String>) {
+        if (jids.isNotEmpty()) {
+            refreshPreviews(db, jids)
+            recomputeUnread(jids)
+        }
+        notifyChange()
+    }
+
+    /** Los documentos de sincronización con la PC («awsync-….awsync») viajan por «Mi número» pero no son mensajes. */
+    fun isSyncDoc(mediaType: String?, text: String?) = mediaType == "document" && (text ?: "").startsWith("awsync-")
+
     private fun refreshPreviews(d: SQLiteDatabase, jids: Collection<String>) {
         for (jid in jids.toSet()) {
             d.rawQuery(
@@ -360,6 +523,7 @@ object Db {
     ): Boolean {
         val clean = text.trim()
         if (clean.isEmpty() && mediaType == "text" && mediaPath == null && quotedText == null) return false
+        if (isSyncDoc(mediaType, clean)) return false
         val valid = senderName?.trim()?.takeIf { !fromMe && it.isNotEmpty() && it.lowercase() !in listOf("yo", "null", "none") }
         // Un grupo nunca toma el nombre de quien escribió
         val label = chatName ?: valid.takeUnless { chat.endsWith("@g.us") }
@@ -403,6 +567,8 @@ object Db {
                 arrayOf<Any?>(increment, now(), label, GROUP_PLACEHOLDER, label, chat),
             )
             refreshPreviews(d, listOf(chat))
+            // Un mensaje nuevo saca al chat de Archivados (salvo que esté silenciado); el historial viejo no
+            if (isNew && (fromMe || !read) && timestamp >= now() - 3600) Organization.unarchiveOnMessage(d, chat)
             if (chat.endsWith("@lid")) mergeLidDuplicates(d, chat)
             d.setTransactionSuccessful()
         } finally {
@@ -486,13 +652,17 @@ object Db {
         val chat = m.s("chat_jid") ?: return false
         val text = m.optString("text").takeUnless { m.isNull("text") }.orEmpty().trim()
         val mediaType = m.s("media_type") ?: "text"
+        if (isSyncDoc(mediaType, text)) return false
         val prev = getMessageIn(d, id)
         if (m.s("revoke_of") != null || m.s("edit_of") != null) {
             if (prev == null) return false
             if (m.s("revoke_of") != null) revokeIn(d, id)
-            else if (text.isNotEmpty()) d.update("messages", ContentValues().apply {
-                put("text", text); put("edited", 1); putNull("summary")
-            }, "id = ?", arrayOf(id))
+            else if (text.isNotEmpty()) {
+                recordEdit(d, id, text)
+                d.update("messages", ContentValues().apply {
+                    put("text", text); put("edited", 1); putNull("summary")
+                }, "id = ?", arrayOf(id))
+            }
             return true
         }
         if (text.isEmpty() && mediaType == "text" && m.s("media_path") == null && m.s("quoted_text") == null) return false
@@ -557,10 +727,27 @@ object Db {
         notifyChange()
     }
 
+    /** Antes de pisar el texto por una edición, guarda la versión anterior (si el ajuste está activo). */
+    private fun recordEdit(d: SQLiteDatabase, id: String, newText: String) {
+        if (!Extras.keepDeleted) return
+        val old = getMessageIn(d, id)?.text ?: return
+        if (old == newText) return
+        d.insert("message_edits", null, ContentValues().apply { put("message_id", id); put("text", old); put("edited_at", now()) })
+    }
+
     private fun revokeIn(d: SQLiteDatabase, id: String) {
+        if (Extras.keepDeleted) {
+            getMessageIn(d, id)?.takeIf { it.mediaType != "revoked" }?.let { m ->
+                val orig = JSONObject().put("media_type", m.mediaType).put("text", m.text).put("media_path", m.mediaPath)
+                    .put("media_raw", m.mediaRaw).put("quoted_text", m.quotedText).put("quoted_sender", m.quotedSender)
+                    .put("transcript", m.transcript)
+                d.update("messages", ContentValues().apply { put("revoked_orig", orig.toString()) }, "id = ?", arrayOf(id))
+            }
+        }
         d.update("messages", ContentValues().apply {
             put("text", ""); put("media_type", "revoked"); putNull("media_path"); putNull("media_raw")
-            putNull("quoted_text"); putNull("quoted_sender"); putNull("transcript"); putNull("summary")
+            putNull("quoted_text"); putNull("quoted_sender"); putNull("transcript"); putNull("summary"); put("pinned_at", 0)
+            putNull("image_desc"); putNull("image_ocr")
         }, "id = ?", arrayOf(id))
         d.delete("reactions", "message_id = ?", arrayOf(id))
     }
@@ -574,11 +761,65 @@ object Db {
 
     fun applyEdit(id: String, text: String) {
         val chat = getMessage(id)?.chatJid ?: return
+        recordEdit(db, id, text.trim())
         db.update("messages", ContentValues().apply {
             put("text", text.trim()); put("edited", 1); putNull("summary")
         }, "id = ?", arrayOf(id))
         refreshPreviews(db, listOf(chat))
         notifyChange(chat)
+    }
+
+    // ─── Mensajería extra: destacados, fijados, versiones, eliminados conservados y encuestas ───
+
+    fun setStarred(id: String, on: Boolean) {
+        db.update("messages", ContentValues().apply { put("starred_at", if (on) System.currentTimeMillis() else 0L) }, "id = ?", arrayOf(id))
+        notifyChange(getMessage(id)?.chatJid ?: "")
+    }
+
+    /** Fija o desfija; en cada chat quedan como mucho 3 fijados (se suelta el más viejo). */
+    fun setMessagePinned(id: String, on: Boolean) {
+        val chat = getMessage(id)?.chatJid ?: return
+        db.update("messages", ContentValues().apply { put("pinned_at", if (on) System.currentTimeMillis() else 0L) }, "id = ?", arrayOf(id))
+        if (on) {
+            db.execSQL(
+                "UPDATE messages SET pinned_at = 0 WHERE chat_jid = ? AND pinned_at > 0 AND id NOT IN " +
+                    "(SELECT id FROM messages WHERE chat_jid = ? AND pinned_at > 0 ORDER BY pinned_at DESC LIMIT 3)",
+                arrayOf<Any?>(chat, chat),
+            )
+        }
+        notifyChange(chat)
+    }
+
+    /** Destacados de todos los chats, el último destacado primero; [search] filtra por texto, transcripción o chat. */
+    fun starredMessages(search: String): List<StarredItem> {
+        val term = search.trim().lowercase()
+        val like = "%$term%"
+        val sql = "SELECT m.*, COALESCE(NULLIF(c.custom_name, ''), c.name, m.chat_jid) AS chat_name " +
+            "FROM messages m LEFT JOIN chats c ON c.jid = m.chat_jid " +
+            "WHERE m.starred_at > 0 AND m.media_type != 'revoked' AND (? = '' OR LOWER(COALESCE(m.text, '')) LIKE ? " +
+            "OR LOWER(COALESCE(m.transcript, '')) LIKE ? OR LOWER(COALESCE(m.image_desc, '')) LIKE ? " +
+            "OR LOWER(COALESCE(m.image_ocr, '')) LIKE ? OR LOWER(COALESCE(c.custom_name, c.name, '')) LIKE ?) " +
+            "ORDER BY m.starred_at DESC LIMIT 300"
+        return db.rawQuery(sql, arrayOf(term, like, like, like, like, like)).use { c ->
+            buildList { while (c.moveToNext()) add(StarredItem(c.toMessage(), c.str("chat_name").orEmpty())) }
+        }
+    }
+
+    /** Versiones anteriores de un mensaje editado (texto, momento del cambio), de la más vieja a la más nueva. */
+    fun editsOf(id: String): List<Pair<String, Long>> =
+        db.rawQuery("SELECT text, edited_at FROM message_edits WHERE message_id = ? ORDER BY rowid", arrayOf(id)).use { c ->
+            buildList { while (c.moveToNext()) add((c.getString(0) ?: "") to c.getLong(1)) }
+        }
+
+    /** Contenido original de un mensaje que el remitente eliminó, o null si no se conservó. */
+    fun revokedOriginal(id: String): JSONObject? =
+        db.rawQuery("SELECT revoked_orig FROM messages WHERE id = ?", arrayOf(id)).use { c ->
+            if (c.moveToFirst() && !c.isNull(0)) runCatching { JSONObject(c.getString(0)) }.getOrNull() else null
+        }
+
+    fun setPoll(id: String, json: String) {
+        db.update("messages", ContentValues().apply { put("poll_json", json) }, "id = ?", arrayOf(id))
+        notifyChange(getMessage(id)?.chatJid ?: "")
     }
 
     fun updateMessageStatus(id: String, status: String) {
@@ -606,6 +847,23 @@ object Db {
         notifyChange(chat ?: "")
     }
 
+    /** Audios desde [since] (epoch seg.) sin transcripción y con archivo o clave para bajarlo; los más nuevos primero. */
+    fun audiosPendingTranscript(since: Long, limit: Int): List<Message> = db.rawQuery(
+        "SELECT * FROM messages WHERE media_type = 'audio' AND timestamp >= ? AND COALESCE(transcript, '') = '' " +
+            "AND (media_raw IS NOT NULL OR media_path IS NOT NULL) ORDER BY timestamp DESC LIMIT ?",
+        arrayOf(since.toString(), limit.toString()),
+    ).use { c -> buildList { while (c.moveToNext()) add(c.toMessage()) } }
+
+    /** Fotos desde [since] (epoch seg.) ya descargadas y sin leer. Las que no están en disco no entran: nunca se baja una para leerla. */
+    fun imagesPendingRead(since: Long, limit: Int): List<Message> = db.rawQuery(
+        "SELECT * FROM messages WHERE media_type = 'image' AND timestamp >= ? AND media_path IS NOT NULL " +
+            "AND COALESCE(image_desc, '') = '' AND COALESCE(image_ocr, '') = '' ORDER BY timestamp DESC LIMIT ?",
+        arrayOf(since.toString(), limit.toString()),
+    ).use { c -> buildList { while (c.moveToNext()) add(c.toMessage()) } }
+
+    fun setImageRead(id: String, desc: String, ocr: String) =
+        updateMessage(id) { put("image_desc", desc.trim()); put("image_ocr", ocr.trim()) }
+
     fun setMediaPath(id: String, path: String) = updateMessage(id) { put("media_path", path) }
     fun setTranscript(id: String, t: String) = updateMessage(id) { put("transcript", t); putNull("summary") }
     fun setSummary(id: String, s: String?) = updateMessage(id) { if (s == null) putNull("summary") else put("summary", s) }
@@ -626,7 +884,7 @@ object Db {
             arrayOf(jid),
         ).use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
         val hadUnread = (getChat(jid)?.unread ?: 0) != 0
-        d.update("chats", ContentValues().apply { put("unread_count", 0) }, "jid = ?", arrayOf(jid))
+        d.update("chats", ContentValues().apply { put("unread_count", 0); put("manual_unread", 0) }, "jid = ?", arrayOf(jid))
         d.execSQL("UPDATE messages SET status = 'read' WHERE chat_jid = ? AND from_me = 0", arrayOf(jid))
         if (ids.isNotEmpty() || hadUnread) notifyChange(jid)
         return ids
@@ -654,19 +912,52 @@ object Db {
                      ELSE MAX(0, unread_count - ?) END WHERE jid = ?""",
                 arrayOf<Any?>(chat, count, chat),
             )
-            notifyChange(chat)
+        }
+        if (newly.isNotEmpty()) {
+            recomputeUnread(newly.keys)
+            newly.keys.forEach { notifyChange(it) }
         }
     }
 
     fun markChatReadElsewhere(jid: String) {
         db.execSQL("UPDATE messages SET status = 'read' WHERE chat_jid = ? AND from_me = 0 AND status != 'read'", arrayOf(jid))
-        db.update("chats", ContentValues().apply { put("unread_count", 0) }, "jid = ?", arrayOf(jid))
+        db.update("chats", ContentValues().apply { put("unread_count", 0); put("manual_unread", 0) }, "jid = ?", arrayOf(jid))
         notifyChange(jid)
     }
 
     fun markChatUnreadElsewhere(jid: String) {
-        db.update("chats", ContentValues().apply { put("unread_count", 1) }, "jid = ? AND unread_count = 0", arrayOf(jid))
+        db.update("chats", ContentValues().apply { put("unread_count", 1); put("manual_unread", 1) }, "jid = ? AND unread_count = 0", arrayOf(jid))
         notifyChange(jid)
+    }
+
+    /**
+     * Recalcula unread_count desde los mensajes recibidos que siguen sin leer (misma regla que app/db.py): el contador
+     * nunca supera lo realmente pendiente y un chat sin pendientes queda en 0, salvo el marcado como no leído a mano.
+     */
+    fun recomputeUnread(jids: Collection<String>? = null) {
+        val real = "(SELECT COUNT(*) FROM messages m WHERE m.chat_jid = chats.jid AND m.from_me = 0 AND m.status != 'read' AND m.media_type != 'revoked')"
+        val target = "CASE WHEN $real > 0 THEN MIN(unread_count, $real) WHEN manual_unread = 1 THEN 1 ELSE 0 END"
+        val where = if (jids.isNullOrEmpty()) "" else " AND jid IN (${jids.joinToString(",") { "?" }})"
+        val changed = db.compileStatement("UPDATE chats SET unread_count = $target WHERE unread_count != $target$where").use { st ->
+            jids?.forEachIndexed { i, j -> st.bindString(i + 1, j) }
+            st.executeUpdateDelete()
+        }
+        if (changed > 0) notifyChange()
+    }
+
+    fun getContactInfo(jid: String): ContactInfo? =
+        db.rawQuery("SELECT * FROM chats WHERE jid = ?", arrayOf(jid)).use { c ->
+            if (!c.moveToFirst()) return null
+            ContactInfo(jid, c.str("name").orEmpty(), c.str("custom_name").orEmpty(), c.str("notes").orEmpty(), c.str("phone"))
+        }
+
+    /** Nombre propio y notas del contacto: solo en este teléfono, prevalecen sobre el nombre de WhatsApp. */
+    fun setContactInfo(jid: String, customName: String, notes: String) {
+        db.update("chats", ContentValues().apply {
+            if (customName.isBlank()) putNull("custom_name") else put("custom_name", customName.trim())
+            if (notes.isBlank()) putNull("notes") else put("notes", notes.trim())
+        }, "jid = ?", arrayOf(jid))
+        notifyChange()
     }
 
     fun setPinned(jid: String, pinned: Boolean) {

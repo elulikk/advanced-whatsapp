@@ -2,7 +2,7 @@ import os
 from datetime import datetime
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QFrame, QMenu, QMessageBox, QToolButton, QButtonGroup
+    QListWidget, QListWidgetItem, QFrame, QMenu, QMessageBox, QToolButton, QButtonGroup, QScrollArea
 )
 from PySide6.QtCore import Qt, Signal, QSize, QTimer, QRectF
 from PySide6.QtGui import QPainter, QBrush, QColor, QFont, QPainterPath, QPixmap, QPen, QIcon
@@ -10,12 +10,17 @@ from PySide6.QtGui import QPainter, QBrush, QColor, QFont, QPainterPath, QPixmap
 import time
 
 from app.db import (get_chats, get_total_unread_count, clear_chat_messages, delete_chat, mark_chat_as_read,
-                    mark_all_chats_as_read, set_chat_muted, is_chat_muted, db_conn)
+                    mark_all_chats_as_read, set_chat_muted, is_chat_muted, db_conn, get_chat)
+from app.config import get_pref
+from app.ai import smart_features
 from app.gateway_manager import GatewayManager
 from app.ui.theme import C, HEADER_H, R_LG, unread_badge_qss
 from app.ui.icons import icon, tool_button, pixmap
 from app.ui.effects import HoverFade, mix, overlay, menu_below
 from app import tags as tagdb
+from app import chat_lock, thumb_cache
+from app import organization as org
+from app.ui import lock_dialogs
 from app.ui.tag_widgets import (TagPalettePanel, TagManagerDialog, paint_avatar_tags, tags_tooltip, tag_pixmap,
                                 tag_id_from_mime, paint_row_effect)
 
@@ -25,7 +30,11 @@ MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
 
 
 def resolve_display_name(chat_data: dict) -> str:
-    """Resuelve un nombre amigable idéntico a WhatsApp Desktop, eliminando 'Usuario (...)'."""
+    """Resuelve un nombre amigable idéntico a WhatsApp Desktop, eliminando 'Usuario (...)'.
+    El nombre que puso el usuario (custom_name) prevalece sobre el de WhatsApp."""
+    custom = (chat_data.get("custom_name") or "").strip()
+    if custom:
+        return custom
     raw_name = (chat_data.get("name") or "").strip()
     phone = (chat_data.get("phone") or "").strip()
     jid = chat_data.get("jid") or ""
@@ -115,6 +124,7 @@ class AvatarWidget(QWidget):
         self.avatar_path = avatar_path
         self._pix_cache = (None, None)   # (ruta, pixmap escalado)
         self._fade = None
+        self.locked = False              # chat bloqueado: se oscurece y lleva un candado encima
         self.tags = []                   # tags del chat que se dibujan encima (en orden de prioridad)
         self.tag_ring = C["panel"]       # color del anillo de los tags (el fondo sobre el que está el avatar)
         self.setFixedSize(size, size)
@@ -123,6 +133,11 @@ class AvatarWidget(QWidget):
         tags = list(tags or [])
         if tags != self.tags:
             self.tags = tags
+            self.update()
+
+    def set_locked(self, locked: bool):
+        if locked != self.locked:
+            self.locked = locked
             self.update()
 
     def set_clickable(self, tooltip: str = ""):
@@ -143,13 +158,10 @@ class AvatarWidget(QWidget):
             return None
         if self._pix_cache[0] == path:
             return self._pix_cache[1]
-        pix = QPixmap(path)
-        if pix.isNull():
+        # Caché compartida (LRU en memoria): al recargar la lista no se vuelve a decodificar cada avatar
+        scaled = thumb_cache.scaled_pixmap(path, self.size_px, self.devicePixelRatioF())
+        if scaled is None:
             return None
-        ratio = self.devicePixelRatioF()
-        side = round(self.size_px * ratio)
-        scaled = pix.scaled(side, side, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-        scaled.setDevicePixelRatio(ratio)
         self._pix_cache = (path, scaled)
         return scaled
 
@@ -189,6 +201,14 @@ class AvatarWidget(QWidget):
         if self._fade is not None and self._fade.value > 0.002:
             painter.fillPath(path, overlay(0.14 * self._fade.value))
 
+        if self.locked:
+            # "Todavía no desbloqueado": avatar apagado con un candado en el centro
+            painter.fillPath(path, QColor(0, 0, 0, 165))
+            side = max(14, round(self.size_px * 0.46))
+            painter.setClipping(False)
+            painter.drawPixmap((self.size_px - side) // 2, (self.size_px - side) // 2,
+                               pixmap("lock", "#e9edef", side))
+
         if self.tags:
             painter.setClipping(False)
             paint_avatar_tags(painter, self.size_px, self.tags, self.tag_ring)
@@ -220,6 +240,8 @@ class ElidedLabel(QLabel):
 
 
 def _preview_text(chat_data: dict) -> str:
+    if chat_lock.is_locked(chat_data.get("jid")):
+        return chat_lock.LOCKED_PREVIEW
     last_msg = (chat_data.get("last_message_text") or "").strip()
     if last_msg:
         return last_msg
@@ -341,15 +363,25 @@ class ChatItemWidget(QWidget):
 
     def _apply(self, chat_data: dict):
         unread = chat_data.get("unread_count", 0) or 0
-        name_color = self._row_fx.get("name") or C["text"]
+        locked = chat_lock.is_locked(chat_data.get("jid"))
+        self.avatar.set_locked(locked)
+        name_color = C["text_3"] if locked else (self._row_fx.get("name") or C["text"])
         self.lbl_name.setStyleSheet(
-            f"font-size: 13px; color: {name_color}; font-weight: {'600' if unread else '400'};")
-        if self.ai_state in AI_PREVIEW:
+            f"font-size: 13px; color: {name_color}; font-weight: {'600' if unread and not locked else '400'};")
+        if locked:
+            self.lbl_preview.setText(chat_lock.LOCKED_PREVIEW)
+            self.lbl_preview.setStyleSheet(f"font-size: 12px; color: {C['text_3']}; font-style: italic;")
+        elif self.ai_state not in AI_PREVIEW and chat_data.get("needs_reply"):
+            self.lbl_preview.setText("↩ " + _preview_text(chat_data))
+            self.lbl_preview.setToolTip("Te hicieron una pregunta o pedido y todavía no respondiste")
+            self.lbl_preview.setStyleSheet(f"font-size: 12px; color: {C['accent_hi']};")
+        elif self.ai_state in AI_PREVIEW:
             txt, color = AI_PREVIEW[self.ai_state]
             self.lbl_preview.setText(txt)
             self.lbl_preview.setStyleSheet(f"font-size: 12px; color: {C[color]}; font-style: italic;")
         else:
             self.lbl_preview.setText(_preview_text(chat_data))
+            self.lbl_preview.setToolTip("")
             self.lbl_preview.setStyleSheet(f"font-size: 12px; color: {C['text'] if unread else C['text_2']};")
         self.lbl_time.setText(format_whatsapp_timestamp(chat_data.get("last_message_time", 0)))
         self.lbl_time.setStyleSheet(f"font-size: 11px; color: {C['accent'] if unread else C['text_3']};")
@@ -448,9 +480,28 @@ class ChatListWidget(QListWidget):
             e.ignore()
 
 
+class ChipScrollArea(QScrollArea):
+    """Fila de píldoras que se desplaza en horizontal (rueda del mouse) cuando no entran todas."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setFixedHeight(34)
+        self.setStyleSheet("QScrollArea { background: transparent; } QScrollArea > QWidget > QWidget { background: transparent; }")
+
+    def wheelEvent(self, e):
+        sb = self.horizontalScrollBar()
+        sb.setValue(sb.value() - (e.angleDelta().y() or e.angleDelta().x()) // 2)
+        e.accept()
+
+
 class ChatListPanel(QWidget):
     """Panel lateral con barra de búsqueda, filtros y lista de chats."""
     chat_selected = Signal(dict)
+    chat_lock_changed = Signal(str)   # se bloqueó o desbloqueó un chat (jid)
     open_qr_requested = Signal()
     new_chat_requested = Signal()
     refresh_requested = Signal()
@@ -465,7 +516,8 @@ class ChatListPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.all_chats = []
-        self._filter = "all"       # "all", "unread" o "groups"
+        self._filter = "all"       # "all", "unread", "groups", "archived" o "folder:<id>"
+        self._secret_miss = ""     # último texto del buscador que no era el código secreto (evita recalcular el hash)
         self._page_size = 40
         self._current_offset = 0
         self._has_more = True
@@ -487,6 +539,13 @@ class ChatListPanel(QWidget):
         self._tag_timer.setInterval(60000)
         self._tag_timer.timeout.connect(self._purge_expired_tags)
         self._tag_timer.start()
+
+        # Archivado automático: al abrir y cada media hora (apagado por defecto)
+        self._archive_timer = QTimer(self)
+        self._archive_timer.setInterval(30 * 60 * 1000)
+        self._archive_timer.timeout.connect(self.run_auto_archive)
+        self._archive_timer.start()
+        QTimer.singleShot(4000, self.run_auto_archive)
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -563,11 +622,14 @@ class ChatListPanel(QWidget):
         self.txt_search.setPlaceholderText("Buscar chat o número  (Ctrl+K)")
         self.txt_search.addAction(icon("search", C["text_3"], 16), QLineEdit.LeadingPosition)
         self.txt_search.setClearButtonEnabled(True)
+        act_ai = self.txt_search.addAction(icon("sparkle", C["accent"], 16), QLineEdit.TrailingPosition)
+        act_ai.setToolTip("Buscar con IA: por significado, también en las transcripciones de audios")
+        act_ai.triggered.connect(self._open_ai_search)
         self.txt_search.installEventFilter(self)
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(220)
-        self._search_timer.timeout.connect(lambda: self.reload_chats())
+        self._search_timer.timeout.connect(self._on_search_timeout)
         self.txt_search.textChanged.connect(self._on_search_changed)
         self.txt_search.returnPressed.connect(self._open_first_result)
         search_layout.addWidget(self.txt_search)
@@ -578,12 +640,15 @@ class ChatListPanel(QWidget):
         self.btn_filter_all = self._make_filter("Todos", True)
         self.btn_filter_unread = self._make_filter("No leídos", False)
         self.btn_filter_groups = self._make_filter("Grupos", False)
+        self.btn_filter_pending = self._make_filter("Sin responder", False)
         self.btn_filter_all.clicked.connect(lambda: self._set_filter("all"))
         self.btn_filter_unread.clicked.connect(lambda: self._set_filter("unread"))
         self.btn_filter_groups.clicked.connect(lambda: self._set_filter("groups"))
+        self.btn_filter_pending.clicked.connect(lambda: self._set_filter("pending"))
         chips.addWidget(self.btn_filter_all)
         chips.addWidget(self.btn_filter_unread)
         chips.addWidget(self.btn_filter_groups)
+        chips.addWidget(self.btn_filter_pending)
         chips.addStretch()
         # Red de seguridad: si algún chat quedó "sin leer" por error, se limpia todo de un clic
         self.btn_read_all = tool_button("check_all", "Marcar todos los chats como leídos",
@@ -591,7 +656,21 @@ class ChatListPanel(QWidget):
         self.btn_read_all.clicked.connect(self.mark_all_read)
         self.btn_read_all.hide()
         chips.addWidget(self.btn_read_all)
+        self.btn_folders = tool_button("folder", "Carpetas inteligentes: crear, editar y ordenar", size=28, icon_size=16)
+        self.btn_folders.clicked.connect(self.open_folder_manager)
+        chips.addWidget(self.btn_folders)
         search_layout.addLayout(chips)
+
+        # Carpetas inteligentes y Archivados: una fila de píldoras aparte (se oculta si no hay nada)
+        self.folder_bar = ChipScrollArea()
+        self._folder_holder = QWidget()
+        self._folder_row = QHBoxLayout(self._folder_holder)
+        self._folder_row.setContentsMargins(0, 0, 0, 0)
+        self._folder_row.setSpacing(6)
+        self.folder_bar.setWidget(self._folder_holder)
+        self.folder_bar.setVisible(False)
+        search_layout.addWidget(self.folder_bar)
+        self._folder_buttons = {}
 
         # Panel de tags: se arrastran sobre un chat para marcarlo
         self.tag_panel = TagPalettePanel()
@@ -739,11 +818,99 @@ class ChatListPanel(QWidget):
         self.reload_chats(select_jid=self._current_jid())
 
     def _fetch_chats(self, search: str, offset: int) -> list:
-        return get_chats(search=search, filter_unread=self._filter == "unread", groups_only=self._filter == "groups",
-                         limit=self._page_size, offset=offset)
+        if self._filter == "pending":
+            chats = smart_features.unanswered_chats(limit=self._page_size + 200 if search else self._page_size,
+                                                    offset=0 if search else offset)
+            if search:
+                chats = [c for c in chats if search.lower() in resolve_display_name(c).lower()][offset:offset + self._page_size]
+            return chats
+        extra = None
+        archived = "only" if self._filter == "archived" else "hide"
+        if self._filter.startswith("folder:"):
+            folder = org.get_folder(int(self._filter[7:] or 0))
+            extra = org.rules_where(folder["rules"]) if folder else org.rules_where(None)
+        chats = get_chats(search=search, filter_unread=self._filter == "unread", groups_only=self._filter == "groups",
+                          limit=self._page_size, offset=offset, extra_where=extra, archived=archived,
+                          show_secret=chat_lock.is_revealed())
+        pending = smart_features.needs_reply_jids([c.get("jid") for c in chats])
+        for c in chats:
+            c["needs_reply"] = c.get("jid") in pending
+        return chats
+
+    def _open_ai_search(self):
+        from app.ui.ai_extras import AiSearchDialog
+        dlg = AiSearchDialog(self.txt_search.text().strip(), self)
+        dlg.chat_requested.connect(self._open_chat_by_jid)
+        dlg.exec()
+        dlg.deleteLater()
+
+    def _open_chat_by_jid(self, jid: str):
+        chat = get_chat(jid)
+        if chat:
+            self.chat_selected.emit(chat)
 
     def _on_search_changed(self, text: str):
         self._search_timer.start()
+
+    def _on_search_timeout(self):
+        """Pasó el debounce del buscador: si lo escrito es el código secreto, muestra u oculta los chats ocultos."""
+        text = self.txt_search.text().strip()
+        if text and text != self._secret_miss:
+            res = chat_lock.try_secret(text)
+            if res:
+                self.txt_search.clear()   # no deja rastro del código en pantalla
+                self._secret_miss = ""
+                self.lbl_title.setText("Chats (ocultos visibles)" if res == "revealed" else "Chats")
+                self.reload_chats()
+                return
+            self._secret_miss = text
+        self.reload_chats()
+
+    # ── Carpetas inteligentes y Archivados ──
+
+    def _rebuild_folder_bar(self):
+        """Vuelve a armar las píldoras de las carpetas y de Archivados según lo que haya."""
+        while self._folder_row.count():
+            item = self._folder_row.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                if isinstance(w, QToolButton):
+                    self._filter_group.removeButton(w)
+                w.deleteLater()
+        self._folder_buttons = {}
+        folders = org.list_folders()
+        for f in folders:
+            n = org.folder_unread_count(f["id"])
+            self._add_folder_chip(f"folder:{f['id']}", f["name"] + (f"  {n}" if n else ""), f["name"])
+        arch = org.archived_count()
+        if arch or self._filter == "archived":
+            self._add_folder_chip("archived", f"Archivados  {arch}" if arch else "Archivados", "Chats archivados")
+        self._folder_row.addStretch(1)
+        self.folder_bar.setVisible(bool(folders) or bool(arch) or self._filter == "archived")
+        # Si la carpeta activa se borró, se vuelve a Todos
+        if self._filter.startswith("folder:") and self._filter not in self._folder_buttons:
+            self._filter = "all"
+            self.btn_filter_all.setChecked(True)
+
+    def _add_folder_chip(self, key: str, text: str, tooltip: str):
+        b = self._make_filter(text, self._filter == key)
+        b.setToolTip(tooltip)
+        b.clicked.connect(lambda _=False, k=key: self._set_filter(k))
+        self._folder_row.addWidget(b)
+        self._folder_buttons[key] = b
+
+    def open_folder_manager(self):
+        from app.ui.folder_dialogs import FolderManagerDialog
+        FolderManagerDialog(parent=self.window()).exec()
+        self.reload_chats(select_jid=self._current_jid())
+
+    def run_auto_archive(self):
+        """Archiva los chats sin actividad (si el ajuste está prendido) y repinta si cambió algo."""
+        try:
+            if org.auto_archive():
+                self.reload_chats(select_jid=self._current_jid())
+        except Exception as e:
+            print(f"[Advanced WhatsApp] archivado automático: {e}")
 
     def _add_chat_item(self, chat: dict, tags: list = None):
         item = QListWidgetItem(self.list_widget)
@@ -781,10 +948,12 @@ class ChatListPanel(QWidget):
             self._last_purge = time.time()
             tagdb.purge_expired()
         tag_map = tagdb.tags_for_chats([c.get("jid") for c in chats])
+        self._rebuild_folder_bar()
 
-        unread_total = get_total_unread_count()
-        self.btn_read_all.setVisible(unread_total > 0)
-        self.unread_total_changed.emit(unread_total)
+        self.btn_read_all.setVisible(get_total_unread_count() > 0)
+        # Ícono, título y bandeja: los chats silenciados no suman (igual que WhatsApp), y los grupos solo si se avisan
+        self.unread_total_changed.emit(get_total_unread_count(include_muted=False,
+                                                              include_groups=get_pref("notify_groups")))
 
         # Conservar la posición del scroll: al vaciar la lista se volvía arriba
         sb = self.list_widget.verticalScrollBar()
@@ -815,8 +984,11 @@ class ChatListPanel(QWidget):
         if empty:
             self.lbl_no_results.setText(
                 "No hay chats que coincidan." if search else
-                {"unread": "No tienes chats sin leer.", "groups": "Todavía no hay grupos."}.get(
-                    self._filter, "Todavía no hay chats."))
+                {"unread": "No tienes chats sin leer.", "groups": "Todavía no hay grupos.",
+                 "pending": "No tenés nada sin responder. 🎉",
+                 "archived": "No hay chats archivados."}.get(
+                    self._filter, "No hay chats en esta carpeta." if self._filter.startswith("folder:")
+                    else "Todavía no hay chats."))
 
     def _on_scroll(self, value):
         sb = self.list_widget.verticalScrollBar()
@@ -878,6 +1050,7 @@ class ChatListPanel(QWidget):
         entry = self._chat_items.get(jid)
         if entry:
             item, widget = entry
+            chat_data["needs_reply"] = jid in smart_features.needs_reply_jids([jid])
             widget.update_info(chat_data)
             item.setData(Qt.UserRole, chat_data)
             row = self.list_widget.row(item)
@@ -916,6 +1089,17 @@ class ChatListPanel(QWidget):
             for label, secs in (("8 horas", 8 * 3600), ("1 semana", 7 * 86400), ("Siempre", -1)):
                 mute_actions[mute_menu.addAction(label)] = secs
         act_edit = menu.addAction(icon("user"), "Guardar / editar contacto")
+        is_locked = chat_lock.is_locked(chat_data.get("jid"))
+        act_lock = menu.addAction(icon("lock"), "Desbloquear chat" if is_locked else "Bloquear chat")
+        act_hide = None
+        if is_locked:
+            hidden = chat_lock.is_hidden(chat_data.get("jid"))
+            act_hide = menu.addAction(icon("eye"), "Dejar de ocultar chat" if hidden else "Ocultar chat (se busca con el código)")
+        archived = bool(chat_data.get("is_archived"))
+        act_archive = menu.addAction(icon("folder"), "Sacar de Archivados" if archived else "Archivar chat")
+        silent = org.is_silent_read(chat_data.get("jid"))
+        act_silent = menu.addAction(icon("eye"), "Lectura invisible: activada (tocá para apagar)" if silent
+                                    else "Lectura invisible (sin tildes azules)")
         tag_actions, act_untag_all, act_tags_cfg = self._add_tag_menu(menu, chat_data.get("jid"))
         menu.addSeparator()
         act_clear = menu.addAction(icon("eraser", C["danger"], active_color=C["danger"]), "Vaciar chat…")
@@ -955,12 +1139,48 @@ class ChatListPanel(QWidget):
             set_chat_muted(jid, -1 if secs < 0 else int(time.time()) + secs)
             self.reload_chats(select_jid=self._current_jid())
             self.chat_marked_read.emit(jid)
+        elif act == act_lock:
+            self._toggle_chat_lock(chat_data, is_locked)
+        elif act_hide is not None and act == act_hide:
+            self._toggle_chat_hidden(chat_data)
+        elif act == act_archive:
+            org.set_archived(jid, not archived)
+            self.reload_chats(select_jid=self._current_jid())
+        elif act == act_silent:
+            org.set_silent_read(jid, not silent)
         elif act == act_edit:
             self._open_edit_contact_dialog(chat_data)
         elif act == act_clear:
             self._confirm_clear_chat(chat_data)
         elif act == act_delete:
             self._confirm_delete_chat(chat_data)
+
+    def _toggle_chat_lock(self, chat_data: dict, is_locked: bool):
+        jid = chat_data.get("jid")
+        if is_locked:
+            # Para sacar el bloqueo hay que demostrar que sos vos
+            if not (chat_lock.is_open(jid) or lock_dialogs.ask_current_password(self, "Ingresá la contraseña para desbloquear el chat:")):
+                return
+            chat_lock.unlock_chat(jid)
+        else:
+            if not lock_dialogs.ensure_password(self) or not chat_lock.lock_chat(jid):
+                return
+        self.chat_lock_changed.emit(jid)
+        self.reload_chats(select_jid=self._current_jid())
+
+    def _toggle_chat_hidden(self, chat_data: dict):
+        jid = chat_data.get("jid")
+        if chat_lock.is_hidden(jid):
+            chat_lock.set_hidden(jid, False)
+        else:
+            if not lock_dialogs.ensure_secret_code(self) or not chat_lock.set_hidden(jid, True):
+                return
+            QMessageBox.information(
+                self, "Chat oculto",
+                "El chat ya no aparece en la lista ni en la búsqueda, y no muestra notificaciones.\n\n"
+                "Para verlo, escribí tu código secreto en el buscador (o mostralo desde Configuración).")
+        self.chat_lock_changed.emit(jid)
+        self.reload_chats(select_jid=self._current_jid())
 
     # ── Tags ──
 

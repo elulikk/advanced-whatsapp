@@ -18,6 +18,11 @@ import com.advancedwhatsapp.app.App
 import com.advancedwhatsapp.app.AppState
 import com.advancedwhatsapp.app.Prefs
 import com.advancedwhatsapp.app.R
+import com.advancedwhatsapp.app.data.Db
+import com.advancedwhatsapp.app.data.LinkPreviews
+import com.advancedwhatsapp.app.data.MediaCleanup
+import com.advancedwhatsapp.app.data.Thumbs
+import com.advancedwhatsapp.app.widget.UnreadWidget
 import com.advancedwhatsapp.app.notify.Notifier
 import com.advancedwhatsapp.app.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
@@ -53,10 +58,22 @@ class GatewayService : Service() {
             NOTIFICATION_ID, buildNotification("Conectando…"),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
         )
+        // Al iniciar: el globo del ícono se recalcula desde lo realmente sin leer
+        scope.launch { runCatching { Db.recomputeUnread(); Notifier.sync() } }
         runCatching { webhook.start() }.onFailure { Log.e(TAG, "No se pudo abrir el webhook", it) }
         bindNode()
         applyWakeLock()
         scope.launch { watchdog() }
+        scope.launch { backgroundTasks() }
+        // Widget «Sin leer»: se actualiza cuando se calma el flujo de cambios (el delay en collectLatest hace de debounce)
+        scope.launch { Db.changes.collectLatest { delay(1500); UnreadWidget.refresh(applicationContext) } }
+        // Mantenimiento: limpieza automática de multimedia (si está activada) y poda de miniaturas y previews viejos
+        scope.launch {
+            delay(60_000)
+            runCatching { MediaCleanup.runAutoIfDue() }
+            runCatching { Thumbs.prune() }
+            runCatching { LinkPreviews.prune() }
+        }
         scope.launch {
             AppState.connection.collectLatest { c ->
                 getSystemService(NotificationManager::class.java)
@@ -118,6 +135,16 @@ class GatewayService : Service() {
                 }
             }
             delay(if (AppState.connection.value.status == "connected") 30_000 else 4_000)
+        }
+    }
+
+    /** Cada minuto: sincroniza con la PC (si está activada) y hace la copia automática cuando toca. */
+    private suspend fun backgroundTasks() {
+        delay(45_000)
+        while (true) {
+            runCatching { com.advancedwhatsapp.app.data.Sync.tick() }
+            runCatching { com.advancedwhatsapp.app.data.Backup.autoTick() }
+            delay(60_000)
         }
     }
 

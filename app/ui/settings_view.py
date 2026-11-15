@@ -8,7 +8,7 @@ estado de la sesión de WhatsApp y parámetros del sistema.
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QCheckBox, QGroupBox, QMessageBox,
-    QComboBox, QFrame, QScrollArea, QTabWidget, QSlider, QGridLayout
+    QComboBox, QFrame, QScrollArea, QTabWidget, QSlider, QGridLayout, QSpinBox
 )
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, QUrl
 from PySide6.QtGui import QDesktopServices
@@ -18,9 +18,12 @@ from app.config import (
     FONT_SCALE_MIN, FONT_SCALE_MAX, get_chat_font_scale, APP_VERSION, get_pref, set_pref,
     GATEWAY_PORT, WEBHOOK_PORT,
 )
-from app import windows_integration
+from app import windows_integration, chat_lock
+from app import organization as org
+from app.ui import lock_dialogs
 from app.ui.theme import C, HEADER_H
-from app.ui.icons import icon, tool_button
+from app.ui.storage_view import StorageTab
+from app.ui.icons import icon, tool_button, flame_pixmap
 from app.ai.ai_service import AIService
 from app.gateway_manager import GatewayManager
 
@@ -82,12 +85,16 @@ class SettingsPanel(QWidget):
     config_saved = Signal()
     font_scale_changed = Signal(int)
     test_notification_requested = Signal()
+    locks_cleared = Signal()   # se quitó la contraseña: todos los chats quedaron desbloqueados
+    starred_requested = Signal()   # abrir la lista de mensajes destacados
+    privacy_changed = Signal()  # cambió algo que afecta la lista de chats (ocultos, archivado automático)
 
-    def __init__(self, parent=None):
+    def __init__(self, update_controller=None, parent=None):
         super().__init__(parent)
         self.config = load_app_config()
         self.ai_service = AIService(self.config)
         self.gateway = GatewayManager.get_instance()
+        self.update_controller = update_controller   # lo crea la ventana principal
 
         self._cached_groq_models = []
         self._cached_gemini_models = []
@@ -134,8 +141,16 @@ class SettingsPanel(QWidget):
         self.tabs.addTab(self.tab_whatsapp, "WhatsApp y conexión")
         self.tab_notify = self._create_notifications_tab()
         self.tabs.addTab(self.tab_notify, "Notificaciones y Windows")
+        from app.ui.extras_dialogs import build_messaging_tab
+        self.tab_messaging = build_messaging_tab(self, self.gateway)
+        self.tabs.addTab(self.tab_messaging, "Mensajería")
         self.tab_appearance = self._create_appearance_tab()
         self.tabs.addTab(self.tab_appearance, "Apariencia")
+        from app.ui.backup_panel import BackupTab
+        self.backup_tab = BackupTab(self.gateway)
+        self.tabs.addTab(self.backup_tab, "Copias y sincronización")
+        self.tab_storage = StorageTab()
+        self.tabs.addTab(self.tab_storage, "Almacenamiento y chat")
         self.tab_about = self._create_about_tab()
         self.tabs.addTab(self.tab_about, "Acerca de")
 
@@ -172,6 +187,48 @@ class SettingsPanel(QWidget):
 
         self.check_ai_enabled = QCheckBox("Habilitar funciones de inteligencia artificial")
         c_layout.addWidget(self.check_ai_enabled)
+
+        # Transcripción automática de audios (get_pref/set_pref; la cola vive en media_service)
+        self.check_auto_transcribe = QCheckBox("Transcribir audios automáticamente")
+        self.check_auto_transcribe.setChecked(get_pref("auto_transcribe"))
+        self.check_auto_transcribe.toggled.connect(lambda on: set_pref("auto_transcribe", on))
+        c_layout.addWidget(self.check_auto_transcribe)
+        c_layout.addWidget(self._hint(
+            "Las notas de voz que llegan (y las que mandás) se transcriben solas en segundo plano. "
+            "Necesita una clave de Groq u OpenAI. Si falla alguna, queda el botón «Transcribir» en el mensaje."))
+
+        # Leer imágenes: descripción y texto de las fotos ya descargadas (apagado por defecto: gasta cuota de IA)
+        self.check_auto_read_images = QCheckBox("Leer imágenes automáticamente")
+        self.check_auto_read_images.setChecked(get_pref("auto_read_images"))
+        self.check_auto_read_images.toggled.connect(lambda on: set_pref("auto_read_images", on))
+        c_layout.addWidget(self.check_auto_read_images)
+        c_layout.addWidget(self._hint(
+            "Las fotos que se descargan se leen solas en segundo plano (descripción y texto) para poder buscarlas por "
+            "contenido. Usa tu proveedor de IA con visión y gasta cuota; nunca baja una foto solo para leerla. "
+            "También podés leer una a mano con «Leer imagen» en la burbuja."))
+
+        # IA extra: respuestas rápidas, recordatorios detectados e idioma de traducción
+        from app.ai import smart_features
+        self.check_quick_replies = QCheckBox("Sugerir respuestas rápidas sobre el campo de mensaje")
+        self.check_quick_replies.setChecked(get_pref("quick_replies"))
+        self.check_quick_replies.toggled.connect(lambda on: set_pref("quick_replies", on))
+        c_layout.addWidget(self.check_quick_replies)
+        self.check_date_reminders = QCheckBox("Detectar fechas y horas en los mensajes (⏰ para crear un recordatorio)")
+        self.check_date_reminders.setChecked(get_pref("date_reminders"))
+        self.check_date_reminders.toggled.connect(lambda on: set_pref("date_reminders", on))
+        c_layout.addWidget(self.check_date_reminders)
+        lang_row = QHBoxLayout()
+        lang_row.addWidget(QLabel("Traducir mensajes a:"))
+        self.cmb_translate_lang = QComboBox()
+        self.cmb_translate_lang.setEditable(True)
+        self.cmb_translate_lang.addItems([l for l in smart_features.LANGUAGES])
+        self.cmb_translate_lang.setCurrentText(smart_features.get_translate_lang())
+        self.cmb_translate_lang.currentTextChanged.connect(smart_features.set_translate_lang)
+        lang_row.addWidget(self.cmb_translate_lang, stretch=1)
+        c_layout.addLayout(lang_row)
+        c_layout.addWidget(self._hint(
+            "Las respuestas rápidas se piden al abrir un chat cuyo último mensaje trae una pregunta (con caché: no se repite la "
+            "consulta); en el resto, el botón ✨ del chat las genera a pedido."))
 
         # Proveedor y modelo principal
         group_active = QGroupBox("Proveedor y modelo principal")
@@ -320,6 +377,8 @@ class SettingsPanel(QWidget):
         check(l1, "notify_preview", "Mostrar el texto del mensaje en la notificación")
         check(l1, "notify_sound", "Reproducir sonido",
               "Con la ventana abierta en otro chat suena un aviso suave, sin notificación.")
+        check(l1, "notify_groups", "Notificar mensajes de grupos",
+              "Apagado: los grupos no avisan ni suman en el contador del ícono (se siguen viendo en la pestaña Grupos).")
         check(l1, "notify_calls", "Avisar de llamadas entrantes (se atienden desde el celular)")
         row = QHBoxLayout()
         btn_test = QPushButton("Probar notificación")
@@ -356,9 +415,126 @@ class SettingsPanel(QWidget):
         l3.addWidget(self._hint("Advanced WhatsApp figura \"en línea\" solo mientras la ventana está al frente, como WhatsApp "
                                 "Desktop; en segundo plano tu celular sigue recibiendo sus notificaciones."))
         layout.addWidget(g3)
+
+        g4 = QGroupBox("Chats bloqueados")
+        l4 = QVBoxLayout(g4)
+        l4.setSpacing(6)
+        l4.addWidget(self._hint("Un chat bloqueado se ve apagado en la lista, sin vista previa, pide la contraseña para abrirlo "
+                                "y sus notificaciones no muestran el mensaje. Para bloquear uno: clic derecho sobre el chat."))
+        row4 = QHBoxLayout()
+        self.btn_lock_pw = QPushButton()
+        self.btn_lock_pw.clicked.connect(self._on_lock_password)
+        row4.addWidget(self.btn_lock_pw)
+        self.btn_lock_remove = QPushButton("Quitar contraseña y desbloquear todo")
+        self.btn_lock_remove.clicked.connect(self._on_lock_remove)
+        row4.addWidget(self.btn_lock_remove)
+        row4.addStretch()
+        l4.addLayout(row4)
+        layout.addWidget(g4)
+
+        g5 = QGroupBox("Organización y privacidad")
+        l5 = QVBoxLayout(g5)
+        l5.setSpacing(6)
+        row_a = QHBoxLayout()
+        row_a.addWidget(QLabel("Archivar solos los chats sin actividad hace"))
+        self.spin_archive = QSpinBox()
+        self.spin_archive.setRange(0, 3650)
+        self.spin_archive.setSpecialValueText("apagado")
+        self.spin_archive.setSuffix(" días")
+        self.spin_archive.setValue(org.get_auto_archive_days())
+        self.spin_archive.editingFinished.connect(self._on_archive_days)
+        row_a.addWidget(self.spin_archive)
+        row_a.addStretch()
+        l5.addLayout(row_a)
+        l5.addWidget(self._hint("Pasan a «Archivados» (debajo de los filtros de la lista). Vuelven solos si llega un mensaje, "
+                                "salvo que el chat esté silenciado. Los chats fijados no se archivan."))
+
+        self.chk_app_lock = QCheckBox("Pedir la contraseña al abrir Advanced WhatsApp y al volver tras un rato")
+        self.chk_app_lock.setChecked(get_pref("app_lock_enabled") and chat_lock.has_password())
+        self.chk_app_lock.toggled.connect(self._on_app_lock_toggled)
+        l5.addWidget(self.chk_app_lock)
+        row_b = QHBoxLayout()
+        row_b.addWidget(QLabel("Volver a pedirla si estuvo en la bandeja o minimizada más de"))
+        self.spin_lock_minutes = QSpinBox()
+        self.spin_lock_minutes.setRange(0, 1440)
+        self.spin_lock_minutes.setSpecialValueText("siempre")
+        self.spin_lock_minutes.setSuffix(" min")
+        self.spin_lock_minutes.setValue(org.get_app_lock_minutes())
+        self.spin_lock_minutes.editingFinished.connect(lambda: org.set_app_lock_minutes(self.spin_lock_minutes.value()))
+        row_b.addWidget(self.spin_lock_minutes)
+        row_b.addStretch()
+        l5.addLayout(row_b)
+        l5.addWidget(self._hint("Usa la misma contraseña que los chats bloqueados."))
+
+        l5.addWidget(self._hint("Chats ocultos: un chat bloqueado puede ocultarse (clic derecho sobre el chat). No aparece en la "
+                                "lista ni en la búsqueda ni avisa con notificaciones, hasta que escribas tu código secreto "
+                                "en el buscador de chats."))
+        row_c = QHBoxLayout()
+        self.btn_secret = QPushButton()
+        self.btn_secret.clicked.connect(self._on_secret_code)
+        row_c.addWidget(self.btn_secret)
+        self.btn_reveal = QPushButton()
+        self.btn_reveal.clicked.connect(self._on_toggle_reveal)
+        row_c.addWidget(self.btn_reveal)
+        row_c.addStretch()
+        l5.addLayout(row_c)
+        layout.addWidget(g5)
+        self._refresh_lock_buttons()
         layout.addStretch()
         self.load_prefs()
         return tab
+
+    def _refresh_lock_buttons(self):
+        has = chat_lock.has_password()
+        self.btn_lock_pw.setText("Cambiar contraseña de bloqueo" if has else "Crear contraseña de bloqueo")
+        self.btn_lock_remove.setVisible(has)
+        if hasattr(self, "btn_secret"):
+            self.btn_secret.setText("Cambiar código secreto de chats ocultos" if chat_lock.has_secret_code()
+                                    else "Crear código secreto de chats ocultos")
+            self.btn_reveal.setVisible(chat_lock.has_secret_code())
+            self.btn_reveal.setText("Volver a ocultar los chats ocultos" if chat_lock.is_revealed()
+                                    else "Mostrar chats ocultos")
+            self.chk_app_lock.setEnabled(has)
+            if not has:
+                self.chk_app_lock.blockSignals(True)
+                self.chk_app_lock.setChecked(False)
+                self.chk_app_lock.blockSignals(False)
+
+    def _on_archive_days(self):
+        org.set_auto_archive_days(self.spin_archive.value())
+        self.privacy_changed.emit()
+
+    def _on_app_lock_toggled(self, on: bool):
+        if on and not lock_dialogs.ensure_password(self):
+            self.chk_app_lock.blockSignals(True)
+            self.chk_app_lock.setChecked(False)
+            self.chk_app_lock.blockSignals(False)
+            self._refresh_lock_buttons()
+            return
+        set_pref("app_lock_enabled", on)
+        self._refresh_lock_buttons()
+
+    def _on_secret_code(self):
+        lock_dialogs.change_secret_code(self)
+        self._refresh_lock_buttons()
+
+    def _on_toggle_reveal(self):
+        if chat_lock.is_revealed():
+            chat_lock.conceal()
+        elif lock_dialogs.ask_current_password(self, "Ingresá la contraseña para mostrar los chats ocultos:"):
+            chat_lock.reveal()
+        self._refresh_lock_buttons()
+        self.privacy_changed.emit()
+
+    def _on_lock_password(self):
+        lock_dialogs.change_password(self)
+        self._refresh_lock_buttons()
+
+    def _on_lock_remove(self):
+        if lock_dialogs.remove_password(self):
+            QMessageBox.information(self, "Chats bloqueados", "Se quitó la contraseña y todos los chats quedaron desbloqueados.")
+            self.locks_cleared.emit()
+        self._refresh_lock_buttons()
 
     def load_prefs(self):
         for key, cb in getattr(self, "_pref_checks", {}).items():
@@ -482,7 +658,14 @@ class SettingsPanel(QWidget):
 
         lbl_app = QLabel(f"Advanced WhatsApp <span style='color: {C['text_2']}; font-weight: 400;'>· versión {APP_VERSION}</span>")
         lbl_app.setStyleSheet("font-size: 15px; font-weight: 600;")
-        layout.addWidget(lbl_app)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(10)
+        flame = QLabel()
+        flame.setPixmap(flame_pixmap(36))
+        title_row.addWidget(flame)
+        title_row.addWidget(lbl_app)
+        title_row.addStretch()
+        layout.addLayout(title_row)
         layout.addWidget(self._hint("Cliente de WhatsApp de escritorio · Mag Tecnología"))
 
         group = QGroupBox("Datos locales")
@@ -504,6 +687,9 @@ class SettingsPanel(QWidget):
         btn_open.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(DATA_DIR)))
         grid.addWidget(btn_open, len(rows), 0, 1, 2, Qt.AlignLeft)
         layout.addWidget(group)
+        from app.ui.update_ui import UpdateAboutBox
+        self.update_box = UpdateAboutBox(self.update_controller)
+        layout.addWidget(self.update_box)
         layout.addStretch()
         return tab
 

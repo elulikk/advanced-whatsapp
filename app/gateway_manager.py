@@ -24,7 +24,7 @@ def gateway_build_id() -> str:
     """Huella de los archivos del gateway: si cambia el código, se reinicia el proceso que haya quedado abierto."""
     import hashlib
     h = hashlib.sha1()
-    for fname in ("server.js", "package.json"):
+    for fname in ("server.js", "extras.js", "package.json"):
         try:
             with open(os.path.join(GATEWAY_DIR, fname), "rb") as f:
                 h.update(f.read())
@@ -77,7 +77,7 @@ class GatewayManager:
         """Copia los scripts actualizados del gateway a la carpeta de ejecución local."""
         os.makedirs(RUNTIME_GATEWAY_DIR, exist_ok=True)
         pkg_changed = False
-        for fname in ["package.json", "server.js"]:
+        for fname in ["package.json", "server.js", "extras.js"]:
             src = os.path.join(GATEWAY_DIR, fname)
             dest = os.path.join(RUNTIME_GATEWAY_DIR, fname)
             if os.path.exists(src):
@@ -341,6 +341,7 @@ class GatewayManager:
         video_path: Optional[str] = None,
         audio_path: Optional[str] = None,
         sticker_path: Optional[str] = None,
+        sticker_animated: bool = False,
         quoted: Optional[Dict[str, Any]] = None,
         audio_seconds: Optional[float] = None,
         audio_waveform: Optional[list] = None,
@@ -348,7 +349,8 @@ class GatewayManager:
         chat_name: Optional[str] = None,
         quoted_text: Optional[str] = None,
         quoted_sender: Optional[str] = None,
-        consume: bool = False
+        consume: bool = False,
+        repeat: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """`quoted` = {message_id, from_me, participant, text}: envía el mensaje como respuesta a otro.
         `audio_seconds` / `audio_waveform` (0..100): duración y onda que verá el destinatario de una nota de voz.
@@ -367,6 +369,8 @@ class GatewayManager:
                 payload["audio_waveform"] = audio_waveform
         if sticker_path:
             payload["sticker_path"] = sticker_path
+            if sticker_animated:
+                payload["sticker_animated"] = True
         if image_path:
             payload["image_path"] = image_path
         if document_path:
@@ -387,6 +391,8 @@ class GatewayManager:
             if at:
                 payload.update(at=int(at), chat_name=chat_name, quoted_text=quoted_text, quoted_sender=quoted_sender,
                                consume=consume)
+                if repeat:
+                    payload["repeat"] = repeat
                 return self._json_call("POST", "message-schedule", payload, timeout=timeout)
             r = _http.post(f"{GATEWAY_URL}/send", json=payload, timeout=timeout)
             if r.status_code == 200:
@@ -427,6 +433,9 @@ class GatewayManager:
         ids = [i for i in (message_ids or []) if i]
         if not chat_jid or not ids:
             return
+        from app.organization import is_silent_read
+        if is_silent_read(chat_jid):
+            return   # lectura invisible en este chat: nunca se mandan tildes azules
 
         def _run():
             for start in range(0, len(ids), 100):
@@ -457,6 +466,14 @@ class GatewayManager:
             return {"success": False, "error": err}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    def fetch_link_preview(self, url: str) -> Dict[str, Any]:
+        """Pide al gateway el título, la descripción y la imagen de un link (timeouts cortos del lado del gateway)."""
+        try:
+            r = _http.get(f"{GATEWAY_URL}/link-preview", params={"url": url}, timeout=12)
+            return r.json() if r.status_code == 200 else {"success": False}
+        except Exception:
+            return {"success": False}
 
     def update_contact(self, jid: str, name: str, phone: Optional[str] = None) -> Dict[str, Any]:
         """Notifica al gateway de Baileys para actualizar el contacto en su almacén en memoria."""
@@ -533,13 +550,47 @@ class GatewayManager:
         return self._json_call("GET", "message-schedule", timeout=5)
 
     def update_scheduled_message(self, item_id: str, at: Optional[int] = None,
-                                 text: Optional[str] = None) -> Dict[str, Any]:
+                                 text: Optional[str] = None, repeat: Optional[Dict[str, Any]] = ...) -> Dict[str, Any]:
+        """`repeat`: dict para repetir, None para quitar la repetición, sin pasarlo la deja como está."""
         payload: Dict[str, Any] = {"id": item_id}
         if at:
             payload["at"] = int(at)
         if text is not None:
             payload["text"] = text
+        if repeat is not ...:
+            payload["repeat"] = repeat
         return self._json_call("POST", "message-schedule/update", payload)
+
+    # ── Respuestas automáticas, encuestas y envío a varios (gateway/extras.js) ──
+
+    def get_auto_reply(self) -> Dict[str, Any]:
+        """{success, enabled, active_rule, rules: [...]}"""
+        return self._json_call("GET", "auto-reply", timeout=5)
+
+    def save_auto_reply(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        return self._json_call("POST", "auto-reply", config)
+
+    def set_auto_reply_mode(self, rule_id: Optional[str]) -> Dict[str, Any]:
+        """Enciende un modo manual («Estoy manejando») o, con None, lo apaga."""
+        return self._json_call("POST", "auto-reply/mode", {"rule_id": rule_id})
+
+    def send_poll(self, to: str, name: str, options: list, multiple: bool = False) -> Dict[str, Any]:
+        return self._json_call("POST", "poll", {"to": to, "name": name, "options": options, "multiple": bool(multiple)},
+                               timeout=30)
+
+    def send_to_many(self, targets: list, text: str = "", delay_min: int = 5, delay_max: int = 10,
+                     **media: Any) -> Dict[str, Any]:
+        """`targets` = [{to, chat_name}]. `media`: image_path, document_path, document_name, video_path, mimetype...
+        Cada contacto recibe el mensaje por separado, con una pausa al azar entre `delay_min` y `delay_max` segundos."""
+        payload = {"targets": targets, "text": text, "delay_min": delay_min, "delay_max": delay_max}
+        payload.update({k: v for k, v in media.items() if v})
+        return self._json_call("POST", "send-many", payload, timeout=30)
+
+    def bulk_status(self) -> Dict[str, Any]:
+        return self._json_call("GET", "send-many", timeout=5)
+
+    def cancel_bulk(self, job_id: str) -> Dict[str, Any]:
+        return self._json_call("POST", "send-many/cancel", {"id": job_id})
 
     def cancel_scheduled_message(self, item_id: str) -> Dict[str, Any]:
         return self._json_call("POST", "message-schedule/cancel", {"id": item_id})

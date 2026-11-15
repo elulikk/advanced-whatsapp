@@ -3,6 +3,7 @@ import re
 import html
 import json
 import shutil
+import tempfile
 from datetime import datetime
 import threading
 import time
@@ -21,15 +22,18 @@ from PySide6.QtGui import (
 from PySide6.QtCore import QUrl, QEvent, QPointF, QRectF
 
 from app.ui.contact_info_panel import format_phone
+from app import polls, quick_replies
 from app.db import (
     resolve_phone, get_messages, mark_chat_as_read, clear_chat_messages, get_message, get_reactions, set_reaction,
     get_pinned_messages, set_message_pinned, delete_messages, revoke_message_local, save_message, _preview_for,
-    MAX_PINNED, count_messages_since, get_or_create_chat, save_or_update_contact
+    MAX_PINNED, count_messages_since, get_or_create_chat, save_or_update_contact, set_message_starred, parse_poll,
+    get_chat
 )
 from app.ui.message_menu import (
     ReactionBar, MessageContextMenu, ForwardDialog, SHADOW, add_shadow
 )
 from app.gateway_manager import GatewayManager
+from app import stickers as stickerlib
 from app.config import (
     get_chat_font_scale, set_chat_font_scale, clamp_font_scale, get_polish_ai, set_polish_ai, load_app_config,
     get_polish_mode, set_polish_mode, get_polish_profile, set_polish_profile, MEDIA_DIR
@@ -37,14 +41,17 @@ from app.config import (
 from app.ai import psych_analysis as pa
 from app.ai import reply_polisher
 from app.ai import message_summary
+from app.ui.ai_extras import AiExtras
 from app.ai.ai_service import AIService
+from app.ai.transcription import transcribe_audio, pcm_to_wav, merge_dictation
 from app.ai.reply_polisher import CONTEXT_MESSAGES, MODES, DEFAULT_MODE
 from app.media_service import (
-    media_signals, request_media, request_transcript, is_pending, get_error, unavailable_reason
+    media_signals, request_media, request_transcript, request_image_read, is_pending, get_error, unavailable_reason
 )
+from app import link_preview, audio_queue, thumb_cache
 from app.ui.chat_list import AvatarWidget, format_hour, format_day_label, resolve_display_name
 from app.ui.theme import C, HEADER_H, R_MD, R_LG, R_SM
-from app.ui.icons import icon, tool_button, image as icon_image, pixmap as icon_pixmap
+from app.ui.icons import icon, tool_button, image as icon_image, pixmap as icon_pixmap, flame_pixmap
 from app.ui.effects import HoverFade, overlay, menu_below, mix
 from app import tags as tagdb
 from app.ui.tag_widgets import HeaderTagList, tag_id_from_mime
@@ -213,12 +220,12 @@ class ContactChip(QWidget):
 
 class MessageInputEdit(QTextEdit):
     """QTextEdit que envía con Enter y agrega salto de línea con Shift+Enter.
-    Con accept_media=True, pegar (Ctrl+V) una imagen o un archivo copiado lo emite como adjunto.
+    Con accept_media=True, pegar (Ctrl+V o «Pegar» del menú) una imagen o archivos copiados los emite como adjuntos.
     Con `line_height`, una sola línea ocupa exactamente ese alto (alineada con los botones de al lado)."""
     send_requested = Signal()
     has_text_changed = Signal(bool)
     image_pasted = Signal(QImage)
-    file_pasted = Signal(str)
+    files_pasted = Signal(list)
 
     def __init__(self, parent=None, placeholder: str = "Escribe un mensaje", min_lines: int = 1, max_lines: int = 6,
                  accept_media: bool = False, radius: int = R_MD, line_height: int = 0):
@@ -284,7 +291,37 @@ class MessageInputEdit(QTextEdit):
         has_txt = bool(self.toPlainText().strip())
         self.has_text_changed.emit(has_txt)
 
+    def _expand_shortcut(self, partial: bool = False) -> bool:
+        """Si lo escrito termina en /atajo, lo reemplaza por la plantilla (partial: completa con el primer atajo que coincida)."""
+        cur = self.textCursor()
+        if cur.hasSelection():
+            return False
+        before = self.toPlainText()[:cur.position()]
+        new = quick_replies.expand_trailing(before)
+        if new is None and partial:
+            sc = quick_replies.trailing_shortcut(before)
+            sug = quick_replies.suggestions(sc) if sc else []
+            if sug:
+                new = before[: len(before) - len(sc) - 1] + sug[0]["text"]
+        if new is None:
+            return False
+        cur.setPosition(0)
+        cur.setPosition(len(before), cur.MoveMode.KeepAnchor)
+        cur.insertText(new)
+        self.setTextCursor(cur)
+        return True
+
     def keyPressEvent(self, event: QKeyEvent):
+        if event.key() in (Qt.Key_Space, Qt.Key_Tab) and not (event.modifiers() & (Qt.ControlModifier | Qt.AltModifier)):
+            if self._expand_shortcut(partial=event.key() == Qt.Key_Tab):
+                if event.key() == Qt.Key_Space:
+                    self.insertPlainText(" ")
+                event.accept()
+                return
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter) and not (event.modifiers() & Qt.ShiftModifier):
+            if self._expand_shortcut():   # Enter sobre un /atajo lo expande sin enviar: se revisa antes de mandar
+                event.accept()
+                return
         if event.key() in (Qt.Key_Return, Qt.Key_Enter):
             if event.modifiers() & Qt.ShiftModifier:
                 super().keyPressEvent(event)
@@ -296,13 +333,13 @@ class MessageInputEdit(QTextEdit):
             super().keyPressEvent(event)
 
     def _pasted_media(self, source):
-        """('file', ruta) | ('image', QImage) | None. Si el portapapeles trae texto, se pega el texto."""
+        """('files', [rutas]) | ('image', QImage) | None. Si el portapapeles trae texto, se pega el texto."""
         if not self._accept_media or source is None:
             return None
         if source.hasUrls():
             files = [u.toLocalFile() for u in source.urls() if u.isLocalFile() and os.path.isfile(u.toLocalFile())]
             if files:
-                return ("file", files[0])
+                return ("files", files)
         if source.hasImage() and not (source.hasText() and source.text().strip()):
             img = source.imageData()
             if isinstance(img, QImage) and not img.isNull():
@@ -316,8 +353,8 @@ class MessageInputEdit(QTextEdit):
         media = self._pasted_media(source)
         if media is None:
             super().insertFromMimeData(source)
-        elif media[0] == "file":
-            self.file_pasted.emit(media[1])
+        elif media[0] == "files":
+            self.files_pasted.emit(media[1])
         else:
             self.image_pasted.emit(media[1])
 
@@ -333,10 +370,12 @@ class ChatViewPanel(QWidget):
     _polish_done = Signal(int, str, str)       # id de petición, jid, texto (respuesta o error)
     _polish_models_ready = Signal(str, list)   # proveedor, modelos
     _voice_done = Signal(dict)                 # nota de voz convertida y enviada (o con error)
+    _dictation_done = Signal(str, str, str)    # jid, texto dictado, aviso (error o IA no disponible)
     _scheduled_counts_ready = Signal(dict)     # jid -> mensajes programados pendientes
     scheduled_total_changed = Signal(int)
     _att_result = Signal(int, dict)            # índice del adjunto, respuesta del gateway
     _att_finished = Signal()
+    _sticker_result = Signal(str, dict, str, int, str, str)   # jid, respuesta, ruta enviada, hora programada, cita, autor de la cita
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -368,9 +407,11 @@ class ChatViewPanel(QWidget):
         self._media_refresh_timer.timeout.connect(self._refresh_keep_scroll)
         media_signals.media_ready.connect(self._on_media_event)
         media_signals.transcript_ready.connect(self._on_media_event)
+        media_signals.image_read_ready.connect(self._on_media_event)
         media_signals.job_failed.connect(self._on_media_event)
         message_summary.summary_signals.summary_ready.connect(self._on_media_event)
         self._summary_hidden: set = set()   # mensajes cuyo resumen se ocultó (solo en esta sesión)
+        self._expanded_folds: set = set()   # transcripciones («t/<id>») y síntesis («s/<id>») desplegadas; por defecto, plegadas
 
         # Notas de voz: reproductor interno; la imagen de cada nota se redibuja al sonar
         self._voice_msgs: dict = {}      # msg_id -> (path, from_me)
@@ -381,11 +422,21 @@ class ChatViewPanel(QWidget):
         player.state_changed.connect(self._on_voice_changed)
         player.progress_changed.connect(self._on_voice_changed)
         player.peaks_ready.connect(self._on_voice_changed)
+        player.finished.connect(self._on_voice_finished)
+
+        # Vista previa de links: al llegar un preview se redibuja el chat (junta varios en un solo repintado)
+        self._link_timer = QTimer(self)
+        self._link_timer.setSingleShot(True)
+        self._link_timer.setInterval(250)
+        self._link_timer.timeout.connect(lambda: self.refresh_messages(scroll_to_bottom=False))
+        link_preview.signals.preview_ready.connect(self._on_link_preview_ready)
 
         # Grabación de notas de voz: el micrófono graba a memoria y al enviar se convierte a OGG/Opus
         self._recorder = VoiceRecorder(self)
         self._voice_chat_jid = None      # chat en el que empezó la grabación en curso
-        self._voice_sending: set = set() # chats con una nota convirtiéndose / subiendo
+        self._voice_sending: set = set() # chats con una nota convirtiéndose / subiendo (o un dictado transcribiéndose)
+        self._dictation = None           # None | 'plain' | 'polish': la grabación en curso es un dictado a texto
+        self._dictating: set = set()     # chats con un dictado transcribiéndose
         self._voice_blink = False
 
         # Programar envío: con hora elegida, lo próximo que se mande en este chat queda en la cola del gateway
@@ -396,6 +447,7 @@ class ChatViewPanel(QWidget):
         self._init_ui()
 
         self._scheduled_counts_ready.connect(self._on_scheduled_counts)
+        self._sticker_result.connect(self._on_sticker_result)
 
         self._recorder.level.connect(self.voice_meter.push)
         self._recorder.failed.connect(self._on_recorder_failed)
@@ -425,7 +477,7 @@ class ChatViewPanel(QWidget):
         empty_layout.setSpacing(6)
 
         icon_lbl = QLabel()
-        icon_lbl.setPixmap(icon_pixmap("chats", C["ember_dim"], 56))
+        icon_lbl.setPixmap(flame_pixmap(72))
         empty_layout.addWidget(icon_lbl, alignment=Qt.AlignCenter)
 
         title_lbl = QLabel("Advanced WhatsApp")
@@ -502,6 +554,11 @@ class ChatViewPanel(QWidget):
         header_layout.addWidget(self.btn_psych)
         header_layout.addSpacing(4)
 
+        # Nota privada del contacto: se resalta (y muestra el texto al pasar el mouse) cuando hay una
+        self.btn_notes = tool_button("edit", "Nota privada del contacto")
+        self.btn_notes.clicked.connect(self._open_notes_dialog)
+        header_layout.addWidget(self.btn_notes)
+
         self.btn_edit_contact = tool_button("info", "Info del contacto")
         self.btn_edit_contact.setCheckable(True)
         self.btn_edit_contact.clicked.connect(self.toggle_info_panel)
@@ -573,6 +630,9 @@ class ChatViewPanel(QWidget):
         btn_unpin.clicked.connect(self._unpin_shown)
         pin_lay.addWidget(btn_unpin)
         self.chat_layout.addWidget(self.pin_bar)
+        # IA extra: banner «Lo que te perdiste», chips de respuestas rápidas, traducción y recordatorios
+        self.ai_extras = AiExtras(self)
+        self.chat_layout.addWidget(self.ai_extras.banner)
 
         # Visor de mensajes
         self.txt_messages = ChatBrowser()
@@ -783,6 +843,7 @@ class ChatViewPanel(QWidget):
         self.chat_layout.addWidget(self.polish_bar)
 
         self._polish_done.connect(self._on_polish_done)
+        self._dictation_done.connect(self._on_dictation_done)
         self._polish_models_ready.connect(self._fill_polish_models)
         prov, model = get_polish_ai()
         if prov not in pa.PROVIDERS:
@@ -813,10 +874,18 @@ class ChatViewPanel(QWidget):
         self.btn_polish.clicked.connect(self._toggle_polish)
         composer_layout.addWidget(self.btn_polish, alignment=Qt.AlignBottom)
 
+        self.btn_translate = tool_button("translate", "Traducir antes de enviar: escribí el mensaje y elegí el idioma",
+                                         size=btn, icon_size=20)
+        self.btn_translate.clicked.connect(lambda: self.ai_extras.show_draft_menu(self.btn_translate))
+        composer_layout.addWidget(self.btn_translate, alignment=Qt.AlignBottom)
+
         self.btn_schedule = tool_button("clock", "Programar envío: elegí día y hora, y lo próximo que mandes sale solo",
                                         size=btn, icon_size=20)
         self.btn_schedule.clicked.connect(self._choose_schedule_time)
         composer_layout.addWidget(self.btn_schedule, alignment=Qt.AlignBottom)
+        self.btn_emoji = tool_button("smile", "Emojis y stickers", size=btn, icon_size=20)
+        self.btn_emoji.clicked.connect(self._toggle_emoji_panel)
+        composer_layout.addWidget(self.btn_emoji, alignment=Qt.AlignBottom)
         composer_layout.addSpacing(4)
 
         self.input_text = MessageInputEdit(placeholder="Escribe un mensaje  (Enter envía, Shift+Enter salto de línea)",
@@ -824,7 +893,7 @@ class ChatViewPanel(QWidget):
         self.input_text.send_requested.connect(self._send_message)
         self.input_text.has_text_changed.connect(self._on_composer_text_changed)
         self.input_text.image_pasted.connect(self._attach_pasted_image)
-        self.input_text.file_pasted.connect(self._attach_pasted_file)
+        self.input_text.files_pasted.connect(self._attach_pasted_files)
         self.input_text.installEventFilter(self)
         self.input_text.viewport().installEventFilter(self)
         composer_layout.addWidget(self.input_text, stretch=1)
@@ -857,6 +926,11 @@ class ChatViewPanel(QWidget):
         vp_lay.addWidget(self.btn_voice_pause)
         composer_layout.addWidget(self.voice_panel, stretch=1)
         composer_layout.addSpacing(4)
+
+        self.btn_dictate = tool_button("dictate", "Dictar: habla y el texto aparece en el campo para revisarlo (no se envía nada)",
+                                       size=btn, icon_size=20)
+        self.btn_dictate.clicked.connect(self._show_dictate_menu)
+        composer_layout.addWidget(self.btn_dictate, alignment=Qt.AlignBottom)
 
         self.btn_action = QToolButton()
         self.btn_action.setObjectName("sendButton")
@@ -901,6 +975,7 @@ class ChatViewPanel(QWidget):
         sb_lay.addWidget(self.btn_schedule_list)
         self.chat_layout.addWidget(self.schedule_bar)
 
+        self.chat_layout.addWidget(self.ai_extras.quick)
         self.chat_layout.addWidget(composer_frame)
 
         # Fila: chat + panel lateral de info del contacto
@@ -921,6 +996,8 @@ class ChatViewPanel(QWidget):
     def _set_info_visible(self, visible: bool):
         self.info_panel.setVisible(visible)
         self.btn_edit_contact.setChecked(visible)
+        if hasattr(self, "btn_notes"):
+            self._refresh_notes_indicator()   # el panel de info también edita la nota
 
     def _focus_search(self):
         self.search_row.setVisible(True)
@@ -1034,6 +1111,7 @@ class ChatViewPanel(QWidget):
             self.lbl_contact_status.setText(format_phone(phone) if phone else "Número no disponible")
 
         self.header_avatar.set_avatar(name, avatar_path=avatar_path)
+        self._refresh_notes_indicator()
         self._default_subtitle = self.lbl_contact_status.text()
         self._presence_reset()
         if not chat_data.get("is_group") and "(Tú)" not in name:
@@ -1044,6 +1122,8 @@ class ChatViewPanel(QWidget):
         if self.info_panel.isVisible():
             self.info_panel.show_chat(chat_data, name)
 
+        from app.db import get_chat as _get_chat
+        self.ai_extras.on_chat_opened(chat_data, int((_get_chat(jid) or {}).get("unread_count") or 0))   # antes de marcar leído
         newly_read = mark_chat_as_read(jid)
         self.gateway.send_read_receipts(jid, [mid for mid, _ in newly_read])
         self._messages_limit = 40
@@ -1101,6 +1181,30 @@ class ChatViewPanel(QWidget):
             QMessageBox.information(self, "Análisis psicológico", "Esta conversación no tiene mensajes.")
             return
         PsychAnalysisDialog(jid, self._display_name(), parent=self).exec()
+
+    def _refresh_notes_indicator(self):
+        """El botón de la nota se resalta y muestra su texto cuando el contacto tiene una."""
+        from app.db import get_contact_notes
+        jid = (self.current_chat or {}).get("jid")
+        note = get_contact_notes(jid).strip() if jid else ""
+        self.btn_notes.setIcon(icon("edit", C["accent"] if note else None))
+        self.btn_notes.setToolTip(("Nota privada: " + (note if len(note) < 400 else note[:400] + "…")) if note
+                                  else "Nota privada del contacto (vacía)")
+
+    def _open_notes_dialog(self):
+        if not self.current_chat:
+            return
+        from app.ui.notes_dialog import NotesDialog
+        NotesDialog(self.current_chat["jid"], self._display_name(), parent=self).exec()
+        self._refresh_notes_indicator()
+        if self.info_panel.isVisible():
+            self.info_panel.show_chat(self.current_chat, self._display_name())
+
+    def _open_gallery(self):
+        if not self.current_chat:
+            return
+        from app.ui.gallery_dialog import GalleryDialog
+        GalleryDialog(self.current_chat["jid"], self._display_name(), parent=self).exec()
 
     def _open_edit_contact_dialog(self):
         if not self.current_chat:
@@ -1227,6 +1331,9 @@ class ChatViewPanel(QWidget):
             if action == "select":
                 self._toggle_selected(url.path().lstrip("/"))
                 return
+            if action == "fold":
+                self._toggle_fold(url.path().lstrip("/"))
+                return
             msg = get_message(url.path().lstrip("/"))
             if not msg:
                 return
@@ -1235,7 +1342,7 @@ class ChatViewPanel(QWidget):
                 if path and os.path.exists(path):
                     QDesktopServices.openUrl(QUrl.fromLocalFile(path))
                 else:
-                    request_media(msg)
+                    request_media(msg, save_copy=True)   # solo se baja y queda en la burbuja y en Descargas
             elif action == "play":
                 path = msg.get("media_path")
                 chip, self._voice_click_chip = self._voice_click_chip, False
@@ -1251,8 +1358,22 @@ class ChatViewPanel(QWidget):
                     request_media(msg)
             elif action == "transcribe":
                 request_transcript(msg)
+            elif action == "readimg":
+                request_image_read(msg)
+                self._on_media_event(msg["id"])   # muestra «Leyendo imagen…» ya
+            elif action == "copyimg":
+                part = (msg.get("image_desc") if url.query() == "d" else msg.get("image_ocr")) or ""
+                if part.strip():
+                    QGuiApplication.clipboard().setText(part.strip())
+            elif action in ("original", "history"):
+                from app.ui.extras_dialogs import OriginalDialog
+                OriginalDialog(msg, "revoked" if action == "original" else "edits", self).exec()
             elif action == "summarize":
                 self._toggle_summary(msg)
+            elif action == "remind":
+                self.ai_extras.open_reminder(msg)
+            elif action == "untranslate":
+                self.ai_extras.toggle_translation(msg)
             elif action == "resummarize":
                 self._request_summary(msg)
             elif action == "react":
@@ -1396,7 +1517,11 @@ class ChatViewPanel(QWidget):
         summary = msg.get("summary")
         if not summary or mid in self._summary_hidden:
             return ""
-        rows = []
+        key = f"s/{mid}"
+        header = self._fold_header(key, "SÍNTESIS IA", key in self._expanded_folds)
+        if key not in self._expanded_folds:
+            return '<div style="margin-top: 4px;"></div>' + self._panel_html(header, accent=C["accent"])
+        rows = [header]
         for title, text in message_summary.parse_summary(summary):
             rows.append(f'<span style="color: {C["accent_hi"]}; font-size: 10px; font-weight: 600;">'
                         f'{html.escape(title.upper())}</span><br>'
@@ -1404,6 +1529,55 @@ class ChatViewPanel(QWidget):
         rows.append(f'<span style="font-size: 10px;"><a href="advancedwhatsapp://resummarize/{mid}" style="{link}">Rehacer</a>'
                     f' · <a href="advancedwhatsapp://summarize/{mid}" style="{link}">Ocultar</a></span>')
         return '<div style="margin-top: 4px;"></div>' + self._panel_html('<br>'.join(rows), accent=C["accent"])
+
+    def _image_read_html(self, msg: dict, has_file: bool) -> str:
+        """Bloque plegable «Descripción / Texto» de una foto (lo que leyó la IA), o el enlace para generarlo.
+        Misma mecánica que la transcripción de audios; solo se ofrece si la foto ya está en disco."""
+        mid = msg.get("id")
+        desc, ocr = (msg.get("image_desc") or "").strip(), (msg.get("image_ocr") or "").strip()
+        link = f'color: {C["link"]};'
+        if desc or ocr:
+            key = f"i/{mid}"
+            open_ = key in self._expanded_folds
+            body = ""
+            if open_:
+                rows = []
+                for title, text, which in (("Descripción", desc, "d"), ("Texto", ocr, "t")):
+                    if text:
+                        rows.append(
+                            f'<span style="color: {C["accent_hi"]}; font-size: 10px; font-weight: 600;">{title.upper()}</span> '
+                            f'<a href="advancedwhatsapp://copyimg/{mid}?{which}" style="{link} font-size: 10px;">Copiar</a><br>'
+                            f'<span style="color: {C["text"]};">{html.escape(text).replace(chr(10), "<br>")}</span>')
+                rows.append(f'<a href="advancedwhatsapp://readimg/{mid}" style="{link} font-size: 10px;">Rehacer</a>')
+                body = "<br>" + "<br>".join(rows)
+            return '<div style="margin-top: 4px;"></div>' + self._panel_html(
+                self._fold_header(key, "DESCRIPCIÓN / TEXTO", open_) + body, accent=C["accent"])
+        if is_pending("readimg", mid):
+            return f'<div style="color: {C["text_2"]}; font-size: 11px; margin-top: 3px;"><i>Leyendo imagen…</i></div>'
+        if not has_file:
+            return ""
+        err = get_error("readimg", mid)
+        if err:
+            return (f'<div style="color: #e58a84; font-size: 11px; margin-top: 3px;">No se pudo leer la imagen: '
+                    f'{html.escape(err)[:160]} · <a href="advancedwhatsapp://readimg/{mid}" style="{link}">Reintentar</a></div>')
+        return (f'<div style="margin-top: 3px;"><a href="advancedwhatsapp://readimg/{mid}" '
+                f'style="{link} font-size: 11px;">Leer imagen</a></div>')
+
+    @staticmethod
+    def _fold_header(key: str, title: str, expanded: bool) -> str:
+        """Encabezado clickeable de una sección plegable de la burbuja (flecha + título)."""
+        return (f'<a href="advancedwhatsapp://fold/{key}" style="text-decoration: none; color: {C["accent_hi"]}; '
+                f'font-size: 10px; font-weight: 600;">{"▾" if expanded else "▸"} {title}</a>')
+
+    def _toggle_fold(self, key: str):
+        """Despliega o pliega una transcripción / síntesis. Se repinta el chat entero (un solo setHtml) conservando
+        el scroll: el alto de las burbujas lo recalcula el documento, no hay alturas fijas que se desacomoden."""
+        if key in self._expanded_folds:
+            self._expanded_folds.discard(key)
+        else:
+            self._expanded_folds.add(key)
+        self._follow_bottom = False   # que el repintado conserve la posición en vez de saltar al final
+        self.refresh_messages(scroll_to_bottom=False)
 
     def _toggle_summary(self, msg: dict):
         mid = msg["id"]
@@ -1593,9 +1767,16 @@ class ChatViewPanel(QWidget):
 
             media_html = ""
             transcript_html = ""
+            sticker_url = None
             if media_type == "image" and has_file:
-                img_url = "file:///" + os.path.abspath(media_path).replace("\\", "/")
-                media_html = (f'<a href="advancedwhatsapp://open/{msg.get("id")}"><img src="{img_url}" border="0" '
+                # Se muestra una miniatura en caché (la foto original puede pesar varios MB y se redibuja seguido)
+                thumb, tw, th = thumb_cache.thumb_for(media_path)
+                img_url = "file:///" + os.path.abspath(thumb).replace("\\", "/")
+                dims = ""
+                if tw:
+                    dw, dh = thumb_cache.fit_size(tw, th)
+                    dims = f' width="{dw}" height="{dh}"'
+                media_html = (f'<a href="advancedwhatsapp://open/{msg.get("id")}"><img src="{img_url}" border="0"{dims} '
                               f'style="max-width: 300px; max-height: 240px;"/></a>')
             elif media_type == "image":
                 media_html = panel(self._media_placeholder(msg, "📷 Foto"))
@@ -1617,9 +1798,11 @@ class ChatViewPanel(QWidget):
                     media_html = panel(self._media_placeholder(msg, "🎵 Nota de voz"))
                 transcript = msg.get("transcript")
                 if transcript:
+                    fold_key = f"t/{mid}"
+                    open_ = fold_key in self._expanded_folds
                     transcript_html = panel(
-                        f'<span style="color: {C["accent_hi"]}; font-size: 10px; font-weight: 600;">TRANSCRIPCIÓN</span><br>'
-                        f'<span style="color: {C["text"]};">{html.escape(transcript)}</span>',
+                        self._fold_header(fold_key, "TRANSCRIPCIÓN", open_) +
+                        (f'<br><span style="color: {C["text"]};">{html.escape(transcript)}</span>' if open_ else ""),
                         accent=C["accent"])
                 elif is_pending("transcribe", msg.get("id")):
                     transcript_html = f'<div style="color: {C["text_2"]}; font-size: 11px; margin-bottom: 3px;"><i>Transcribiendo…</i></div>'
@@ -1636,8 +1819,12 @@ class ChatViewPanel(QWidget):
             elif media_type == "video":
                 action_html = f" · {open_link}" if has_file else " · " + self._media_placeholder(msg, "")
                 media_html = panel(f'🎥 <b>Video</b>{action_html}')
+            elif media_type == "sticker" and has_file:
+                sticker_url = "file:///" + os.path.abspath(media_path).replace("\\", "/")
+                media_html = f'<img src="{sticker_url}" width="150" height="150" border="0"/>'
             elif media_type == "sticker":
-                media_html = f'<div style="padding: 2px; margin-bottom: 3px; color: {C["text_2"]};"><i>Sticker</i></div>'
+                request_media(msg)    # son livianos: se bajan al verlos (la descarga está deduplicada)
+                media_html = panel(self._media_placeholder(msg, "🎨 Sticker"))
             elif media_type == "location":
                 loc_txt = raw_text or "Ubicación compartida"
                 media_html = panel(f'📍 <b>{html.escape(loc_txt)}</b>')
@@ -1645,6 +1832,13 @@ class ChatViewPanel(QWidget):
                 ct_txt = raw_text or "Contacto compartido"
                 media_html = panel(f'👤 <b>{html.escape(ct_txt)}</b>{self._contact_actions_html(msg)}')
 
+            elif media_type == "poll":
+                poll = parse_poll(msg)
+                if poll:
+                    media_html = panel(polls.poll_html(poll, C["accent"], C["text_2"]))
+
+            if media_type == "image":
+                transcript_html = self._image_read_html(msg, has_file)
             if transcript_html:
                 media_html += transcript_html
 
@@ -1655,18 +1849,25 @@ class ChatViewPanel(QWidget):
                         '&nbsp;') if msg.get("pinned_at") else ""
             ticks = self._ticks_html(msg.get("status", "sent")) if from_me else ""
             summary_link = self._summary_link(msg, mid in self._summary_hidden)
-            edited_mark = (f'<span style="{meta_style} font-style: italic;">Editado&nbsp;</span>'
+            edited_mark = (f'<a href="advancedwhatsapp://history/{mid}" title="Ver versiones anteriores" '
+                           f'style="{meta_style} font-style: italic; text-decoration: none;">Editado&nbsp;</a>'
                            if msg.get("edited") and media_type != "revoked" else "")
-            meta = (f'{summary_link}{self._reply_forward_links(msg)}{self._react_link(mid)}{pin_mark}{edited_mark}'
+            star_mark = f'<span style="{meta_style}">★&nbsp;</span>' if msg.get("starred_at") else ""
+            meta = (f'{self.ai_extras.reminder_link(msg)}{summary_link}{self._reply_forward_links(msg)}{self._react_link(mid)}{pin_mark}{star_mark}{edited_mark}'
                     f'<span style="{meta_style}">{hora}</span>{ticks}')
 
-            if media_type == "audio" or media_type == "sticker" or (media_type in ["location", "contact"] and media_html):
+            if media_type == "audio" or media_type == "sticker" or (media_type in ["location", "contact", "poll"] and media_html):
                 content_text = ""
             elif media_type == "revoked":
                 revoked_txt = "Eliminaste este mensaje" if from_me else "Este mensaje fue eliminado"
                 content_text = f'<span style="color: {C["text_2"]}; font-style: italic;">🚫 {revoked_txt}</span>'
+                if msg.get("revoked_orig"):
+                    content_text += (f' <a href="advancedwhatsapp://original/{msg["id"]}" style="color: {C["link"]};">'
+                                     f'Ver original</a>')
             else:
                 content_text = self._linkify(raw_text)
+                if media_type == "text":
+                    content_text += self._link_card(raw_text, panel)
 
             sender_html = ""
             sender_name = msg.get("sender_name") or ""
@@ -1680,6 +1881,19 @@ class ChatViewPanel(QWidget):
 
             def row(cell: str) -> str:
                 return f"{sel_cell}{gutter}{cell}" if from_me else f"{sel_cell}{cell}{gutter}"
+
+            if sticker_url and not quote_html:
+                # Los stickers van sueltos, sin burbuja, como en WhatsApp
+                push(mid, f"""
+                    <table width="100%" border="0" cellpadding="0" cellspacing="0" style="margin-bottom: 4px;">
+                      <tr>{row(f'''<td align="{align}">{anchor}{sender_html}
+                        {media_html}
+                        <div style="text-align: {align};">{meta}</div>
+                        {self._reactions_html(mid, reactions, align)}
+                      </td>''')}</tr>
+                    </table>
+                """)
+                continue
 
             if media_type == "text" and not quote_html and _is_emoji_only(raw_text):
                 # Emojis sueltos: grandes y sin burbuja, como WhatsApp
@@ -1700,7 +1914,7 @@ class ChatViewPanel(QWidget):
                   <tr>{row(f'''<td align="{align}">{anchor}
                     <table border="0" cellpadding="0" cellspacing="0" style="background-color: {bg};">
                       <tr><td style="{bubble_text} padding: 6px 10px 5px 10px;">
-                        {sender_html}{quote_html}{media_html}{content_text}{self._summary_html(msg)}
+                        {sender_html}{quote_html}{media_html}{content_text}{self._summary_html(msg)}{self.ai_extras.translation_html(msg)}
                         <div style="text-align: right; margin-top: 2px;">{meta}</div>
                       </td></tr>
                     </table>
@@ -1738,6 +1952,7 @@ class ChatViewPanel(QWidget):
         if len(frames) == len(block_ids):
             self._msg_frames = [(fr, mid) for fr, mid in zip(frames, block_ids) if mid]
         self._update_pin_bar()
+        self.ai_extras.on_messages(messages)
 
         if self._follow_bottom:
             sb.setValue(sb.maximum())
@@ -1752,6 +1967,30 @@ class ChatViewPanel(QWidget):
         cx = self.txt_messages.cursorRect(self.txt_messages.cursorForPosition(pos)).x()
         left = cx if cx <= pos.x() <= cx + IMG_W else cx - IMG_W
         return pos.x() - left
+
+    def _on_link_preview_ready(self, url: str):
+        if self.current_chat:
+            self._link_timer.start()
+
+    def _link_card(self, raw_text: str, panel) -> str:
+        """Tarjeta con título, descripción e imagen del primer link del mensaje (vacío si no hay o aún no llegó)."""
+        url = link_preview.first_url(raw_text)
+        prev = link_preview.lookup(url) if url else None
+        return link_preview.card_html(prev, panel, C) if prev else ""
+
+    def _on_voice_finished(self, msg_id: str):
+        """Terminó una nota: sigue la próxima del chat si es un audio ya bajado (se puede apagar en Ajustes)."""
+        from app.config import get_pref
+        if not self.current_chat or msg_id not in self._voice_msgs or not get_pref("audio_autoplay"):
+            return
+        nxt = audio_queue.next_audio(self.current_chat.get("jid"), msg_id)
+        if not nxt:
+            return
+        path = nxt.get("media_path")
+        if path and os.path.exists(path):
+            voice_player().toggle(nxt["id"], path)
+        else:
+            request_media(nxt)   # se baja ahora; para escucharla hay que tocarla
 
     def _on_voice_speed_changed(self):
         self._add_voice_resources({mid: self._voice_image(mid) for mid in self._voice_msgs})
@@ -1958,12 +2197,18 @@ class ChatViewPanel(QWidget):
         ]
         if has_file:
             actions.append(("save", "download", "Guardar como…", True))
+        if mt == "sticker" and has_file:
+            actions.append(("addsticker", "smile", "Agregar a mis stickers", True))
         if message_summary.can_summarize(msg):
             shown = bool(msg.get("summary")) and msg["id"] not in self._summary_hidden
             actions.append(("summarize", "sparkle", "Ocultar resumen" if shown else "Resumir con IA",
                             not message_summary.is_pending(msg["id"])))
+        if self.ai_extras.can_translate(msg):
+            actions.append(("translate", "translate", "Ocultar traducción" if self.ai_extras.translation_visible(msg["id"])
+                            else "Traducir", True))
         actions += [
             ("pin", "pin", "Desfijar" if pinned else "Fijar", not revoked),
+            ("star", "star", "Quitar destacado" if msg.get("starred_at") else "Destacar", not revoked),
             (None, "", "", True),
             ("select", "select", "Seleccionar", True),
             (None, "", "", True),
@@ -1985,10 +2230,17 @@ class ChatViewPanel(QWidget):
             self._forward_messages([msg])
         elif key == "save":
             self._save_media_as(msg)
+        elif key == "addsticker":
+            self._add_sticker_from_msg(msg)
         elif key == "summarize":
             self._toggle_summary(msg)
+        elif key == "translate":
+            self.ai_extras.toggle_translation(msg)
         elif key == "pin":
             self._toggle_pin(msg)
+        elif key == "star":
+            set_message_starred(msg["id"], not msg.get("starred_at"))
+            self.refresh_messages(scroll_to_bottom=False)
         elif key == "select":
             self._enter_select_mode(msg["id"])
         elif key == "delete":
@@ -2262,7 +2514,7 @@ class ChatViewPanel(QWidget):
             if event.key() == Qt.Key_Escape:
                 self._cancel_voice()
             else:
-                self._send_voice()
+                self._commit_recording()
             return
         if event.key() == Qt.Key_Escape:
             if self._select_mode:
@@ -2290,6 +2542,19 @@ class ChatViewPanel(QWidget):
         act_search = menu.addAction(icon("search"), "Buscar en el chat\tCtrl+F")
         act_psych = menu.addAction(icon("analysis"), "Análisis psicológico…")
         act_edit = menu.addAction(icon("user"), "Editar / guardar contacto…")
+        act_notes = menu.addAction(icon("edit"), "Nota privada…")
+        act_gallery = menu.addAction(icon("image"), "Galería (fotos, documentos, links, audios)…")
+        from app import organization as _org
+        jid = (self.current_chat or {}).get("jid")
+        act_silent = menu.addAction(icon("eye"), "Lectura invisible (sin tildes azules en este chat)")
+        act_silent.setCheckable(True)
+        act_silent.setChecked(_org.is_silent_read(jid))
+        menu.addSeparator()
+        act_poll = menu.addAction(icon("list"), "Crear encuesta…")
+        act_starred = menu.addAction(icon("star"), "Mensajes destacados…")
+        act_tpl = menu.addAction(icon("edit"), "Plantillas y atajos…")
+        act_many = menu.addAction(icon("forward"), "Enviar a varios…")
+        act_export = menu.addAction(icon("download"), "Exportar chat…")
         menu.addSeparator()
         act_clear = menu.addAction(icon("eraser", C["danger"], active_color=C["danger"]), "Vaciar chat…")
         act = menu.exec(menu_below(menu, self.btn_options))
@@ -2301,8 +2566,67 @@ class ChatViewPanel(QWidget):
             self._open_psych_analysis()
         elif act == act_edit:
             self._open_edit_contact_dialog()
+        elif act == act_poll:
+            self._create_poll()
+        elif act == act_starred:
+            self.open_starred()
+        elif act == act_tpl:
+            from app.ui.extras_dialogs import TemplatesDialog
+            TemplatesDialog(self).exec()
+        elif act == act_many:
+            from app.ui.extras_dialogs import SendManyDialog
+            SendManyDialog(self.gateway, self).exec()
+        elif act == act_notes:
+            self._open_notes_dialog()
+        elif act == act_gallery:
+            self._open_gallery()
+        elif act == act_silent:
+            _org.set_silent_read(jid, act_silent.isChecked())
+        elif act == act_export:
+            from app.ui.export_dialog import export_chat_flow
+            export_chat_flow(self, self.current_chat or {})
         elif act == act_clear:
             self._clear_current_chat()
+
+    def _create_poll(self):
+        from app.ui.extras_dialogs import PollDialog
+        if not self.current_chat:
+            return
+        dlg = PollDialog(self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        name, options, multi = dlg.values()
+        res = self.gateway.send_poll(self.current_chat["jid"], name, options, multi)
+        if not res.get("success"):
+            QMessageBox.warning(self, "Encuesta", res.get("error") or "No se pudo enviar la encuesta.")
+
+    def open_starred(self):
+        """Lista de destacados de todos los chats; un doble clic va al mensaje."""
+        from app.ui.extras_dialogs import StarredDialog
+        dlg = StarredDialog(self)
+        dlg.open_chat.connect(lambda jid, mid: (dlg.accept(), self._goto_message(jid, mid)))
+        dlg.exec()
+
+    def _goto_message(self, chat_jid: str, msg_id: str):
+        chat = get_chat(chat_jid)
+        if not chat:
+            return
+        if not self.current_chat or self.current_chat.get("jid") != chat_jid:
+            self.chat_open_requested.emit(chat)
+            QTimer.singleShot(300, lambda: self.show_message(msg_id))
+        else:
+            self.show_message(msg_id)
+
+    def show_message(self, msg_id: str):
+        """Desplaza el chat abierto hasta un mensaje (amplía el historial cargado si hace falta)."""
+        msg = get_message(msg_id)
+        if not msg or not self.current_chat or msg["chat_jid"] != self.current_chat.get("jid"):
+            return
+        if msg_id not in {mid for _, mid in self._msg_frames}:
+            self._messages_limit = max(self._messages_limit, count_messages_since(msg["chat_jid"], msg.get("timestamp", 0)) + 20)
+            self.refresh_messages(scroll_to_bottom=False)
+        self._pending_restore = None
+        self.txt_messages.scrollToAnchor(f"m_{msg_id}")
 
     def _choose_attachment(self):
         files, _ = QFileDialog.getOpenFileNames(
@@ -2328,15 +2652,15 @@ class ChatViewPanel(QWidget):
             QMessageBox.information(self, "Adjuntos", f"Puedes enviar hasta {MAX_ATTACHMENTS} archivos a la vez.")
         self.input_text.setFocus()
 
-    def _attach_pasted_file(self, file_path: str):
+    def _attach_pasted_files(self, paths: list):
         if self.current_chat:
-            self._set_attachment(file_path)
+            self._add_attachments(paths)
 
     def _attach_pasted_image(self, img: QImage):
         """Ctrl+V con una imagen en el portapapeles (captura, 'Copiar imagen'): se guarda como PNG y se adjunta."""
         if not self.current_chat:
             return
-        folder = os.path.join(MEDIA_DIR, "pegadas")
+        folder = os.path.join(MEDIA_DIR, "enviados")
         os.makedirs(folder, exist_ok=True)
         path = os.path.join(folder, f"imagen_{datetime.now():%Y%m%d_%H%M%S_%f}.png")
         if img.save(path, "PNG"):
@@ -2399,26 +2723,114 @@ class ChatViewPanel(QWidget):
             title, what = ("No se pudo programar", "programar") if at else ("Error al enviar", "enviar")
             QMessageBox.critical(self, title, f"No se pudo {what} el mensaje:\n{res.get('error', 'Desconocido')}")
 
+    # ── Emojis y stickers ──
+    def _toggle_emoji_panel(self):
+        if not self.current_chat:
+            return
+        if getattr(self, "_emoji_panel", None) is None:
+            from app.ui.emoji_panel import EmojiStickerPanel
+            self._emoji_panel = EmojiStickerPanel(self)
+            self._emoji_panel.emoji_chosen.connect(self._insert_emoji)
+            self._emoji_panel.sticker_chosen.connect(self._send_sticker)
+        self._emoji_panel.show_above(self.btn_emoji)
+
+    def _insert_emoji(self, emoji: str):
+        """Escribe el emoji donde está el cursor del campo de mensaje (reemplaza la selección)."""
+        if self.input_text.isVisible():
+            self.input_text.insertPlainText(emoji)
+
+    def _send_sticker(self, path: str, sid: str):
+        """Manda un sticker de la biblioteca al chat abierto; la subida corre en un hilo."""
+        if not self.current_chat or self._att_sending or not os.path.exists(path):
+            return
+        at = self._schedule_at
+        if at and self._schedule_is_past():
+            return
+        if not at and self.gateway.get_status().get("status") != "connected":
+            QMessageBox.warning(self, "WhatsApp no conectado",
+                                "WhatsApp no está vinculado o está desconectado.\n"
+                                "Ve a Configuración → WhatsApp para vincularlo.")
+            return
+        chat_jid = self.current_chat.get("jid")
+        quoted_text, quoted_sender = self._quote_fields()
+        quoted = self._quoted_payload()
+        extra = self._schedule_kwargs(at, quoted_text, quoted_sender)
+        animated = bool((stickerlib.get(sid) or {}).get("animated"))
+        gateway = self.gateway
+
+        def work():
+            sent = path
+            if not at:
+                # El mensaje enviado conserva su archivo aunque después se borre el sticker de la biblioteca
+                try:
+                    folder = os.path.join(MEDIA_DIR, "enviados")
+                    os.makedirs(folder, exist_ok=True)
+                    sent = os.path.join(folder, f"sticker_{sid}.webp")
+                    if not os.path.exists(sent):
+                        shutil.copyfile(path, sent)
+                except OSError:
+                    sent = path
+            res = gateway.send_message(to=chat_jid, sticker_path=path, sticker_animated=animated, quoted=quoted, **extra)
+            if res.get("success"):
+                try:
+                    stickerlib.mark_used(sid)
+                except Exception:
+                    pass
+            try:
+                self._sticker_result.emit(chat_jid, res, sent, int(at or 0), quoted_text or "", quoted_sender or "")
+            except RuntimeError:   # la ventana se cerró antes de terminar
+                pass
+
+        threading.Thread(target=work, daemon=True, name="advancedwhatsapp-sticker").start()
+
+    def _on_sticker_result(self, chat_jid: str, res: dict, sent_path: str, at: int, quoted_text: str, quoted_sender: str):
+        if not res.get("success"):
+            QMessageBox.critical(self, "No se pudo programar" if at else "Error al enviar",
+                                 f"No se pudo enviar el sticker:\n{res.get('error', 'Desconocido')}")
+            return
+        self._cancel_reply()
+        if at:
+            self._on_scheduled(at)
+            return
+        self._store_sent(res, chat_jid, "", sent_path, "sticker", quoted_text or None, quoted_sender or None)
+        if self.current_chat and self.current_chat.get("jid") == chat_jid:
+            self.refresh_messages()
+        self.message_sent.emit({"chat_jid": chat_jid, "text": ""})
+
+    def _add_sticker_from_msg(self, msg: dict):
+        rec = stickerlib.add_from_message(msg)
+        if rec is None:
+            text = "No se pudo agregar el sticker."
+        elif rec.get("existing"):
+            text = "Ese sticker ya estaba en tus stickers."
+        else:
+            text = "Agregado a tus stickers."
+        QToolTip.showText(QCursor.pos(), text, self)
+
     # ── Programar envío ──
     def _choose_schedule_time(self):
         from app.ui.scheduled_messages import ScheduleTimeDialog
         if not self.current_chat:
             return
-        dlg = ScheduleTimeDialog(self._schedule_at, parent=self)
+        dlg = ScheduleTimeDialog(self._schedule_at, repeat=getattr(self, "_schedule_repeat", None), parent=self)
         accepted = dlg.exec() == QDialog.Accepted
         at = dlg.values()[0]
+        dlg_repeat = dlg.repeat()
         dlg.deleteLater()
         if not accepted:
             return
         if at <= time.time():
             QMessageBox.warning(self, "Fecha pasada", "Elegí una fecha y hora futuras.")
             return
+        self._schedule_repeat = dlg_repeat
         self._set_schedule(at)
         if self.input_text.isVisible():
             self.input_text.setFocus()
 
     def _set_schedule(self, at):
         self._schedule_at = at
+        if not at:
+            self._schedule_repeat = None
         self._update_schedule_bar()
         self._update_action_button()
 
@@ -2431,7 +2843,10 @@ class ChatViewPanel(QWidget):
     def _schedule_kwargs(self, at, quoted_text, quoted_sender) -> dict:
         if not at:
             return {}
-        return {"at": at, "chat_name": self._display_name(), "quoted_text": quoted_text, "quoted_sender": quoted_sender}
+        kw = {"at": at, "chat_name": self._display_name(), "quoted_text": quoted_text, "quoted_sender": quoted_sender}
+        if getattr(self, "_schedule_repeat", None):
+            kw["repeat"] = self._schedule_repeat
+        return kw
 
     def _on_scheduled(self, at: int):
         from app.ui.scheduled_messages import when_text
@@ -2447,7 +2862,9 @@ class ChatViewPanel(QWidget):
         for w in (self.lbl_schedule_icon, self.lbl_schedule, self.btn_schedule_clear):
             w.setVisible(bool(at))
         if at:
-            self.lbl_schedule.setText(f"Lo próximo que mandes sale: {when_text(at)}")
+            from app.recurrence import describe_repeat
+            rep = describe_repeat(getattr(self, "_schedule_repeat", None))
+            self.lbl_schedule.setText(f"Lo próximo que mandes sale: {when_text(at)}" + (f" · {rep}" if rep else ""))
         self.btn_schedule_list.setVisible(count > 0)
         self.btn_schedule_list.setText(f"{count} programado{'s' if count != 1 else ''} en este chat")
         self.schedule_bar.setVisible(bool(at) or count > 0)
@@ -2510,7 +2927,7 @@ class ChatViewPanel(QWidget):
         self.attachment_bar.set_state(paths[0], "sending")
         self.attachment_bar.show_progress(True)
         self.attachment_bar.set_progress(0.0, f"Enviando 1 de {len(paths)}…")
-        for w in (self.input_text, self.btn_attach, self.btn_polish, self.btn_action):
+        for w in (self.input_text, self.btn_attach, self.btn_polish, self.btn_emoji, self.btn_action):
             w.setEnabled(False)
         self._att_timer.start()
 
@@ -2579,7 +2996,7 @@ class ChatViewPanel(QWidget):
         st, self._att_state = self._att_state, None
         self._att_timer.stop()
         self._att_sending = False
-        for w in (self.input_text, self.btn_attach, self.btn_polish, self.btn_action):
+        for w in (self.input_text, self.btn_attach, self.btn_polish, self.btn_emoji, self.btn_action):
             w.setEnabled(True)
         if not st:
             return
@@ -2631,7 +3048,9 @@ class ChatViewPanel(QWidget):
 
     def _update_action_button(self):
         """Con texto o adjunto el botón envía; con el campo vacío graba una nota de voz, como en WhatsApp."""
-        if self._recorder.active or self._composer_has_content():
+        if self._recorder.active and self._dictation:
+            name, tip = "check", "Terminar el dictado y pasarlo a texto  (Enter)"
+        elif self._recorder.active or self._composer_has_content():
             verb, name = ("Programar", "clock") if self._schedule_at else ("Enviar", "send")
             tip = f"{verb} nota de voz  (Enter)" if self._recorder.active else f"{verb}  (Enter)"
         else:
@@ -2642,7 +3061,7 @@ class ChatViewPanel(QWidget):
 
     def _on_action_clicked(self):
         if self._recorder.active:
-            self._send_voice()
+            self._commit_recording()
         elif self._composer_has_content():
             self._send_message()
         else:
@@ -2653,14 +3072,15 @@ class ChatViewPanel(QWidget):
         recording = self._recorder.active
         sending = self._voice_sending_here() and not recording
         show = recording or sending
-        for w in (self.btn_attach, self.btn_polish, self.input_text):
+        for w in (self.btn_attach, self.btn_polish, self.btn_emoji, self.input_text, self.btn_dictate):
             w.setVisible(not show)
         self.voice_panel.setVisible(show)
         for w in (self.btn_voice_cancel, self.btn_voice_pause, self.voice_meter):
             w.setVisible(recording)
         if sending:
             self.lbl_voice_dot.setVisible(False)
-            self.lbl_voice_time.setText("Enviando nota de voz…")
+            dictating = self.current_chat.get("jid") in self._dictating
+            self.lbl_voice_time.setText("Transcribiendo el dictado…" if dictating else "Enviando nota de voz…")
         self._update_action_button()
 
     def _set_voice_paused_ui(self, paused: bool):
@@ -2669,10 +3089,12 @@ class ChatViewPanel(QWidget):
         self.lbl_voice_dot.setVisible(True)
         self.lbl_voice_dot.setStyleSheet(f"color: {C['text_3'] if paused else C['danger']}; font-size: 12px;")
 
-    def _start_voice(self):
+    def _start_voice(self, dictate=None):
+        """Empieza a grabar. Con `dictate` ('plain' | 'polish') es un dictado: al terminar se transcribe y el texto
+        va al campo de mensaje en vez de enviarse como nota de voz."""
         if not self.current_chat or self._voice_sending_here():
             return
-        if not self._schedule_at and self.gateway.get_status().get("status") != "connected":
+        if not dictate and not self._schedule_at and self.gateway.get_status().get("status") != "connected":
             QMessageBox.warning(self, "WhatsApp no conectado", "No se pueden enviar notas de voz sin conexión a WhatsApp.")
             return
         err = self._recorder.start()
@@ -2680,6 +3102,7 @@ class ChatViewPanel(QWidget):
             QMessageBox.warning(self, "Nota de voz", err)
             return
         voice_player().stop()   # que no se grabe una nota que esté sonando
+        self._dictation = dictate
         self._voice_chat_jid = self.current_chat.get("jid")
         self.voice_meter.clear()
         self.lbl_voice_time.setText("0:00")
@@ -2713,6 +3136,7 @@ class ChatViewPanel(QWidget):
         self._voice_clock.stop()
         self._recorder.cancel()
         self._voice_chat_jid = None
+        self._dictation = None
         self._refresh_voice_ui()
         if self.input_text.isVisible():
             self.input_text.setFocus()
@@ -2726,6 +3150,9 @@ class ChatViewPanel(QWidget):
         if self._recorder.seconds() < MIN_SECONDS:
             self._cancel_voice()
             return
+        if self._dictation:   # un dictado no se envía: se transcribe y queda en el borrador de su chat
+            self._finish_dictation()
+            return
         self._recorder.pause()
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Question)
@@ -2738,6 +3165,100 @@ class ChatViewPanel(QWidget):
             self._send_voice(leaving=True)
         else:
             self._cancel_voice()
+
+    def _commit_recording(self):
+        if self._dictation:
+            self._finish_dictation()
+        else:
+            self._send_voice()
+
+    def _show_dictate_menu(self):
+        if not self.current_chat or self._recorder.active or self._voice_sending_here():
+            return
+        menu = QMenu(self)
+        act_plain = menu.addAction(icon("dictate"), "Dictar a texto")
+        act_polish = menu.addAction(icon("sparkle"), "Dictar y emprolijar con IA")
+        act = menu.exec(menu_below(menu, self.btn_dictate))
+        if act == act_plain:
+            self._start_voice("plain")
+        elif act == act_polish:
+            self._start_voice("polish")
+
+    def _finish_dictation(self):
+        """Termina el dictado: la conversión y la transcripción (y el emprolijado) corren en segundo plano y el
+        texto aparece en el campo de mensaje, sin enviarse."""
+        if not self._recorder.active or not self.current_chat:
+            return
+        secs = self._recorder.seconds()
+        if secs < MIN_SECONDS:
+            self._cancel_voice()
+            QToolTip.showText(self.btn_action.mapToGlobal(QPoint(0, -34)), "Dictado demasiado corto", self.btn_action)
+            return
+        polish = self._dictation == "polish"
+        pcm = self._recorder.stop()
+        self._voice_clock.stop()
+        chat_jid = self._voice_chat_jid or self.current_chat.get("jid")
+        self._voice_chat_jid = None
+        self._dictation = None
+        if peak_level(pcm) == 0:
+            self._refresh_voice_ui()
+            QMessageBox.warning(self, "Dictado",
+                                f"La grabación salió en silencio total. Revisa que el micrófono no esté silenciado.\n"
+                                f"{MIC_PRIVACY_HINT}")
+            return
+        prov, model = message_summary.summary_ai(self.cmb_polish_provider.currentText(),
+                                                 self.cmb_polish_model.currentText().strip())
+        self._voice_sending.add(chat_jid)
+        self._dictating.add(chat_jid)
+        self._refresh_voice_ui()
+
+        def run():
+            base = os.path.join(tempfile.gettempdir(), f"dictado_{datetime.now():%Y%m%d_%H%M%S_%f}")
+            files = []
+            text, note = "", ""
+            try:   # nunca dejar la barra en «Transcribiendo…»
+                path = base + ".ogg"
+                files.append(path)
+                if encode_ogg_opus(pcm, path):   # sin FFmpeg: WAV, que Whisper también acepta
+                    path = base + ".wav"
+                    files.append(path)
+                    pcm_to_wav(pcm, path)
+                text = transcribe_audio(path)
+                if not text:
+                    note = "No se entendió nada en el dictado."
+                elif polish:
+                    out = reply_polisher.polish_dictation(text, prov, model)
+                    if AIService.is_error_response(out):
+                        note = f"No se pudo emprolijar con la IA ({out.strip()[:160]}); quedó el texto tal cual se dictó."
+                    else:
+                        text = out
+            except Exception as e:
+                note = f"No se pudo transcribir el dictado: {e}"
+            for f in files:
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+            try:
+                self._dictation_done.emit(chat_jid, text, note)
+            except RuntimeError:   # la ventana se cerró antes de terminar
+                pass
+        threading.Thread(target=run, daemon=True).start()
+
+    def _on_dictation_done(self, jid: str, text: str, note: str):
+        self._voice_sending.discard(jid)
+        self._dictating.discard(jid)
+        if text:
+            if self.current_chat and self.current_chat.get("jid") == jid:
+                self.input_text.setPlainText(merge_dictation(self.input_text.toPlainText(), text))
+                self.input_text.moveCursor(QTextCursor.End)
+            else:   # se cambió de chat mientras se transcribía: queda en el borrador de ese chat
+                self._drafts[jid] = merge_dictation(self._drafts.get(jid, ""), text)
+        self._refresh_voice_ui()
+        if text and self.input_text.isVisible() and self.current_chat and self.current_chat.get("jid") == jid:
+            self.input_text.setFocus()
+        if note:
+            QMessageBox.warning(self, "Dictado", note)
 
     def _send_voice(self, leaving: bool = False):
         """Termina la grabación; la conversión a OGG/Opus y la subida corren en segundo plano."""

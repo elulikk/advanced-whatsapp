@@ -28,9 +28,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DonutLarge
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Schedule
@@ -53,6 +55,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.material.icons.filled.Lock
+import com.advancedwhatsapp.app.data.ChatLock
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -78,9 +84,12 @@ import com.advancedwhatsapp.app.AppState
 import com.advancedwhatsapp.app.Prefs
 import com.advancedwhatsapp.app.data.Actions
 import com.advancedwhatsapp.app.data.Chat
+import com.advancedwhatsapp.app.ai.SmartFeatures
 import com.advancedwhatsapp.app.data.ChatFilter
 import com.advancedwhatsapp.app.data.ChatTab
 import com.advancedwhatsapp.app.data.Db
+import com.advancedwhatsapp.app.data.Organization
+import com.advancedwhatsapp.app.data.SmartFolder
 import com.advancedwhatsapp.app.data.Statuses
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -102,25 +111,68 @@ fun ChatListScreen(
     var tabs by remember { mutableStateOf(emptyList<ChatTab>()) }
     var unreadGroups by remember { mutableIntStateOf(0) }
     var managingTabs by remember { mutableStateOf(false) }
+    var aiSearch by remember { mutableStateOf(false) }
+    var pendingJids by remember { mutableStateOf(emptySet<String>()) }   // chats con una pregunta mía sin contestar
+    var folders by remember { mutableStateOf(emptyList<SmartFolder>()) }
+    var folderUnread by remember { mutableStateOf(emptyMap<Long, Int>()) }
+    var archivedCount by remember { mutableIntStateOf(0) }
+    var managingFolders by remember { mutableStateOf(false) }
     val owner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     suspend fun reload() {
         withContext(Dispatchers.IO) {
             val filter = filterFor(selected)
-            val loadedChats = Db.getChats(search, filter)
+            val loadedChats = if (selected == KEY_PENDING) {
+                val base = Db.getChats(search, null, 250)
+                val pend = SmartFeatures.needsReplyJids(base.map { it.jid })
+                base.filter { it.jid in pend }
+            } else {
+                Db.getChats(search, filter)
+            }
+            val flagged = SmartFeatures.needsReplyJids(loadedChats.take(60).map { it.jid })
             val loadedTabs = Db.getTabs()
             val groups = Db.unreadGroups()
+            val loadedFolders = Organization.folders()
+            val counts = loadedFolders.associate { it.id to Organization.folderUnread(it) }
+            val archived = Organization.archivedCount()
             withContext(Dispatchers.Main) {
                 chats = loadedChats
+                pendingJids = flagged
                 tabs = loadedTabs
                 unreadGroups = groups
-                // La pestaña abierta se borró
+                folders = loadedFolders
+                folderUnread = counts
+                archivedCount = archived
+                // La pestaña o carpeta abierta se borró
                 if (filter is ChatFilter.Tab && loadedTabs.none { it.id == filter.id }) selected = KEY_ALL
+                if (filter is ChatFilter.Folder && loadedFolders.none { it.id == filter.id }) selected = KEY_ALL
             }
         }
     }
-    LaunchedEffect(search, selected) { reload() }
+    // Ocultar o mostrar chats ocultos también recarga la lista
+    LaunchedEffect(search, selected, ChatLock.revealed, ChatLock.hidden) { reload() }
+    // Código secreto en el buscador: muestra (o vuelve a ocultar) los chats ocultos
+    LaunchedEffect(search) {
+        if (search.trim().length >= ChatLock.MIN_SECRET_LEN && ChatLock.hasSecretCode()) {
+            delay(400)   // el hash tarda: no por cada tecla
+            val res = withContext(Dispatchers.Default) { ChatLock.trySecret(search) }
+            if (res != null) {
+                search = ""
+                toast(context, if (res == "revealed") "Chats ocultos visibles" else "Chats ocultos de nuevo escondidos")
+            }
+        }
+    }
+    // Archivado automático de los chats sin actividad (apagado por defecto)
+    LaunchedEffect(owner) {
+        owner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                withContext(Dispatchers.IO) { Organization.autoArchive() }
+                delay(30 * 60 * 1000L)
+            }
+        }
+    }
     LaunchedEffect(owner, search, selected) {
         owner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             reload()
@@ -146,7 +198,15 @@ fun ChatListScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Advanced WhatsApp", color = C.ember, fontWeight = FontWeight.SemiBold) },
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        androidx.compose.foundation.Image(
+                            painter = androidx.compose.ui.res.painterResource(com.advancedwhatsapp.app.R.mipmap.ic_launcher),
+                            contentDescription = "Logo", modifier = Modifier.size(30.dp),
+                        )
+                        Text("Advanced WhatsApp", color = C.ember, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(start = 8.dp))
+                    }
+                },
                 actions = {
                     IconButton(onClick = { searching = !searching; if (!searching) search = "" }) { Icon(Icons.Default.Search, "Buscar") }
                     IconButton(onClick = onScheduled) { Icon(Icons.Default.Schedule, "Mensajes programados") }
@@ -168,6 +228,9 @@ fun ChatListScreen(
             if (searching) {
                 OutlinedTextField(
                     value = search, onValueChange = { search = it }, placeholder = { Text("Buscar chats") }, singleLine = true,
+                    trailingIcon = {
+                        IconButton(onClick = { aiSearch = true }) { Icon(Icons.Default.AutoAwesome, "Buscar con IA", tint = C.ember) }
+                    },
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
                 )
             }
@@ -179,11 +242,22 @@ fun ChatListScreen(
                     item(KEY_ALL) { TabChip("Todos", 0, selected == KEY_ALL) { selected = KEY_ALL } }
                     item(KEY_UNREAD) { TabChip("No leídos", 0, selected == KEY_UNREAD) { selected = KEY_UNREAD } }
                     item(KEY_GROUPS) { TabChip("Grupos", unreadGroups, selected == KEY_GROUPS) { selected = KEY_GROUPS } }
+                    item(KEY_PENDING) { TabChip("Sin responder", 0, selected == KEY_PENDING) { selected = KEY_PENDING } }
                     items(tabs, key = { tabKey(it.id) }) { t ->
                         TabChip(t.name, t.unread, selected == tabKey(t.id)) { selected = tabKey(t.id) }
                     }
                     item("nueva") {
                         IconButton(onClick = { managingTabs = true }) { Icon(Icons.Default.Add, "Administrar pestañas", tint = C.text2) }
+                    }
+                    // Carpetas inteligentes (por reglas) y Archivados, después de las pestañas
+                    items(folders, key = { folderKey(it.id) }) { f ->
+                        TabChip(f.name, folderUnread[f.id] ?: 0, selected == folderKey(f.id)) { selected = folderKey(f.id) }
+                    }
+                    if (archivedCount > 0 || selected == KEY_ARCHIVED) {
+                        item(KEY_ARCHIVED) { TabChip("Archivados", archivedCount, selected == KEY_ARCHIVED) { selected = KEY_ARCHIVED } }
+                    }
+                    item("carpetas") {
+                        IconButton(onClick = { managingFolders = true }) { Icon(Icons.Default.Folder, "Carpetas inteligentes", tint = C.text2) }
                     }
                 }
                 // Un ícono y no un botón con texto: el ancho de la fila queda para las pestañas
@@ -200,6 +274,9 @@ fun ChatListScreen(
                             search.isNotBlank() -> "Ningún chat coincide con la búsqueda."
                             selected == KEY_UNREAD -> "No tenés chats sin leer."
                             selected == KEY_GROUPS -> "Todavía no hay grupos."
+                            selected == KEY_PENDING -> "No tenés nada sin responder. 🎉"
+                            selected == KEY_ARCHIVED -> "No hay chats archivados."
+                            selected.startsWith("carpeta:") -> "Ningún chat cumple las reglas de esta carpeta."
                             selected != KEY_ALL -> "Esta pestaña está vacía. Mantené apretado un chat y elegí \"Mover a\"."
                             conn.isConnected -> "Todavía no hay chats. Si recién vinculaste, el historial tarda unos minutos en llegar."
                             else -> "Sin chats todavía."
@@ -210,7 +287,7 @@ fun ChatListScreen(
             } else {
                 LazyColumn(contentPadding = PaddingValues(bottom = 88.dp)) {
                     items(chats, key = { it.jid }) { chat ->
-                        ChatRow(chat, tabs, onClick = { onOpen(chat.jid) }, onMarkRead = {
+                        ChatRow(chat, tabs, needsReply = chat.jid in pendingJids, onClick = { onOpen(chat.jid) }, onMarkRead = {
                             scope.launch(Dispatchers.IO) { Actions.markRead(chat.jid) }
                         }, onMove = { tabId ->
                             scope.launch(Dispatchers.IO) { Db.moveChatToTab(chat.jid, tabId) }
@@ -220,6 +297,13 @@ fun ChatListScreen(
             }
         }
     }
+    if (aiSearch) {
+        AiSearchDialog(search, onDismiss = { aiSearch = false }, onOpen = { jid ->
+            aiSearch = false
+            onOpen(jid)
+        })
+    }
+    if (managingFolders) FoldersDialog(onDismiss = { managingFolders = false })
     if (managingTabs) {
         TabsDialog(
             tabs = tabs,
@@ -234,12 +318,17 @@ fun ChatListScreen(
 private const val KEY_ALL = "todos"
 private const val KEY_UNREAD = "no_leidos"
 private const val KEY_GROUPS = "grupos"
+private const val KEY_PENDING = "sin_responder"
+private const val KEY_ARCHIVED = "archivados"
 private fun tabKey(id: Long) = "pestana:$id"
+private fun folderKey(id: Long) = "carpeta:$id"
 
-private fun filterFor(key: String): ChatFilter = when (key) {
-    KEY_UNREAD -> ChatFilter.Unread
-    KEY_GROUPS -> ChatFilter.Groups
-    KEY_ALL -> ChatFilter.Inbox
+private fun filterFor(key: String): ChatFilter = when {
+    key == KEY_UNREAD -> ChatFilter.Unread
+    key == KEY_GROUPS -> ChatFilter.Groups
+    key == KEY_ARCHIVED -> ChatFilter.Archived
+    key == KEY_ALL -> ChatFilter.Inbox
+    key.startsWith("carpeta:") -> key.substringAfter(':').toLongOrNull()?.let { ChatFilter.Folder(it) } ?: ChatFilter.Inbox
     else -> key.substringAfter(':').toLongOrNull()?.let { ChatFilter.Tab(it) } ?: ChatFilter.Inbox
 }
 
@@ -353,22 +442,34 @@ private fun BatteryBanner() {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ChatRow(chat: Chat, tabs: List<ChatTab>, onClick: () -> Unit, onMarkRead: () -> Unit, onMove: (Long) -> Unit) {
+private fun ChatRow(chat: Chat, tabs: List<ChatTab>, onClick: () -> Unit, onMarkRead: () -> Unit, onMove: (Long) -> Unit, needsReply: Boolean = false) {
     var menu by remember { mutableStateOf(false) }
+    var lockDialog by remember { mutableStateOf("") }   // "", "new" (crear contraseña y bloquear), "ask" (pedirla para desbloquear)
+    val locked = ChatLock.isLocked(chat.jid)
+    var editing by remember { mutableStateOf(false) }
+    if (editing) ContactEditDialog(chat.jid) { editing = false }
     Box {
         Row(
             Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = { menu = true })
+                .alpha(if (locked) 0.55f else 1f)   // chat bloqueado: fila apagada, como algo todavía no desbloqueado
                 .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Avatar(chat.name, chat.avatarPath)
+            Box(contentAlignment = Alignment.Center) {
+                Avatar(chat.name, chat.avatarPath)
+                if (locked) {
+                    Box(Modifier.size(48.dp).background(Color(0xAA000000), CircleShape), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Default.Lock, "Chat bloqueado", tint = Color.White, modifier = Modifier.size(22.dp))
+                    }
+                }
+            }
             Column(Modifier.padding(start = 12.dp).weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(chat.name, color = C.text, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                     Text(chatTime(chat.lastTime), color = if (chat.unread != 0) C.accent else C.text3, fontSize = 12.sp)
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(chat.lastText, color = C.text2, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    Text(if (locked) ChatLock.LOCKED_PREVIEW else if (needsReply) "↩ ${chat.lastText}" else chat.lastText, color = if (needsReply && !locked) C.accent else C.text2, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                     if (chat.isMuted) Icon(Icons.Default.NotificationsOff, "Silenciado", tint = C.text3, modifier = Modifier.size(16.dp).padding(start = 2.dp))
                     if (chat.pinned) Icon(Icons.Default.PushPin, "Fijado", tint = C.text3, modifier = Modifier.size(16.dp).padding(start = 2.dp))
                     if (chat.unread != 0) {
@@ -380,6 +481,12 @@ private fun ChatRow(chat: Chat, tabs: List<ChatTab>, onClick: () -> Unit, onMark
             }
         }
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            if (!chat.isGroup) {
+                DropdownMenuItem(text = { Text("Editar contacto") }, onClick = {
+                    menu = false
+                    editing = true
+                })
+            }
             tabs.filter { it.id != chat.tabId }.forEach { t ->
                 DropdownMenuItem(text = { Text("Mover a ${t.name}") }, onClick = {
                     menu = false
@@ -392,6 +499,30 @@ private fun ChatRow(chat: Chat, tabs: List<ChatTab>, onClick: () -> Unit, onMark
                     onMove(0)
                 })
             }
+            DropdownMenuItem(text = { Text(if (locked) "Desbloquear chat" else "Bloquear chat") }, onClick = {
+                menu = false
+                if (locked) lockDialog = "ask"
+                else if (ChatLock.hasPassword()) ChatLock.lock(chat.jid)
+                else lockDialog = "new"
+            })
+            if (locked) {
+                val hiddenChat = ChatLock.isHidden(chat.jid)
+                DropdownMenuItem(text = { Text(if (hiddenChat) "Dejar de ocultar chat" else "Ocultar chat (se busca con el código)") }, onClick = {
+                    menu = false
+                    if (hiddenChat) ChatLock.setHidden(chat.jid, false)
+                    else if (ChatLock.hasSecretCode()) ChatLock.setHidden(chat.jid, true)
+                    else lockDialog = "secret"
+                })
+            }
+            DropdownMenuItem(text = { Text(if (chat.archived) "Sacar de Archivados" else "Archivar") }, onClick = {
+                menu = false
+                Organization.setArchived(chat.jid, !chat.archived)
+            })
+            val silentRead = Organization.isSilentRead(chat.jid)
+            DropdownMenuItem(text = { Text(if (silentRead) "Lectura invisible: activada" else "Lectura invisible (sin tildes azules)") }, onClick = {
+                menu = false
+                Organization.setSilentRead(chat.jid, !silentRead)
+            })
             DropdownMenuItem(text = { Text(if (chat.pinned) "Desfijar" else "Fijar") }, onClick = {
                 menu = false
                 Db.setPinned(chat.jid, !chat.pinned)
@@ -416,6 +547,11 @@ private fun ChatRow(chat: Chat, tabs: List<ChatTab>, onClick: () -> Unit, onMark
                     onMarkRead()
                 })
             }
+        }
+        when (lockDialog) {
+            "new" -> NewPasswordDialog(onDone = { lockDialog = ""; ChatLock.lock(chat.jid) }, onDismiss = { lockDialog = "" })
+            "ask" -> AskPasswordDialog("Desbloquear chat", onOk = { lockDialog = ""; ChatLock.unlock(chat.jid) }, onDismiss = { lockDialog = "" })
+            "secret" -> NewSecretDialog(onDone = { lockDialog = ""; ChatLock.setHidden(chat.jid, true) }, onDismiss = { lockDialog = "" })
         }
     }
 }

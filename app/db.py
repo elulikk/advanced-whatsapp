@@ -7,6 +7,15 @@ from typing import List, Dict, Optional, Any
 from app.config import DB_PATH
 
 
+# Los documentos de sincronización con el celular («awsync-….awsync», ver app/sync.py) viajan por el chat «Mi número»
+# pero no son mensajes: nunca se guardan ni se muestran.
+SYNC_DOC_PREFIX = "awsync-"
+
+
+def is_sync_doc(media_type: Optional[str], text: Optional[str]) -> bool:
+    return media_type == "document" and (text or "").startswith(SYNC_DOC_PREFIX)
+
+
 def get_db_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=15.0)
     conn.row_factory = sqlite3.Row
@@ -103,6 +112,8 @@ def merge_lid_duplicates(conn: Optional[sqlite3.Connection] = None, only_jid: Op
         try:
             conn.execute("UPDATE OR IGNORE chat_tags SET chat_jid = ? WHERE chat_jid = ?", (target, lid_jid))
             conn.execute("DELETE FROM chat_tags WHERE chat_jid = ?", (lid_jid,))
+            conn.execute("UPDATE OR IGNORE chat_locks SET chat_jid = ? WHERE chat_jid = ?", (target, lid_jid))
+            conn.execute("DELETE FROM chat_locks WHERE chat_jid = ?", (lid_jid,))
         except sqlite3.OperationalError:
             pass
         conn.execute("DELETE FROM chats WHERE jid = ?", (lid_jid,))
@@ -195,6 +206,16 @@ def init_db():
             )
         """)
 
+        # Versiones anteriores de un mensaje editado (la más vieja primero), sin FK: se limpian con el mensaje
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS message_edits (
+                message_id TEXT NOT NULL,
+                text TEXT,
+                edited_at INTEGER DEFAULT 0
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_message_edits_msg ON message_edits(message_id)")
+
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_jid ON messages(chat_jid, timestamp)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_chats_last_time ON chats(last_message_time DESC)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts(name)")
@@ -225,10 +246,24 @@ def init_db():
         # pinned_at: momento (epoch) en que se fijó el mensaje en su chat; NULL = no fijado
         # summary: resumen e interpretación del mensaje hecho por la IA (modo resumen)
         # edited: el remitente editó el texto después de enviarlo
+        # transcript_failed: la transcripción automática falló; no se reintenta sola (queda el «Transcribir» manual)
+        # starred_at: mensaje destacado (epoch ms); revoked_orig: JSON con el contenido de un mensaje eliminado por el
+        # remitente (se conserva salvo que se apague el ajuste); poll_json: encuesta con las opciones y el conteo de votos
         for column in ("media_raw TEXT", "transcript TEXT", "pinned_at INTEGER", "summary TEXT",
-                       "edited INTEGER DEFAULT 0"):
+                       "edited INTEGER DEFAULT 0", "transcript_failed INTEGER DEFAULT 0",
+                       "starred_at INTEGER", "revoked_orig TEXT", "poll_json TEXT",
+                       # image_desc / image_ocr: descripción y texto de una foto leídos por IA (Leer imágenes);
+                       # image_failed: la lectura automática falló y no se reintenta sola
+                       "image_desc TEXT", "image_ocr TEXT", "image_failed INTEGER DEFAULT 0"):
             try:
                 cursor.execute(f"ALTER TABLE messages ADD COLUMN {column}")
+            except Exception:
+                pass
+        # custom_name: nombre que puso el usuario; prevalece sobre el que manda WhatsApp o la agenda
+        # manual_unread: chat marcado como no leído a mano (sin mensajes sin leer reales)
+        for column in ("custom_name TEXT", "manual_unread INTEGER DEFAULT 0"):
+            try:
+                cursor.execute(f"ALTER TABLE chats ADD COLUMN {column}")
             except Exception:
                 pass
         # muted_until: notificaciones silenciadas hasta ese momento (epoch); -1 = para siempre
@@ -241,6 +276,14 @@ def init_db():
         from app.tags import ensure_tables as _ensure_tag_tables
         _ensure_tag_tables(conn)
 
+        # Bloqueo de chats con contraseña (chat_locks / lock_meta)
+        from app.chat_lock import ensure_tables as _ensure_lock_tables
+        _ensure_lock_tables(conn)
+
+        # Carpetas inteligentes, lectura invisible por chat e índice de archivados
+        from app.organization import ensure_tables as _ensure_org_tables
+        _ensure_org_tables(conn)
+
         # Migración puntual de datos heredados (antes se ejecutaba en cada arranque)
         if cursor.execute("PRAGMA user_version").fetchone()[0] < 1:
             _migrate_legacy_v1(cursor)
@@ -251,6 +294,9 @@ def init_db():
 
         # 3b. Unir chats duplicados LID / teléfono
         merge_lid_duplicates(conn)
+
+        # 3b2. El contador de no leídos se recalcula desde los mensajes reales (evita que se acumule)
+        recompute_unread_counts(conn)
 
         # 3c. Vistas previas y horas desde el mensaje más reciente de cada chat
         refresh_chat_previews(cursor, [r[0] for r in cursor.execute("SELECT jid FROM chats").fetchall()])
@@ -396,6 +442,8 @@ def save_message(
     """Guarda un mensaje con soporte para respuestas citadas y filtrado de mensajes vacíos.
     already_read: mensaje recibido que ya leíste en otro dispositivo (no suma a "sin leer")."""
     clean_text = (text or "").strip()
+    if is_sync_doc(media_type, clean_text):
+        return False
     # Descartar mensajes fantasma completamente vacíos
     if not clean_text and (media_type == "text" or not media_type) and not media_path and not quoted_text:
         return False
@@ -486,6 +534,11 @@ def save_message(
         """, (snippet, timestamp, unread_increment, chat_label, chat_label, chat_jid))
         refresh_chat_previews(cursor, [chat_jid])
 
+        # Un mensaje nuevo saca al chat de Archivados (salvo que esté silenciado); el historial viejo no
+        if is_new and (from_me or not already_read) and timestamp >= time.time() - 3600:
+            from app.organization import unarchive_on_message
+            unarchive_on_message(cursor, chat_jid)
+
         # Si el mensaje llegó por LID y ya existe el chat del teléfono, unirlos ahora (no esperar al próximo arranque)
         if chat_jid.endswith("@lid"):
             merge_lid_duplicates(conn, only_jid=chat_jid)
@@ -573,6 +626,7 @@ def save_sync_batch(chats: List[Dict[str, Any]], contacts: List[Dict[str, Any]],
                     _revoke_in(cursor, msg_id)
                     touched_chats.append(chat_jid)
                 elif exists and text_val:
+                    _record_edit(cursor, msg_id, text_val)
                     cursor.execute("UPDATE messages SET text = ?, edited = 1, summary = NULL WHERE id = ?",
                                    (text_val, msg_id))
                     touched_chats.append(chat_jid)
@@ -580,6 +634,8 @@ def save_sync_batch(chats: List[Dict[str, Any]], contacts: List[Dict[str, Any]],
 
             # Omitir mensajes vacíos de desencriptación fallida o stubs
             if not text_val and media_type == "text" and not media_path and not quoted_text:
+                continue
+            if is_sync_doc(media_type, text_val):
                 continue
 
             from_me_val = 1 if m.get("from_me") else 0
@@ -630,7 +686,9 @@ def save_or_update_contact(jid: str, name: str, phone: Optional[str] = None) -> 
                 updated_at = CURRENT_TIMESTAMP
         """, (jid, clean_name, clean_phone, clean_name))
 
-        # Actualizar en chats
+        # Actualizar en chats (y fijar el nombre propio: no lo pisa lo que mande WhatsApp después)
+        cursor.execute("UPDATE chats SET custom_name = ? WHERE jid = ? OR jid LIKE ?",
+                       (clean_name, jid, f"{jid.split('@')[0]}@%"))
         cursor.execute("""
             UPDATE chats 
             SET name = ?,
@@ -767,6 +825,19 @@ GROUP_CHAT_SQL = "jid LIKE '%@g.us'"
 VISIBLE_CHAT_SQL = f"({INDIVIDUAL_CHAT_SQL} OR {GROUP_CHAT_SQL})"
 
 
+def get_chat_custom_name(jid: str) -> str:
+    """Nombre que puso el usuario para el chat ('' si no hay)."""
+    with db_conn() as conn:
+        row = conn.execute("SELECT custom_name FROM chats WHERE jid = ?", (jid,)).fetchone()
+    return (row["custom_name"] or "") if row else ""
+
+
+def set_chat_custom_name(jid: str, name: str) -> None:
+    """Nombre propio del contacto: prevalece sobre el de WhatsApp/agenda. Vacío = volver al de WhatsApp."""
+    with db_conn() as conn:
+        conn.execute("UPDATE chats SET custom_name = ? WHERE jid = ?", ((name or "").strip() or None, jid))
+
+
 def get_chats_count() -> int:
     """Retorna la cantidad total de chats individuales registrados."""
     with db_conn() as conn:
@@ -775,26 +846,76 @@ def get_chats_count() -> int:
         return cursor.fetchone()[0]
 
 
-def get_total_unread_count() -> int:
-    """Retorna la cantidad total de mensajes no leídos sumados en los chats individuales y los grupos."""
+def recompute_unread_counts(conn: Optional[sqlite3.Connection] = None, jids: Optional[List[str]] = None) -> int:
+    """Recalcula chats.unread_count desde los mensajes recibidos que siguen sin leer: el contador nunca puede
+    superar lo realmente pendiente y un chat sin pendientes queda en 0 (salvo marcado como no leído a mano).
+    Devuelve cuántos chats cambiaron."""
+    if conn is None:
+        with db_conn() as own:
+            return recompute_unread_counts(own, jids)
+    where = ""
+    params: list = []
+    if jids:
+        where = f" AND c.jid IN ({','.join('?' * len(jids))})"
+        params = list(jids)
+    real = ("(SELECT COUNT(*) FROM messages m WHERE m.chat_jid = c.jid AND m.from_me = 0 "
+            "AND m.status != 'read' AND m.media_type != 'revoked')")
+    cur = conn.execute(f"""
+        UPDATE chats AS c SET unread_count = CASE
+            WHEN {real} > 0 THEN MIN(c.unread_count, {real})
+            WHEN c.manual_unread = 1 THEN 1
+            ELSE 0 END
+        WHERE c.unread_count != CASE
+            WHEN {real} > 0 THEN MIN(c.unread_count, {real})
+            WHEN c.manual_unread = 1 THEN 1
+            ELSE 0 END{where}
+    """, params)
+    return cur.rowcount
+
+
+def get_total_unread_count(include_muted: bool = True, include_groups: bool = True) -> int:
+    """Retorna la cantidad total de mensajes no leídos sumados en los chats individuales y los grupos.
+    include_muted=False deja afuera los chats silenciados (como WhatsApp en el ícono de la app);
+    include_groups=False cuenta solo los chats individuales."""
+    where = VISIBLE_CHAT_SQL if include_groups else INDIVIDUAL_CHAT_SQL
+    where += " AND jid NOT IN (SELECT chat_jid FROM chat_hidden)"   # los chats ocultos no suman en ningún contador
+    params: list = []
+    if not include_muted:
+        where += " AND NOT (COALESCE(muted_until, 0) = -1 OR COALESCE(muted_until, 0) > ?)"
+        params.append(int(time.time()))
     with db_conn() as conn:
         cursor = conn.cursor()
-        cursor.execute(f"SELECT COALESCE(SUM(unread_count), 0) FROM chats WHERE {VISIBLE_CHAT_SQL}")
+        cursor.execute(f"SELECT COALESCE(SUM(unread_count), 0) FROM chats WHERE {where}", params)
         row = cursor.fetchone()
         return int(row[0]) if row else 0
 
 
 def get_chats(search: Optional[str] = None, filter_unread: bool = False, limit: int = 40, offset: int = 0,
-              include_hidden: bool = False, groups_only: bool = False) -> List[Dict[str, Any]]:
+              include_hidden: bool = False, groups_only: bool = False, extra_where: Optional[tuple] = None,
+              archived: str = "hide", show_secret: bool = False) -> List[Dict[str, Any]]:
     """Obtiene la lista de chats ordenados por actividad reciente con paginación de alto rendimiento.
     Sin filtros devuelve los individuales; los sin leer y las búsquedas también abarcan los grupos.
-    groups_only=True deja solo los grupos; include_hidden=True suma además canales y difusiones."""
+    groups_only=True deja solo los grupos; include_hidden=True suma además canales y difusiones.
+    extra_where=(sql, params): condición de una carpeta inteligente (ya abarca individuales y grupos).
+    archived: "hide" (no muestra los archivados; las búsquedas sí los incluyen), "only" o "any".
+    Los chats ocultos (chat_lock) no salen salvo show_secret=True (ya se escribió el código)."""
     with db_conn() as conn:
         cursor = conn.cursor()
         query = "SELECT * FROM chats WHERE 1=1"
         params: list = []
 
-        if groups_only:
+        searching = bool(search and search.strip())
+        if archived == "only":
+            query += " AND is_archived = 1"
+        elif archived != "any" and not searching:
+            query += " AND COALESCE(is_archived, 0) = 0"
+        if not show_secret:
+            query += " AND jid NOT IN (SELECT chat_jid FROM chat_hidden)"
+
+        if extra_where is not None:
+            query += f" AND {VISIBLE_CHAT_SQL} AND ({extra_where[0]})"
+            params.extend(extra_where[1])
+        elif groups_only:
             query += f" AND {GROUP_CHAT_SQL}"
         elif not include_hidden:
             everywhere = filter_unread or bool(search and search.strip())
@@ -805,8 +926,10 @@ def get_chats(search: Optional[str] = None, filter_unread: bool = False, limit: 
 
         if search and search.strip():
             term = f"%{search.strip()}%"
-            query += " AND (name LIKE ? OR phone LIKE ? OR last_message_text LIKE ?)"
-            params.extend([term, term, term])
+            # El texto del último mensaje de un chat bloqueado no es buscable (se vería en los resultados)
+            query += (" AND (name LIKE ? OR custom_name LIKE ? OR phone LIKE ? OR (last_message_text LIKE ? "
+                      "AND jid NOT IN (SELECT chat_jid FROM chat_locks)))")
+            params.extend([term, term, term, term])
 
         query += " ORDER BY is_pinned DESC, last_message_time DESC, updated_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
@@ -845,7 +968,7 @@ def mark_chat_as_read(chat_jid: str) -> List[tuple]:
                 "SELECT id, sender_jid FROM messages WHERE chat_jid = ? AND from_me = 0 AND status != 'read' "
                 "ORDER BY timestamp DESC LIMIT 200", (chat_jid,))
         ]
-        cursor.execute("UPDATE chats SET unread_count = 0 WHERE jid = ?", (chat_jid,))
+        cursor.execute("UPDATE chats SET unread_count = 0, manual_unread = 0 WHERE jid = ?", (chat_jid,))
         cursor.execute("UPDATE messages SET status = 'read' WHERE chat_jid = ? AND from_me = 0", (chat_jid,))
         conn.commit()
     return newly_read
@@ -874,6 +997,7 @@ def mark_messages_read_elsewhere(message_ids: List[str]) -> List[str]:
                 _stash_early_status(mid, "read")
         for chat_jid, count in newly.items():
             _settle_unread(conn, chat_jid, count)
+        recompute_unread_counts(conn, list(newly))
         conn.commit()
     return list(newly)
 
@@ -899,7 +1023,7 @@ def mark_chat_read_elsewhere(chat_jid: str) -> bool:
         changed = conn.execute(
             "UPDATE messages SET status = 'read' WHERE chat_jid = ? AND from_me = 0 AND status != 'read'",
             (chat_jid,)).rowcount
-        conn.execute("UPDATE chats SET unread_count = 0 WHERE jid = ?", (chat_jid,))
+        conn.execute("UPDATE chats SET unread_count = 0, manual_unread = 0 WHERE jid = ?", (chat_jid,))
         conn.commit()
         return bool(row["unread_count"]) or changed > 0
 
@@ -907,7 +1031,7 @@ def mark_chat_read_elsewhere(chat_jid: str) -> bool:
 def mark_chat_unread_elsewhere(chat_jid: str) -> bool:
     """El chat se marcó como no leído en el celular: se muestra con contador (como en WhatsApp)."""
     with db_conn() as conn:
-        changed = conn.execute("UPDATE chats SET unread_count = 1 WHERE jid = ? AND unread_count = 0",
+        changed = conn.execute("UPDATE chats SET unread_count = 1, manual_unread = 1 WHERE jid = ? AND unread_count = 0",
                                (chat_jid,)).rowcount
         conn.commit()
         return changed > 0
@@ -971,6 +1095,7 @@ def delete_chat(chat_jid: str):
         cursor.execute("DELETE FROM chats WHERE jid = ?", (chat_jid,))
         try:
             cursor.execute("DELETE FROM chat_tags WHERE chat_jid = ?", (chat_jid,))
+            cursor.execute("DELETE FROM chat_locks WHERE chat_jid = ?", (chat_jid,))
         except sqlite3.OperationalError:
             pass
         conn.commit()
@@ -1065,6 +1190,7 @@ def delete_messages(msg_ids) -> None:
         marks = ",".join("?" * len(ids))
         chats = [r[0] for r in conn.execute(f"SELECT DISTINCT chat_jid FROM messages WHERE id IN ({marks})", ids)]
         conn.execute(f"DELETE FROM reactions WHERE message_id IN ({marks})", ids)
+        conn.execute(f"DELETE FROM message_edits WHERE message_id IN ({marks})", ids)
         conn.execute(f"DELETE FROM messages WHERE id IN ({marks})", ids)
         refresh_chat_previews(conn.cursor(), chats)
         for jid in chats:
@@ -1072,10 +1198,38 @@ def delete_messages(msg_ids) -> None:
                 conn.execute("UPDATE chats SET last_message_text = 'Sin mensajes' WHERE jid = ?", (jid,))
 
 
+def _keep_history() -> bool:
+    """Ajuste «Conservar mensajes eliminados y versiones editadas» (activado por defecto)."""
+    from app.config import get_pref
+    return get_pref("keep_deleted")
+
+
+def _record_edit(cursor, msg_id: str, new_text: str) -> None:
+    """Antes de pisar el texto por una edición, guarda la versión anterior (si el ajuste está activo)."""
+    if not _keep_history():
+        return
+    row = cursor.execute("SELECT text FROM messages WHERE id = ?", (msg_id,)).fetchone()
+    if not row or (row[0] or "") == (new_text or ""):
+        return
+    cursor.execute("INSERT INTO message_edits (message_id, text, edited_at) VALUES (?, ?, ?)",
+                   (msg_id, row[0] or "", int(time.time())))
+
+
 def _revoke_in(cursor, msg_id: str) -> None:
+    if _keep_history():
+        row = cursor.execute(
+            "SELECT media_type, text, media_path, media_raw, quoted_text, quoted_sender, transcript "
+            "FROM messages WHERE id = ?", (msg_id,)).fetchone()
+        if row and row[0] != "revoked":
+            import json
+            keys = ("media_type", "text", "media_path", "media_raw", "quoted_text", "quoted_sender", "transcript")
+            cursor.execute("UPDATE messages SET revoked_orig = ? WHERE id = ?",
+                           (json.dumps({k: row[i] for i, k in enumerate(keys)}, ensure_ascii=False), msg_id))
     cursor.execute(
         "UPDATE messages SET media_type = 'revoked', text = '', media_path = NULL, media_raw = NULL, "
-        "quoted_text = NULL, quoted_sender = NULL, transcript = NULL, summary = NULL, pinned_at = NULL WHERE id = ?", (msg_id,))
+        "quoted_text = NULL, quoted_sender = NULL, transcript = NULL, summary = NULL, pinned_at = NULL, "
+        "image_desc = NULL, image_ocr = NULL, "
+        "starred_at = CASE WHEN revoked_orig IS NULL THEN NULL ELSE starred_at END WHERE id = ?", (msg_id,))
     cursor.execute("DELETE FROM reactions WHERE message_id = ?", (msg_id,))
 
 
@@ -1104,9 +1258,75 @@ def apply_message_edit(msg_id: str, text: str) -> bool:
         row = conn.execute("SELECT chat_jid FROM messages WHERE id = ?", (msg_id,)).fetchone()
         if not row or not clean:
             return False
+        _record_edit(conn.cursor(), msg_id, clean)
         conn.execute("UPDATE messages SET text = ?, edited = 1, summary = NULL WHERE id = ?", (clean, msg_id))
         refresh_chat_previews(conn.cursor(), [row["chat_jid"]])
         return True
+
+
+def get_message_edits(msg_id: str) -> List[Dict[str, Any]]:
+    """Versiones anteriores de un mensaje editado, de la más vieja a la más nueva."""
+    with db_conn() as conn:
+        rows = conn.execute("SELECT text, edited_at FROM message_edits WHERE message_id = ? ORDER BY rowid",
+                            (msg_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_revoked_original(msg_id: str) -> Optional[Dict[str, Any]]:
+    """Contenido original de un mensaje que el remitente eliminó, o None si no se conservó."""
+    import json
+    with db_conn() as conn:
+        row = conn.execute("SELECT revoked_orig FROM messages WHERE id = ?", (msg_id,)).fetchone()
+    if not row or not row["revoked_orig"]:
+        return None
+    try:
+        return json.loads(row["revoked_orig"])
+    except ValueError:
+        return None
+
+
+def set_message_starred(msg_id: str, starred: bool) -> bool:
+    with db_conn() as conn:
+        cur = conn.execute("UPDATE messages SET starred_at = ? WHERE id = ?",
+                           (int(time.time() * 1000) if starred else None, msg_id))
+        return cur.rowcount > 0
+
+
+def get_starred_messages(search: str = "", limit: int = 300) -> List[Dict[str, Any]]:
+    """Mensajes destacados de todos los chats (el último destacado primero), con el nombre del chat; filtra por texto/chat."""
+    term = search.strip().lower()
+    like = f"%{term}%"
+    with db_conn() as conn:
+        rows = conn.execute(
+            "SELECT m.*, COALESCE(NULLIF(c.custom_name, ''), c.name, c.phone, m.chat_jid) AS chat_name "
+            "FROM messages m LEFT JOIN chats c ON c.jid = m.chat_jid "
+            "WHERE m.starred_at IS NOT NULL AND m.media_type != 'revoked' "
+            "AND (? = '' OR LOWER(COALESCE(m.text, '')) LIKE ? OR LOWER(COALESCE(m.transcript, '')) LIKE ? "
+            "OR LOWER(COALESCE(m.image_desc, '')) LIKE ? OR LOWER(COALESCE(m.image_ocr, '')) LIKE ? "
+            "OR LOWER(COALESCE(c.custom_name, c.name, '')) LIKE ?) "
+            "ORDER BY m.starred_at DESC LIMIT ?", (term, like, like, like, like, like, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def set_message_poll(msg_id: str, poll: Optional[Dict[str, Any]]) -> bool:
+    """Guarda la encuesta de un mensaje (opciones y votos) tal como la manda el gateway."""
+    import json
+    with db_conn() as conn:
+        cur = conn.execute("UPDATE messages SET poll_json = ? WHERE id = ?",
+                           (json.dumps(poll, ensure_ascii=False) if poll else None, msg_id))
+        return cur.rowcount > 0
+
+
+def parse_poll(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    import json
+    raw = msg.get("poll_json")
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) and data.get("options") else None
+    except ValueError:
+        return None
 
 
 def get_chat(jid: str) -> Optional[Dict[str, Any]]:
@@ -1151,8 +1371,65 @@ def set_message_media_path(msg_id: str, media_path: str):
 
 def set_message_transcript(msg_id: str, transcript: str):
     with db_conn() as conn:
-        conn.execute("UPDATE messages SET transcript = ? WHERE id = ?", (transcript, msg_id))
+        conn.execute("UPDATE messages SET transcript = ?, transcript_failed = 0 WHERE id = ?", (transcript, msg_id))
         conn.commit()
+
+
+def set_message_transcript_failed(msg_id: str):
+    """Marca que la transcripción automática falló: no se vuelve a intentar sola."""
+    with db_conn() as conn:
+        conn.execute("UPDATE messages SET transcript_failed = 1 WHERE id = ?", (msg_id,))
+        conn.commit()
+
+
+def is_message_transcript_failed(msg_id: str) -> bool:
+    with db_conn() as conn:
+        row = conn.execute("SELECT transcript_failed FROM messages WHERE id = ?", (msg_id,)).fetchone()
+        return bool(row and row["transcript_failed"])
+
+
+def get_audios_pending_transcript(since_ts: int, limit: int = 30) -> List[Dict[str, Any]]:
+    """Audios recientes (desde `since_ts`) sin transcripción y sin intento fallido, los más nuevos primero."""
+    with db_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, media_type, media_path, media_raw, from_me FROM messages "
+            "WHERE media_type = 'audio' AND timestamp >= ? AND COALESCE(transcript, '') = '' "
+            "AND COALESCE(transcript_failed, 0) = 0 AND (media_raw IS NOT NULL OR media_path IS NOT NULL) "
+            "ORDER BY timestamp DESC LIMIT ?", (since_ts, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def set_message_image_read(msg_id: str, description: str, ocr: str):
+    """Guarda lo que la IA leyó de una foto: descripción corta y texto que contiene (puede ser vacío)."""
+    with db_conn() as conn:
+        conn.execute("UPDATE messages SET image_desc = ?, image_ocr = ?, image_failed = 0 WHERE id = ?",
+                     ((description or "").strip(), (ocr or "").strip(), msg_id))
+        conn.commit()
+
+
+def set_message_image_failed(msg_id: str):
+    """Marca que la lectura automática falló: no se vuelve a intentar sola (queda el botón manual)."""
+    with db_conn() as conn:
+        conn.execute("UPDATE messages SET image_failed = 1 WHERE id = ?", (msg_id,))
+        conn.commit()
+
+
+def is_message_image_failed(msg_id: str) -> bool:
+    with db_conn() as conn:
+        row = conn.execute("SELECT image_failed FROM messages WHERE id = ?", (msg_id,)).fetchone()
+        return bool(row and row["image_failed"])
+
+
+def get_images_pending_read(since_ts: int, limit: int = 20) -> List[Dict[str, Any]]:
+    """Fotos y stickers recientes que ya están descargados (media_path) y todavía no se leyeron ni fallaron.
+    Las que no están en disco no entran: nunca se baja una imagen solo para analizarla."""
+    with db_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, media_type, media_path, media_raw, from_me FROM messages "
+            "WHERE media_type IN ('image', 'sticker') AND timestamp >= ? AND media_path IS NOT NULL "
+            "AND COALESCE(image_desc, '') = '' AND COALESCE(image_ocr, '') = '' AND COALESCE(image_failed, 0) = 0 "
+            "ORDER BY timestamp DESC LIMIT ?", (since_ts, limit)).fetchall()
+        return [dict(r) for r in rows]
 
 
 def set_message_summary(msg_id: str, summary: Optional[str]):

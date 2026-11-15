@@ -7,14 +7,19 @@ se abre, y las notas de voz se transcriben a demanda. Todo corre en un hilo, sin
 
 import json
 import os
+import itertools
 import queue
+import shutil
 import threading
+import time
 from typing import Dict, Optional, Tuple
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QStandardPaths, Signal
 
 from app import db
-from app.ai.transcription import transcribe_audio
+from app.ai import image_reader
+from app.ai.transcription import transcribe_audio, has_transcription_key
+from app.config import get_pref
 from app.gateway_manager import GatewayManager
 
 
@@ -22,15 +27,26 @@ class MediaSignals(QObject):
     media_ready = Signal(str)        # message_id
     transcript_ready = Signal(str)   # message_id
     job_failed = Signal(str)         # message_id
+    image_read_ready = Signal(str)   # message_id: ya está la descripción / el texto de la foto
 
 
 media_signals = MediaSignals()
 
-_jobs: "queue.Queue[Tuple[str, dict]]" = queue.Queue()
+# Cola con prioridad: lo que pide el usuario (0) pasa antes que la transcripción automática (1)
+_jobs: "queue.PriorityQueue" = queue.PriorityQueue()
+_seq = itertools.count()
+AUTO_BACKLOG_DAYS = 3        # al conectar se procesan los audios de los últimos días...
+AUTO_BACKLOG_LIMIT = 20      # ...hasta esta cantidad, de a uno
 _lock = threading.Lock()
 _pending: set = set()                # (kind, message_id) en cola o en curso
 _errors: Dict[Tuple[str, str], str] = {}   # (kind, message_id) -> último error
 _worker: Optional[threading.Thread] = None
+IMAGE_WORKERS = 2                    # lecturas de imágenes en paralelo como máximo (cuota y red)
+IMAGE_BACKLOG_DAYS = 3
+IMAGE_BACKLOG_LIMIT = 15
+_img_jobs: "queue.PriorityQueue" = queue.PriorityQueue()   # cola aparte: leer fotos no frena las descargas
+_img_workers: list = []
+_save_copy: set = set()              # message_id de descargas pedidas con el botón: además van a la carpeta Descargas
 
 
 def _ensure_worker():
@@ -41,7 +57,16 @@ def _ensure_worker():
             _worker.start()
 
 
-def _enqueue(kind: str, msg: dict):
+def _ensure_img_workers():
+    with _lock:
+        _img_workers[:] = [t for t in _img_workers if t.is_alive()]
+        while len(_img_workers) < IMAGE_WORKERS:
+            t = threading.Thread(target=_run_images, name="advancedwhatsapp-imgread", daemon=True)
+            _img_workers.append(t)
+            t.start()
+
+
+def _enqueue(kind: str, msg: dict, auto: bool = False):
     key = (kind, msg["id"])
     with _lock:
         if key in _pending:
@@ -50,8 +75,12 @@ def _enqueue(kind: str, msg: dict):
         if kind == "download" and key in _errors:
             return
         _pending.add(key)
+    if kind == "readimg":
+        _ensure_img_workers()
+        _img_jobs.put((1 if auto else 0, next(_seq), kind, dict(msg), auto))
+        return
     _ensure_worker()
-    _jobs.put((kind, dict(msg)))
+    _jobs.put((1 if auto else 0, next(_seq), kind, dict(msg), auto))
 
 
 _WRAPPER_KEYS = ("viewOnceMessage", "viewOnceMessageV2", "viewOnceMessageV2Extension",
@@ -95,12 +124,41 @@ def unavailable_reason(msg: dict) -> Optional[str]:
     return reason
 
 
-def request_media(msg: dict):
-    """Pide el archivo de un mensaje si todavía no está en disco y se puede descargar."""
+def downloads_dir() -> str:
+    """Carpeta Descargas del usuario, con una subcarpeta propia de la app."""
+    base = QStandardPaths.writableLocation(QStandardPaths.DownloadLocation) or os.path.join(os.path.expanduser("~"), "Downloads")
+    return os.path.join(base, "AdvancedWhatsapp")
+
+
+def save_to_downloads(path: str) -> Optional[str]:
+    """Copia un archivo descargado a Descargas/AdvancedWhatsapp sin pisar otro. Devuelve la ruta o None; nunca lanza."""
+    try:
+        folder = downloads_dir()
+        os.makedirs(folder, exist_ok=True)
+        name, ext = os.path.splitext(os.path.basename(path))
+        dest, n = os.path.join(folder, name + ext), 1
+        while os.path.exists(dest):
+            if os.path.getsize(dest) == os.path.getsize(path):
+                return dest   # ya estaba copiada
+            n += 1
+            dest = os.path.join(folder, f"{name} ({n}){ext}")
+        shutil.copyfile(path, dest)
+        return dest
+    except Exception as e:
+        print(f"[Advanced WhatsApp Media] no se pudo copiar a Descargas: {e}")
+        return None
+
+
+def request_media(msg: dict, save_copy: bool = False):
+    """Pide el archivo de un mensaje si todavía no está en disco y se puede descargar.
+    Con save_copy (botón «descargar») una imagen también se copia a la carpeta Descargas."""
     if msg.get("media_path") and os.path.exists(msg["media_path"]):
         return
     if not msg.get("media_raw") or unavailable_reason(msg):
         return
+    if save_copy and msg.get("media_type") == "image":
+        with _lock:
+            _save_copy.add(msg["id"])
     _enqueue("download", msg)
 
 
@@ -113,6 +171,92 @@ def request_transcript(msg: dict):
     if unavailable_reason(msg):
         return
     _enqueue("transcribe", msg)
+
+
+def auto_transcribe_enabled() -> bool:
+    return get_pref("auto_transcribe")
+
+
+def auto_transcribe(msg: dict) -> bool:
+    """Encola la transcripción automática de un audio (recibido o enviado). No hace nada si el ajuste está
+    apagado, si no hay API key, si ya tiene texto, si falló antes o si ya está en cola. True si se encoló."""
+    if msg.get("media_type") != "audio" or not msg.get("id") or msg.get("transcript"):
+        return False
+    if not auto_transcribe_enabled() or not has_transcription_key():
+        return False
+    if not msg.get("media_path") and not msg.get("media_raw"):
+        return False
+    if unavailable_reason(msg):
+        return False
+    msg_id = msg["id"]
+    with _lock:
+        if ("transcribe", msg_id) in _pending or ("transcribe", msg_id) in _errors:
+            return False
+    if db.is_message_transcript_failed(msg_id):
+        return False
+    _enqueue("transcribe", msg, auto=True)
+    return True
+
+
+def auto_transcribe_backlog(now: Optional[int] = None) -> int:
+    """Encola los audios recientes que quedaron sin transcribir (sin los que ya fallaron). Devuelve cuántos."""
+    if not auto_transcribe_enabled() or not has_transcription_key():
+        return 0
+    since = int(now if now is not None else time.time()) - AUTO_BACKLOG_DAYS * 86400
+    count = 0
+    for row in db.get_audios_pending_transcript(since, AUTO_BACKLOG_LIMIT):
+        if auto_transcribe(row):
+            count += 1
+    return count
+
+
+def _image_on_disk(msg: dict) -> bool:
+    return bool(msg.get("media_path")) and os.path.isfile(msg["media_path"])
+
+
+def request_image_read(msg: dict):
+    """Lee una foto con IA (descripción + texto). Solo si ya está en disco: nunca se baja para analizarla."""
+    if msg.get("media_type") not in ("image", "sticker") or not msg.get("id"):
+        return
+    if (msg.get("image_desc") or msg.get("image_ocr")) or not _image_on_disk(msg):
+        return
+    _enqueue("readimg", msg)
+
+
+def auto_read_images_enabled() -> bool:
+    return get_pref("auto_read_images")
+
+
+def auto_read_image(msg: dict) -> bool:
+    """Encola la lectura automática de una foto recién descargada (o enviada por mí). No hace nada si el ajuste
+    está apagado (por defecto), no hay clave con visión, no está en disco, ya tiene lectura, falló antes o ya
+    está en cola. True si se encoló."""
+    if msg.get("media_type") != "image" or not msg.get("id") or msg.get("image_desc") or msg.get("image_ocr"):
+        return False
+    if not auto_read_images_enabled() or not image_reader.has_vision_key():
+        return False
+    if not _image_on_disk(msg):
+        return False
+    msg_id = msg["id"]
+    with _lock:
+        if ("readimg", msg_id) in _pending or ("readimg", msg_id) in _errors:
+            return False
+    if db.is_message_image_failed(msg_id):
+        return False
+    _enqueue("readimg", msg, auto=True)
+    return True
+
+
+def auto_read_images_backlog(now: Optional[int] = None) -> int:
+    """Encola las fotos recientes ya descargadas que quedaron sin leer. Devuelve cuántas."""
+    if not auto_read_images_enabled() or not image_reader.has_vision_key():
+        return 0
+    since = int(now if now is not None else time.time()) - IMAGE_BACKLOG_DAYS * 86400
+    count = 0
+    for row in db.get_images_pending_read(since, IMAGE_BACKLOG_LIMIT):
+        if row.get("media_type") == "image" and auto_read_image(row):
+            count += 1
+    return count
 
 
 def is_pending(kind: str, msg_id: str) -> bool:
@@ -135,14 +279,24 @@ def _download(msg: dict) -> str:
 
 def _run():
     while True:
-        kind, msg = _jobs.get()
+        _prio, _n, kind, msg, auto = _jobs.get()
         msg_id = msg["id"]
         try:
             if kind == "download":
-                _download(msg)
+                got = _download(msg)
+                with _lock:
+                    wants_copy = msg_id in _save_copy
+                    _save_copy.discard(msg_id)
+                if wants_copy:
+                    save_to_downloads(got)
                 with _lock:
                     _errors.pop((kind, msg_id), None)
                 media_signals.media_ready.emit(msg_id)
+                if msg.get("media_type") == "image":
+                    try:
+                        auto_read_image({**msg, "media_path": got})
+                    except Exception as e:
+                        print(f"[Advanced WhatsApp Media] lectura automática de imagen: {e}")
             else:
                 path = msg.get("media_path")
                 if not path or not os.path.exists(path):
@@ -156,6 +310,36 @@ def _run():
             print(f"[Advanced WhatsApp Media] {kind} {msg_id} falló: {e}")
             with _lock:
                 _errors[(kind, msg_id)] = str(e)
+            if auto and kind == "transcribe":
+                try:
+                    db.set_message_transcript_failed(msg_id)   # no se reintenta sola, ni al reabrir la app
+                except Exception:
+                    pass
+            media_signals.job_failed.emit(msg_id)
+        finally:
+            with _lock:
+                _pending.discard((kind, msg_id))
+
+
+def _run_images():
+    while True:
+        _prio, _n, kind, msg, auto = _img_jobs.get()
+        msg_id = msg["id"]
+        try:
+            desc, ocr = image_reader.read_image(msg["media_path"])
+            db.set_message_image_read(msg_id, desc, ocr)
+            with _lock:
+                _errors.pop((kind, msg_id), None)
+            media_signals.image_read_ready.emit(msg_id)
+        except Exception as e:
+            print(f"[Advanced WhatsApp Media] {kind} {msg_id} falló: {e}")
+            with _lock:
+                _errors[(kind, msg_id)] = str(e)
+            if auto:
+                try:
+                    db.set_message_image_failed(msg_id)   # no se reintenta sola; queda el botón manual
+                except Exception:
+                    pass
             media_signals.job_failed.emit(msg_id)
         finally:
             with _lock:

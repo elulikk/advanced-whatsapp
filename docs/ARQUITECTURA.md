@@ -130,7 +130,219 @@ descifra y escribe el archivo; la respuesta trae `media_path`.
 **Mensaje programado**: UI -> `POST /message-schedule` (copia o mueve el adjunto a `media/mensajes_programados/`) -> temporizador
 -> `runScheduledMessage` -> `sendWhatsApp` -> `scheduled` + `incoming (append)` a la app.
 
+## Mensajería extra (`gateway/extras.js`)
+
+Módulo del gateway (viaja junto a `server.js` en PC, instalador y APK). Datos en la carpeta de datos, escritura atómica.
+
+| Ruta | Descripción |
+|---|---|
+| `GET/POST /auto-reply`, `POST /auto-reply/mode` | Respuestas automáticas -> `respuestas_automaticas.json` (+ `_estado.json` con la última respuesta por contacto). Reglas `schedule` (días, franja) o `manual`; `exclude`/`only` por jid; `cooldown_hours` |
+| `POST /poll`, `POST /polls/get` | Crear encuesta (`{to, name, options, multiple}`); conteo por ids. Los votos se descifran en el gateway (`encuestas.json`) y se avisan por `POST /api/whatsapp/poll` |
+| `POST /send-many`, `GET /send-many`, `POST /send-many/cancel` | Un mismo `/send` a `targets:[{to, chat_name}]`, de a uno, con pausa `delay_min`..`delay_max` s. Cada envío llega a la app como `incoming (append)`; al terminar avisa `POST /api/whatsapp/bulk` |
+| `POST /message-schedule` y `/update` | Aceptan `repeat: {type: daily\|weekly\|monthly\|yearly, days?, every?}`: tras salir, el item vuelve a `pending` con la próxima fecha (`anchor_at` evita que el día se corra) |
+
+Eliminados y ediciones se conservan en la base de cada cliente: `messages.revoked_orig` (JSON del contenido) y la tabla
+`message_edits` (versiones anteriores), salvo que se apague el ajuste `keep_deleted`. Destacados: `messages.starred_at`;
+fijados: `pinned_at`; encuestas: `messages.poll_json` (opciones y votos tal como los manda el gateway).
+
 ## Android
 
 El mismo `gateway/server.js` corre dentro de la app con `nodejs-mobile` (`ADVANCEDWHATSAPP_DATA_DIR` apunta a la carpeta privada). El
 equivalente de `webhook_server.py` es `gateway/WebhookServer.kt` y el de `db.py` es `data/Db.kt`. Detalles en `android/README.md`.
+
+## Emojis y stickers
+
+- **Biblioteca** (`app/stickers.py`; Android: `data/Stickers.kt`): `~/.magsapp/media/stickers/<id>.webp` (512x512, el id es el hash del
+  contenido) + `index.json` (paquetes, favoritos, recientes, emojis recientes, mensajes ya importados), escrito de forma atómica.
+  Las imágenes se convierten a webp 512x512 con Pillow en PC y con `Bitmap` en Android; el gateway no convierte nada (sin sharp/jimp).
+- **Emojis**: `android/app/src/main/assets/emojis.txt` es la fuente; `app/emoji_data.py` es su copia embebida para PC (si se edita uno,
+  actualizar el otro). Se parsean la primera vez que se abre el selector.
+- **Envío**: `POST /send` con `sticker_path` (webp) y, si es animado, `sticker_animated: true`. Se copia a `media/enviados/` antes de enviar.
+- **Importación**: archivos/carpetas/.wastickers, historial de chats (baja con `/media/download` los que faltan) y, en Android, las carpetas
+  de WhatsApp (`Android/media/com.whatsapp/...`) con el selector de carpetas (SAF).
+
+## Notas de voz enviadas (causa raíz del "audio no disponible")
+
+WhatsApp solo reproduce una nota de voz si el OGG/Opus está bien formado: páginas con BOS/EOS, *granule position*
+coherente con la duración real y CRC válido. El `MediaRecorder` de Android (`OutputFormat.OGG` + `AudioEncoder.OPUS`)
+deja el contenedor con granule incorrecto y sin marca de fin de stream, y el receptor mostraba error al reproducir.
+`sendWhatsApp` (gateway) pasa ahora todo audio por `normalizeOggOpus`: reempaqueta las páginas sin tocar los paquetes
+Opus y calcula la duración exacta (`seconds`); si el archivo no es OGG/Opus se envía tal cual. Sirve igual para PC
+(FFmpeg ya genera OGG/Opus válido) y Android (mismo `server.js`, sin dependencias nativas).
+## Organización y privacidad
+
+Todo es local (nada pasa por el gateway). PC: `app/organization.py` (+ `app/chat_lock.py`); Android: `data/Organization.kt` (+ `data/ChatLock.kt`).
+
+- **Carpetas inteligentes** (`smart_folders`, reglas en JSON): un chat entra si cumple *todas* las reglas puestas (tags en PC / pestañas en Android,
+  tipo individual/grupo, no leídos, silenciados) o si es uno de los contactos elegidos. Sin reglas no muestra nada. Aparecen como píldoras bajo los filtros
+  de la lista; `get_chats(extra_where=...)` / `Db.getChats(ChatFilter.Folder)` arman la consulta.
+- **Archivados** (`chats.is_archived`): los filtros de la lista no los muestran (la búsqueda sí); píldora «Archivados». Archivado automático:
+  `auto_archive_days` (config.ini / Prefs, 0 = apagado) archiva los chats sin actividad que no estén fijados; `save_message` / `Db.saveMessage` los saca de
+  Archivados cuando llega o se manda un mensaje reciente, salvo que estén silenciados.
+- **Chats ocultos** (`chat_hidden` en PC, `lock_hidden` en Android): solo un chat bloqueado, y con código secreto creado. Su hash (PBKDF2, claves `hide_*`
+  de `lock_meta` / `lock_secret_*`) es independiente de la contraseña. `get_chats` los excluye salvo `show_secret=True`; escribir el código en el buscador
+  (`chat_lock.try_secret`) los muestra hasta que la app se re-bloquea (`lock_all`). No suman en contadores y sus notificaciones se descartan.
+- **Lectura invisible por chat** (`chat_silent_read`): `GatewayManager.send_read_receipts` (PC) y `Actions.markRead` (Android) no mandan tildes azules.
+- **Bloqueo de la app entera**: pref `app_lock_enabled` + minutos (`app_lock_minutes`); reutiliza la contraseña de `chat_lock`. PC: capa `AppLockOverlay`
+  al abrir y al restaurar de la bandeja/minimizada tras X minutos. Android: capa sobre la navegación (contraseña o huella) al abrir y al volver de segundo plano.
+- **Galería**: `gallery_page(chat, kind, limit, offset)` (PC) / `Organization.gallery` (Android): fotos y videos, documentos, links y audios, paginados.
+  Miniaturas con caché (LRU en PC, Coil en Android) y descarga de las fotos a la vista bajo demanda (`media_service.request_media` / `Actions.downloadMedia`).
+## Copias y sincronización
+
+Los datos propios de la app (los que WhatsApp no guarda: tags, chats bloqueados, nombres y notas de contactos, stickers...) se
+manejan como **secciones**: cada una es un mapa `clave -> valor` (valores JSON simples, sin decimales). Código: PC
+`app/backup.py` (motor), `app/backup_sections.py` (secciones propias), `app/awcrypto.py`, `app/sync.py`, `app/secret_store.py`,
+`app/ui/backup_panel.py`; Android `data/Backup.kt`, `BackupSections.kt`, `AwCrypto.kt`, `Sync.kt`, `SecretStore.kt`, `ui/BackupUi.kt`.
+Ninguna toca el gateway: usan `/send`, `/delete`, `/media/download` y `/message-schedule` tal cual.
+
+### Contenedor cifrado (`.awbackup` y documentos de sincronización)
+
+```
+encabezado 34 B: "AWBK" | versión=1 | kdf=1 (PBKDF2-HMAC-SHA256) | iteraciones u32 BE | sal 16 | prefijo de nonce 8
+trozos (1 MiB de texto plano): largo u32 BE del cifrado (con etiqueta de 16 B) | AES-256-GCM
+```
+
+Clave = PBKDF2-HMAC-SHA256(contraseña UTF-8, sal, iteraciones) de 32 bytes (210 000 iteraciones al crear; se aceptan 1 000 a 5 000 000).
+Nonce del trozo `i` = prefijo + `i` (u32 BE). AAD = encabezado + 1 byte (1 si es el último trozo): no se puede cortar ni reordenar.
+Contraseña incorrecta y archivo dañado dan el mismo error (GCM no los distingue). El vector de prueba (iteraciones 1000, sal
+00..0f, nonce 10..17) está en `tests/test_backup.py` y en `android/.../BackupFormatTest.kt`: si uno cambia, fallan los dos.
+
+El contenido descifrado es un zip:
+
+| Entrada | Contenido |
+|---|---|
+| `manifest.json` | `{format:"awbackup", version:1, kind:"backup" o "sync", created_at (ms), device:{id, platform:"pc" o "android", app_version}, sections:{nombre:{count, sync}}, has_db}` |
+| `sections/<nombre>.json` | `{"items": {clave: {"v": valor, "t": ms}` o `{"t": ms, "d": 1}}}` (`d` = borrado/lápida) |
+| `files/<sección>/<resto>` | archivos de la sección (p. ej. `files/stickers/<id>.webp`); los valida `import_file` de cada sección |
+| `db/magsapp.db` | solo en copias: la base SQLite (copia consistente) |
+
+### Resolución de conflictos (último cambio gana, por clave)
+
+No se registra cada edición: en cada lectura (`local_items`) se compara el valor actual de la clave con el último visto (tabla
+`sync_state(section, key, h, t, d)` en la base) y, si cambió, queda con `t = ahora`; una clave que desapareció pasa a lápida
+(se conserva 90 días). Lo que ya existía antes de la primera lectura tiene `t = 1`, así que cualquier cambio real le gana.
+Gana el `t` más grande; en empate, el valor con hash SHA-1 canónico más grande (un valor le gana a un borrado). El JSON canónico
+(`json.dumps(sort_keys, separators=(",",":"), ensure_ascii=False)`) es igual en Python y en Kotlin. Lo que se aplica desde afuera
+guarda el `t` remoto, así no "rebota". Si una clave no se puede aplicar todavía (el chat o el archivo del sticker aún no existen),
+`apply` no la devuelve y se reintenta con el próximo documento.
+
+### Cómo sumar una sección nueva (plantillas, carpetas inteligentes, chats ocultos...)
+
+1. PC: en `app/backup_sections.py` (o en tu módulo) definí `collect() -> {clave: valor}` y `apply({clave: valor o None}) -> {claves aplicadas}`
+   y registrá `register_section(Section("nombre", "Etiqueta", collect, apply, ...))`. Banderas: `sync=False` (solo copias), `secret=True` (solo
+   si el usuario elige incluir claves), `platforms=("pc",)` (no se restaura en la otra app), `files`/`import_file` para archivos,
+   `order` para el orden de aplicación. Claves por jid o por nombre, nunca por ids autoincrementales.
+2. Android: lo mismo en `BackupSections.registerAll()`. Si todavía no está, **no se pierde**: Android guarda las secciones que no
+   conoce (`sync_opaque.json`, p. ej. los `tags` de la PC) y las reenvía, así un backup PC -> Android -> PC conserva todo.
+3. Un test que arme dos estados y los mezcle con `apply_remote` (ver `tests/test_backup.py`).
+
+Secciones actuales: `chat_names`, `chat_notes`, `tags` (solo PC; Android las conserva), `chat_locks` (incluye el hash PBKDF2 de la
+contraseña, no la contraseña), `stickers` (+ archivos), `prefs` (auto_transcribe, status_receipts, notify_groups, use_profile),
+`config` (ajustes propios de cada plataforma, solo copias), `secrets` (claves de IA, solo si se elige), `scheduled_messages` (solo copias).
+
+### Copias
+
+- Crear: `create_backup(path, password, include_secrets, include_db)` -> zip `kind:"backup"` cifrado, escrito a `.tmp` y renombrado. Las claves
+  de API **no** entran salvo `include_secrets`.
+- Restaurar: `restore_backup(path, password, mode)`. `merge` agrega chats/contactos/mensajes/reacciones que faltan (`INSERT OR IGNORE`
+  sobre las columnas en común, así sirve entre PC y Android; `media_path` que no existe acá se vacía y el archivo se baja al abrirlo) y
+  mezcla las secciones por clave; `replace` vacía esas tablas y deja cada sección igual a la copia.
+- Automática: PC `[BACKUP]` de `config.ini` (carpeta, cada N días, últimas N con rotación de `AdvancedWhatsapp-auto-*.awbackup`); la
+  contraseña se guarda con DPAPI (`~/.magsapp/secretos.json`). Android: Descargas/AdvancedWhatsapp/Copias (MediaStore), contraseña con Android Keystore.
+
+### Sincronización PC <-> Android por «Mi número»
+
+Sin servidores propios ni misma red: cada app manda a su chat «Mi número» un documento `awsync-<dispositivo>-<ts>.awsync` (contenedor
+cifrado con la **clave de sincronización**, la misma en ambas) con las secciones `sync=True`. La otra lo reconoce por el nombre en
+el webhook (`sync_received` / `Sync.handleIncoming`), lo baja con `/media/download`, lo mezcla y **no lo guarda como mensaje**
+(`db.is_sync_doc` filtra `save_message` y el historial). Solo cuenta si viene del chat propio y de otro dispositivo (`manifest.device.id`).
+Cada envío borra el anterior (`/delete`): es una foto completa, solo importa la última. Se envía cuando cambió la huella
+(`digest` de secciones+claves+`t`); al recibir, si no había nada local más nuevo, se actualiza la huella para no contestar (sin ping-pong).
+Los `.webp` de stickers viajan solo la primera vez (hasta 20 MB por documento) o con «Sincronizar ahora» (completa).
+
+### Enviar archivos PC -> celular
+
+«Enviar al celular» (Configuración > Copias y sincronización, o menú de la bandeja): arrastrar o elegir archivos; `sync.send_files_to_phone`
+los manda como documentos a «Mi número». En Android, las burbujas de documentos de ese chat llevan el botón «Guardar en Descargas»
+(Descargas/AdvancedWhatsapp).
+
+## Actualizaciones automáticas (GitHub Releases)
+
+Las dos apps buscan versiones nuevas en los releases de `elulikk/advanced-whatsapp` (sin token; configurable con `update_repo`
+en `[GENERAL]` de `config.ini` en PC, y `Prefs.updateRepo` en Android). Si GitHub responde 404 el repo es privado: Ajustes
+muestra que hace falta un repositorio público para los releases.
+
+**Convención: un release por plataforma, con su propio tag** (las versiones de PC y Android son independientes):
+
+| Plataforma | Tag | Asset | Opcional |
+|---|---|---|---|
+| PC | `pc-v<APP_VERSION>` (p. ej. `pc-v1.1.0`) | `AdvancedWhatsapp-Setup-<ver>.exe` (lo genera `build_portable.py --instalador`) | `…exe.sha256` |
+| Android | `android-v<versionName>` (p. ej. `android-v0.5.0`) | `AdvancedWhatsapp-Android-<ver>.apk` (el `arm64-v8a` de release) | `…apk.sha256` |
+
+Como `/releases/latest` devuelve un solo release (el último, de cualquier plataforma), la app consulta `/releases?per_page=30`,
+descarta borradores y pre-releases, filtra por prefijo de tag, y se queda con la mayor versión semver que tenga el asset esperado.
+El cuerpo del release son las notas que se muestran en Ajustes.
+
+**Publicar** (no corre solo; sin `--publicar` es un ensayo):
+
+```powershell
+python tools/build_portable.py --instalador        # dist/AdvancedWhatsapp-Setup-<ver>.exe
+python tools/publicar_release.py pc --publicar     # gh release create pc-v<ver> exe + .sha256, notas del CHANGELOG
+cd android; .\gradlew.bat assembleRelease          # y luego:
+python tools/publicar_release.py android --publicar
+```
+
+Antes hay que subir la versión (`APP_VERSION` / `versionCode` y `versionName`) y tener `gh auth login`.
+
+**PC** (`app/updater.py` lógica pura + `app/ui/update_ui.py`): `UpdateController` busca 20 s después de abrir y cada 12 h en un
+hilo; la casilla «Buscar actualizaciones automáticamente» (`auto_update`, activada) y el botón están en Ajustes > Acerca de, junto
+a las notas. Aparece una barra fina arriba («Hay una versión nueva: 1.1.0 · Ver novedades · Actualizar») y una notificación por
+versión. En la versión empaquetada (`FROZEN`) «Actualizar» baja el Setup a `~/.magsapp/updates/` (verifica tamaño y SHA-256 si
+hay `.sha256`), cierra la app y el gateway y lanza el instalador con `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`; el `[Run]` de
+`instalador.iss` (`skipifnotsilent`) reabre la app al terminar. En desarrollo solo avisa y abre la página del release.
+
+**Android** (`data/Updater.kt`, `ui/UpdateSettings.kt`): `App` busca 30 s después de abrir y cada 12 h mientras viva el proceso
+(el servicio en primer plano lo mantiene) y avisa con una notificación (canal «Actualizaciones»). «Actualizar» baja el APK a
+`cacheDir/updates/` (FileProvider `cache-path`), verifica y abre el instalador del sistema; si falta el permiso «instalar apps
+desconocidas» abre su pantalla. La firma debe ser la misma que la instalada (clave de depuración de la PC de build).
+## Leer imágenes (IA con visión)
+
+Descripción corta + texto (OCR) de fotos **ya descargadas**; nunca se baja una imagen solo para analizarla.
+
+- **Visión**: `AIService.generate_vision_completion(prompt, bytes, mime)` (PC) / `AiService.askImage` (Android) prueban el proveedor
+  activo y siguen con los demás que tengan clave, en el orden Gemini → OpenAI → Claude → Groq; saltan los que no tienen clave y,
+  si el modelo configurado no ve imágenes, usan uno que sí (`gpt-4o-mini`, `gemini-2.5-flash`, `claude-sonnet-5-5`, `llama-4-scout` en Groq).
+- **Lectura**: `app/ai/image_reader.py` (PC) / `ai/ImageReader.kt` (Android) achican la imagen a 1568 px, piden `DESCRIPCION:` /
+  `TEXTO:` (`NINGUNO` = sin texto) y lo parsean (`parse_reading` / `parseReading`, tolera respuestas sin formato).
+- **Base**: columnas `image_desc`, `image_ocr` (y `image_failed` solo en PC), agregadas con `ALTER TABLE` idempotente. Android guarda
+  los ids fallidos en preferencias (`auto_read_failed`). Al eliminar un mensaje para todos se borran.
+- **Búsqueda**: `search_candidates` / `searchMessages` (Buscar con IA), destacados y las líneas de candidatos
+  (`(imagen)`) incluyen `image_desc` e `image_ocr`, igual que `transcript`. `smart_features._msg_text` / `MessageSummary.messageText`
+  devuelven pie + descripción + texto.
+- **Cola**: PC: `media_service` con una cola aparte (`_img_jobs`, 2 hilos como máximo) para que leer no frene las descargas;
+  señal `image_read_ready`. Android: `ImageReader` con 2 hilos y `working` / `errors` como `StateFlow` que lee la burbuja.
+- **Automático** (ajuste «Leer imágenes automáticamente», `auto_read_images` / `Prefs.autoReadImages`, **apagado por defecto**):
+  al terminar la descarga de una foto, al enviar una foto propia y, al conectar, las de los últimos 3 días que ya estén en disco
+  (hasta 15). Una lectura automática que falla no se reintenta sola; queda el botón manual.
+- **UI**: en la burbuja de una foto, enlace «Leer imagen» → bloque plegable «Descripción / Texto» con «Copiar» por parte y «Rehacer»
+  (`advancedwhatsapp://readimg/<id>` y `copyimg/<id>?d|t` en PC; `ui/ImageReadUi.kt` en Android). Los stickers se leen
+  (backend y búsqueda) pero no tienen bloque en la burbuja.
+## Exportar chat
+
+`app/chat_export.py` (PC) y `android/.../data/ChatExport.kt` (Android) hacen lo mismo; la interfaz está en `app/ui/export_dialog.py`
+y `android/.../ui/ExportUi.kt` (entrada: «Exportar chat…» en el menú ⋮ del chat).
+
+- **Lectura por páginas**: `iter_pages` / `Db.exportPage` leen 500 mensajes por vez con paginación por clave `(timestamp, rowid)`
+  (sin `OFFSET`) y el rango de fechas en el `WHERE`; el archivo se escribe a medida que llegan. Memoria constante.
+- **Formatos**: TXT `dd/mm/aa hh:mm - Nombre: texto` (CRLF, líneas siguientes sin prefijo, notas con sangría); HTML en un archivo
+  (imágenes de hasta 1,5 MB incrustadas como `data:`; el resto de la multimedia, en PC, se copia a `<nombre>_archivos/`; Android solo
+  incrusta imágenes); PDF dibujado a mano con `QPdfWriter`+`QPainter` (PC) o `PdfDocument` (Android), pasando de página sobre la marcha.
+- **Opciones** (`ExportOptions` / `ChatExport.Options`): rango, multimedia ya descargada, `download_missing` (único caso en que se
+  baja algo, vía el `downloader` que da la interfaz), transcripciones, resúmenes IA y `include_deleted` (contenido de `revoked_orig`
+  y versiones de `message_edits`; apagado, los eliminados quedan como «Mensaje eliminado»). Los documentos `awsync-*` se omiten.
+- **Chats bloqueados**: la interfaz pide la contraseña (`lock_dialogs.ask_current_password` / `AskPasswordDialog`) siempre, aunque el
+  chat esté abierto en la sesión.
+- **Segundo plano**: PC corre en un hilo con `Signal` de progreso y cancelación (`threading.Event`); Android en `Dispatchers.IO`.
+  Se escribe a `<destino>.part` (PC) o a `cacheDir/exports` (Android) y se renombra/copia al terminar; al cancelar o fallar se borra.
+  Android copia a Descargas/AdvancedWhatsapp (`Downloads.saveCopy`) y comparte con `FileProvider` (`cache-path exports/` en `file_paths.xml`).
+- Tests: `tests/test_chat_export.py` (pytest) y `ChatExportTest.kt` (JUnit, parte pura).

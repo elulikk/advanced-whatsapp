@@ -5,6 +5,8 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import os from 'os';
+import http from 'http';
+import https from 'https';
 import { fileURLToPath } from 'url';
 import makeWASocket, {
     useMultiFileAuthState,
@@ -14,8 +16,10 @@ import makeWASocket, {
     areJidsSameUser,
     makeCacheableSignalKeyStore,
     BufferJSON,
-    generateMessageIDV2
+    generateMessageIDV2,
+    decryptPollVote
 } from '@whiskeysockets/baileys';
+import { createExtras, normalizeRepeat } from './extras.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -520,6 +524,7 @@ function extractMessageDetails(msg) {
 
     let text = '';
     let mediaType = 'text';
+    let pollInfo = null;
 
     if (m.conversation) {
         text = m.conversation;
@@ -557,6 +562,7 @@ function extractMessageDetails(msg) {
         const poll = m.pollCreationMessage || m.pollCreationMessageV2 || m.pollCreationMessageV3;
         mediaType = 'poll';
         text = `📊 Encuesta: ${poll?.name || ''}`;
+        pollInfo = { name: poll?.name || '', options: (poll?.options || []).map(o => o.optionName).filter(Boolean), multi: poll?.selectableOptionsCount !== 1 };
     } else if (m.buttonsResponseMessage) {
         text = m.buttonsResponseMessage.selectedDisplayText || m.buttonsResponseMessage.selectedButtonId || '';
     } else if (m.listResponseMessage) {
@@ -618,7 +624,22 @@ function extractMessageDetails(msg) {
         return null;
     }
 
-    return { text: cleanText, mediaType, innerMessage: m, quotedText, quotedSender };
+    // Vista previa de link que ya trae el mensaje (título, descripción y miniatura)
+    let linkPreview = null;
+    const ext = m.extendedTextMessage;
+    if (ext && (ext.title || ext.description || ext.jpegThumbnail)) {
+        try {
+            linkPreview = {
+                url: ext.canonicalUrl || ext.matchedText || '',
+                title: ext.title || '',
+                description: ext.description || '',
+                image_b64: ext.jpegThumbnail ? Buffer.from(ext.jpegThumbnail).toString('base64') : null,
+                image_mime: 'image/jpeg'
+            };
+        } catch (e) { linkPreview = null; }
+    }
+
+    return { text: cleanText, mediaType, innerMessage: m, quotedText, quotedSender, poll: pollInfo, linkPreview };
 }
 
 // Claves "útiles" de un mensaje descartado, para el log (messageContextInfo siempre viene y no dice nada)
@@ -1066,6 +1087,7 @@ async function initWhatsApp() {
                         media_type: mediaType,
                         media_path: null,
                         media_raw: serializeMediaRaw(m, mediaType),
+                        link_preview: details.linkPreview || undefined,
                         quoted_text: quotedText,
                         quoted_sender: quotedSender,
                         timestamp: Number(m.messageTimestamp || Math.floor(Date.now() / 1000)),
@@ -1326,6 +1348,8 @@ async function initWhatsApp() {
                 }
                 if (!isChatJid(msg.key.remoteJid)) continue;
                 rememberGroupSender(msg);
+                // Voto de una encuesta: se descifra y se avisa a la app con el conteo nuevo (no es un mensaje)
+                if (extras.onPollVote(msg)) continue;
                 console.log(`[Baileys] Recibido (${type}): [${msg.key.remoteJid}] id=${msg.key.id} fromMe=${Boolean(msg.key.fromMe)}`);
 
                 const fromMe = Boolean(msg.key.fromMe);
@@ -1343,6 +1367,7 @@ async function initWhatsApp() {
                     continue;
                 }
                 const { text, mediaType, innerMessage, quotedText, quotedSender } = details;
+                const pollView = details.poll ? extras.trackPoll(msg, details, remoteJid) : null;
 
                 // Extraer correspondencia de teléfono y LID si Baileys la provee
                 // Baileys 7 entrega el identificador alterno (LID <-> teléfono) en remoteJidAlt / participantAlt
@@ -1393,14 +1418,19 @@ async function initWhatsApp() {
                         media_type: mediaType,
                         media_path: mediaPath,
                         media_raw: serializeMediaRaw(msg, mediaType),
+                        link_preview: details.linkPreview || undefined,
                         quoted_text: quotedText,
                         quoted_sender: quotedSender,
+                        poll: pollView,
                         timestamp: Number(msg.messageTimestamp || Math.floor(Date.now() / 1000)),
                         is_group: remoteJid.endsWith('@g.us')
                     };
 
                     // Reintenta y, si la app no responde, queda en la bandeja de salida (no se pierde)
                     await deliverReliably(PYTHON_WEBHOOK_URL, payload);
+                    // Respuestas automáticas (corren acá para que funcionen con la ventana cerrada)
+                    extras.onIncoming({ jid: remoteJid, fromMe, isGroup: isGroupMsg, type, mediaType, timestamp: payload.timestamp,
+                        revoked: payload.revoked, edited: payload.edited, isCall: false });
                 } catch (e) {
                     console.error('[Baileys] Error despachando mensaje entrante:', e);
                 }
@@ -1584,6 +1614,20 @@ function pruneMessageHistory() {
 
 const scheduledDueAt = (m) => Math.max(m.at, m.retry_at || 0);
 
+// Mensaje con repetición: tras salir (o vencer) vuelve a la cola para la próxima fecha, con un id de WhatsApp nuevo
+function advanceRepeat(item) {
+    if (!item.repeat) return false;
+    const next = extras.nextRepeatAt(item.anchor_at || item.at, item.repeat, Math.floor(Date.now() / 1000));
+    if (!next) return false;
+    item.at = next;
+    item.state = 'pending';
+    item.attempts = 0;
+    item.wa_id = null;
+    item.retry_at = null;
+    item.error = null;
+    return true;
+}
+
 function armMessageTimer() {
     clearTimeout(messageTimer);
     messageTimer = null;
@@ -1605,6 +1649,7 @@ function reportScheduledMessage(item) {
 async function runScheduledMessage(item) {
     item.state = 'sending';
     item.attempts = (item.attempts || 0) + 1;
+    let delivered = false;
     // Un id fijo por mensaje: si un reintento repite un envío que sí había salido, WhatsApp no lo muestra dos veces
     item.wa_id = item.wa_id || generateMessageIDV2(sock?.user?.id);
     saveMessageSchedule();
@@ -1612,12 +1657,13 @@ async function runScheduledMessage(item) {
         const body = { ...item.send, to: item.to, text: item.text };
         const result = await sendWhatsApp(body, { messageId: item.wa_id });
         const now = Math.floor(Date.now() / 1000);
+        delivered = true;
         item.state = 'sent';
         item.sent_at = now;
         item.message_id = result?.key?.id || item.wa_id;
         item.error = null;
         item.retry_at = null;
-        item.send = null;   // miniatura y onda ya no hacen falta
+        if (!advanceRepeat(item)) item.send = null;   // miniatura y onda ya no hacen falta (una repetición los conserva)
         console.log(`[Programados] ✅ Enviado ${item.id} (${item.type}) a ${item.to}`);
         // El gateway descarta el eco de lo que envía: la app se entera por acá
         deliverReliably(PYTHON_WEBHOOK_URL, {
@@ -1643,10 +1689,16 @@ async function runScheduledMessage(item) {
         if (connectionStatus !== 'connected') item.attempts -= 1;
         item.state = e.httpStatus === 404 || item.attempts >= SCHEDULE_MAX_ATTEMPTS ? 'failed' : 'pending';
         console.error(`[Programados] ❌ Falló ${item.id} (intento ${item.attempts}):`, item.error);
+        // Una repetición que falló se avisa y sigue con la próxima fecha
+        if (item.state === 'failed' && item.repeat) {
+            reportScheduledMessage(item);
+            advanceRepeat(item);
+        }
     }
     pruneMessageHistory();
     saveMessageSchedule();
     if (item.state !== 'pending') reportScheduledMessage(item);
+    else if (item.repeat && delivered) reportScheduledMessage({ ...item, state: 'sent', at: item.sent_at });
 }
 
 // De a uno y en orden. La cola se vuelve a mirar tras cada envío: lo programado o cancelado durante una subida larga cuenta.
@@ -1663,6 +1715,10 @@ async function processMessageSchedule() {
             }
             if (!item) break;
             if (now - item.at > SCHEDULE_LATE_GRACE && !item.attempts) {
+                if (advanceRepeat(item)) {   // una repetición vencida se salta y espera la próxima
+                    saveMessageSchedule();
+                    continue;
+                }
                 item.state = 'expired';
                 item.error = 'El equipo estaba apagado o sin conexión a la hora programada';
                 pruneMessageHistory();
@@ -2165,7 +2221,9 @@ app.post('/message-schedule', async (req, res) => {
             at: Math.floor(Number(body.at)),
             created_at: now,
             state: 'pending',
-            attempts: 0
+            attempts: 0,
+            repeat: normalizeRepeat(body.repeat),
+            anchor_at: Math.floor(Number(body.at))   // fecha de inicio: las repeticiones mensuales/anuales no se corren de día
         };
         scheduledMessages.push(item);
         saveMessageSchedule();
@@ -2179,7 +2237,7 @@ app.post('/message-schedule', async (req, res) => {
 
 // Cambia la fecha/hora o el texto de un mensaje que no salió ("at" = ahora lo envía ya)
 app.post('/message-schedule/update', (req, res) => {
-    const { id, at, text } = req.body || {};
+    const { id, at, text, repeat } = req.body || {};
     const item = scheduledMessages.find(m => m.id === id);
     if (!item) return res.status(404).json({ error: 'No existe ese mensaje programado' });
     if (!['pending', 'failed', 'expired', 'canceled'].includes(item.state)) {
@@ -2190,6 +2248,8 @@ app.post('/message-schedule/update', (req, res) => {
         item.text = text.trim();
     }
     if (Number(at) > 0) item.at = Math.floor(Number(at));
+    if (repeat !== undefined) item.repeat = normalizeRepeat(repeat);
+    if (Number(at) > 0 || repeat !== undefined) item.anchor_at = item.at;
     item.state = 'pending';
     item.attempts = 0;
     item.retry_at = null;
@@ -2299,10 +2359,229 @@ app.post('/fetch-avatar', async (req, res) => {
     res.json({ success: true, avatar_path: p });
 });
 
+// ── Normalizador de OGG/Opus para notas de voz ──
+// WhatsApp reproduce la nota solo si el OGG está bien formado: BOS/EOS, granule position coherente con la
+// duración real y CRC válidos. El MediaRecorder de Android (OutputFormat.OGG) deja páginas con granule
+// incorrecto/ausente y sin marca de fin, y el receptor muestra "audio no disponible". Acá se rearma el
+// contenedor página por página (sin tocar los paquetes Opus) y se calcula la duración exacta. Si el archivo
+// no es OGG/Opus o algo no cuadra, se devuelve tal cual para no empeorar nada.
+const OGG_CRC_TABLE = (() => {
+    const t = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) {
+        let r = i << 24;
+        for (let j = 0; j < 8; j++) r = (r & 0x80000000) ? ((r << 1) ^ 0x04c11db7) : (r << 1);
+        t[i] = r >>> 0;
+    }
+    return t;
+})();
+
+function oggCrc(buf) {
+    let crc = 0;
+    for (let i = 0; i < buf.length; i++) crc = ((crc << 8) ^ OGG_CRC_TABLE[((crc >>> 24) ^ buf[i]) & 0xff]) >>> 0;
+    return crc >>> 0;
+}
+
+// Muestras a 48 kHz que dura un paquete Opus (según su byte TOC)
+function opusPacketSamples(pkt) {
+    if (!pkt.length) return 0;
+    const toc = pkt[0], config = toc >> 3;
+    let ms;
+    if (config < 12) ms = [10, 20, 40, 60][config % 4];
+    else if (config < 16) ms = [10, 20][config % 2];
+    else ms = [2.5, 5, 10, 20][config % 4];
+    const code = toc & 3;
+    let frames = 1;
+    if (code === 1 || code === 2) frames = 2;
+    else if (code === 3) frames = pkt.length > 1 ? (pkt[1] & 0x3f) : 0;
+    return Math.round(ms * 48 * frames);
+}
+
+function oggReadPackets(buf) {
+    const packets = [];
+    let cur = [], pos = 0, serial = null;
+    while (pos + 27 <= buf.length) {
+        if (buf.toString('latin1', pos, pos + 4) !== 'OggS') throw new Error('página OGG inválida');
+        const nseg = buf[pos + 26];
+        if (pos + 27 + nseg > buf.length) break;           // página truncada: se descarta
+        let dataLen = 0;
+        for (let i = 0; i < nseg; i++) dataLen += buf[pos + 27 + i];
+        if (pos + 27 + nseg + dataLen > buf.length) break;  // idem
+        if (serial === null) serial = buf.readUInt32LE(pos + 14);
+        let off = pos + 27 + nseg;
+        for (let i = 0; i < nseg; i++) {
+            const len = buf[pos + 27 + i];
+            cur.push(buf.subarray(off, off + len));
+            off += len;
+            if (len < 255) { packets.push(Buffer.concat(cur)); cur = []; }
+        }
+        pos = off;
+    }
+    return { packets, serial: serial === null ? 0x41575041 : serial };
+}
+
+function oggBuildPage(packets, headerType, granule, serial, seq) {
+    const segs = [];
+    for (const p of packets) {
+        let n = p.length;
+        while (n >= 255) { segs.push(255); n -= 255; }
+        segs.push(n);
+    }
+    const header = Buffer.alloc(27 + segs.length);
+    header.write('OggS', 0, 'latin1');
+    header[5] = headerType;
+    header.writeBigUInt64LE(BigInt(granule), 6);
+    header.writeUInt32LE(serial >>> 0, 14);
+    header.writeUInt32LE(seq, 18);
+    header[26] = segs.length;
+    for (let i = 0; i < segs.length; i++) header[27 + i] = segs[i];
+    const page = Buffer.concat([header, ...packets]);
+    page.writeUInt32LE(oggCrc(page), 22);
+    return page;
+}
+
+// Devuelve { buffer, seconds } con el OGG/Opus reempaquetado, o null si no es un OGG/Opus utilizable
+function normalizeOggOpus(buf) {
+    try {
+        if (!Buffer.isBuffer(buf) || buf.length < 64 || buf.toString('latin1', 0, 4) !== 'OggS') return null;
+        const { packets, serial } = oggReadPackets(buf);
+        if (packets.length < 3 || packets[0].toString('latin1', 0, 8) !== 'OpusHead'
+            || packets[1].toString('latin1', 0, 8) !== 'OpusTags') return null;
+        const preSkip = packets[0].length >= 12 ? packets[0].readUInt16LE(10) : 312;
+        const audio = packets.slice(2).filter(p => p.length > 0);
+        const out = [oggBuildPage([packets[0]], 0x02, 0, serial, 0), oggBuildPage([packets[1]], 0x00, 0, serial, 1)];
+        let seq = 2, granule = 0, i = 0;
+        while (i < audio.length) {
+            const group = [];
+            let size = 0;
+            while (i < audio.length && group.length < 50 && size < 3500) {
+                group.push(audio[i]); size += audio[i].length; granule += opusPacketSamples(audio[i]); i++;
+            }
+            out.push(oggBuildPage(group, i >= audio.length ? 0x04 : 0x00, granule, serial, seq++));
+        }
+        if (!audio.length || granule <= preSkip) return null;
+        return { buffer: Buffer.concat(out), seconds: (granule - preSkip) / 48000 };
+    } catch (e) {
+        return null;
+    }
+}
+
+// ── Vista previa de links ───────────────────────────────────────────────────
+// Se baja el HTML (tope de tamaño y de tiempo), se leen los metadatos og:/twitter: y la imagen. Caché en memoria con
+// vencimiento; los clientes guardan además la suya. Sin dependencias: solo http/https.
+const LINK_PREVIEW_TTL_MS = 6 * 3600 * 1000;
+const LINK_PREVIEW_MAX = 300;
+const linkPreviewCache = new Map();   // url -> { t, data }
+const linkPreviewInflight = new Map();   // url -> Promise
+const LINK_URL_RE = /https?:\/\/[^\s<>"']+/i;
+
+function isPrivateHost(host) {
+    const h = String(host || '').toLowerCase();
+    return h === 'localhost' || h.endsWith('.local') || h.endsWith('.internal') || h === '[::1]' ||
+        /^(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|0\.)/.test(h);
+}
+
+function httpGetLimited(urlStr, { maxBytes, timeoutMs, redirects = 4 }) {
+    return new Promise((resolve, reject) => {
+        let u;
+        try { u = new URL(urlStr); } catch (e) { return reject(new Error('URL inválida')); }
+        if (!/^https?:$/.test(u.protocol) || isPrivateHost(u.hostname)) return reject(new Error('URL no permitida'));
+        const lib = u.protocol === 'https:' ? https : http;
+        const req = lib.get(u, {
+            timeout: timeoutMs,
+            headers: { 'User-Agent': 'Mozilla/5.0 (compatible; WhatsApp/2.23; +https://www.whatsapp.com)', 'Accept': 'text/html,image/*;q=0.8,*/*;q=0.5', 'Accept-Language': 'es,en;q=0.7' }
+        }, (res) => {
+            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                res.resume();
+                if (redirects <= 0) return reject(new Error('Demasiadas redirecciones'));
+                let next;
+                try { next = new URL(res.headers.location, u).toString(); } catch (e) { return reject(e); }
+                return httpGetLimited(next, { maxBytes, timeoutMs, redirects: redirects - 1 }).then(resolve, reject);
+            }
+            if (res.statusCode !== 200) { res.resume(); return reject(new Error('HTTP ' + res.statusCode)); }
+            const chunks = [];
+            let size = 0;
+            res.on('data', (c) => {
+                size += c.length;
+                chunks.push(c);
+                if (size >= maxBytes) { res.destroy(); resolve({ buffer: Buffer.concat(chunks).subarray(0, maxBytes), contentType: res.headers['content-type'] || '', finalUrl: u.toString(), truncated: true }); }
+            });
+            res.on('end', () => resolve({ buffer: Buffer.concat(chunks), contentType: res.headers['content-type'] || '', finalUrl: u.toString(), truncated: false }));
+            res.on('error', reject);
+        });
+        req.on('timeout', () => req.destroy(new Error('Tiempo agotado')));
+        req.on('error', reject);
+    });
+}
+
+function decodeHtmlEntities(s) {
+    return String(s || '')
+        .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+        .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
+        .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+        .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
+}
+
+function parseHtmlMeta(html) {
+    const metas = {};
+    for (const tag of html.match(/<meta\s[^>]*>/gi) || []) {
+        const key = /(?:property|name)\s*=\s*["']([^"']+)["']/i.exec(tag)?.[1];
+        const val = /content\s*=\s*"([^"]*)"/i.exec(tag)?.[1] ?? /content\s*=\s*'([^']*)'/i.exec(tag)?.[1];
+        if (key && val != null && !(key.toLowerCase() in metas)) metas[key.toLowerCase()] = decodeHtmlEntities(val);
+    }
+    const titleTag = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1];
+    return {
+        title: metas['og:title'] || metas['twitter:title'] || decodeHtmlEntities(titleTag) || '',
+        description: metas['og:description'] || metas['twitter:description'] || metas['description'] || '',
+        image: metas['og:image'] || metas['og:image:url'] || metas['twitter:image'] || metas['twitter:image:src'] || ''
+    };
+}
+
+async function buildLinkPreview(url) {
+    const page = await httpGetLimited(url, { maxBytes: 300 * 1024, timeoutMs: 4000 });
+    if (!/html|xml/i.test(page.contentType)) throw new Error('No es una página');
+    const charset = /charset=([\w-]+)/i.exec(page.contentType)?.[1] || /<meta[^>]+charset=["']?([\w-]+)/i.exec(page.buffer.subarray(0, 4096).toString('latin1'))?.[1] || 'utf-8';
+    let html;
+    try { html = new TextDecoder(charset).decode(page.buffer); } catch (e) { html = page.buffer.toString('utf8'); }
+    const meta = parseHtmlMeta(html);
+    const data = { url: page.finalUrl, title: meta.title.slice(0, 200), description: meta.description.slice(0, 300), image_b64: null, image_mime: null };
+    if (meta.image) {
+        try {
+            const img = await httpGetLimited(new URL(meta.image, page.finalUrl).toString(), { maxBytes: 400 * 1024, timeoutMs: 3000 });
+            if (/^image\/(jpeg|png|webp|gif)/i.test(img.contentType) && !img.truncated) {
+                data.image_b64 = img.buffer.toString('base64');
+                data.image_mime = img.contentType.split(';')[0].trim().toLowerCase();
+            }
+        } catch (e) { /* sin imagen: el preview sigue valiendo */ }
+    }
+    return data;
+}
+
+// Devuelve el preview (de caché o recién bajado) o null. Nunca lanza.
+function getLinkPreview(url) {
+    const hit = linkPreviewCache.get(url);
+    if (hit && Date.now() - hit.t < LINK_PREVIEW_TTL_MS) return Promise.resolve(hit.data);
+    if (linkPreviewInflight.has(url)) return linkPreviewInflight.get(url);
+    const job = buildLinkPreview(url).catch(() => null).then((data) => {
+        linkPreviewInflight.delete(url);
+        linkPreviewCache.set(url, { t: Date.now() - (data ? 0 : LINK_PREVIEW_TTL_MS - 120000), data });   // un fallo se reintenta en 2 min
+        while (linkPreviewCache.size > LINK_PREVIEW_MAX) linkPreviewCache.delete(linkPreviewCache.keys().next().value);
+        return data;
+    });
+    linkPreviewInflight.set(url, job);
+    return job;
+}
+
+app.get('/link-preview', async (req, res) => {
+    const url = String(req.query.url || '');
+    if (!/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Falta url http(s)' });
+    const data = await getLinkPreview(url);
+    res.json({ success: Boolean(data && (data.title || data.description || data.image_b64)), preview: data });
+});
+
 // Envía un mensaje con el cuerpo de POST /send. Si algo falla lanza un error con httpStatus (404 = falta el archivo).
 async function sendWhatsApp(body, extraOpts = {}) {
     const { to, text, image_path, image_thumb, image_url, document_path, document_name, mimetype,
-            video_path, audio_path, audio_seconds, audio_waveform, sticker_path, quoted } = body;
+            video_path, audio_path, audio_seconds, audio_waveform, sticker_path, quoted, external } = body;
     const msgText = (text || '').trim();
     const fail = (httpStatus, message) => Object.assign(new Error(message), { httpStatus });
 
@@ -2350,26 +2629,55 @@ async function sendWhatsApp(body, extraOpts = {}) {
         const buffer = mediaFile(video_path, 'Video no encontrado');
         result = await sock.sendMessage(jid, { video: buffer, caption: msgText || undefined }, sendOpts);
     } else if (audio_path) {
-        const buffer = mediaFile(audio_path, 'Audio no encontrado');
+        let buffer = mediaFile(audio_path, 'Audio no encontrado');
+        // Se reempaqueta el OGG/Opus (granule, fin de stream y CRC correctos) y de ahí sale la duración exacta
+        const ogg = normalizeOggOpus(buffer);
+        if (ogg) buffer = ogg.buffer;
+        else logger.warn?.(`Audio ${path.basename(audio_path)} no es un OGG/Opus válido: se envía sin tocar`);
         const audioMsg = { audio: buffer, mimetype: 'audio/ogg; codecs=opus', ptt: true };
         // Notas grabadas en la app: llegan con su duración y su onda (si no, Baileys calcula solo la duración)
-        if (Number(audio_seconds) > 0) audioMsg.seconds = Math.max(1, Math.round(Number(audio_seconds)));
+        const secs = ogg ? ogg.seconds : Number(audio_seconds);
+        if (secs > 0) audioMsg.seconds = Math.max(1, Math.round(secs));
         if (Array.isArray(audio_waveform) && audio_waveform.length) {
             audioMsg.waveform = new Uint8Array(audio_waveform.map(v => Math.max(0, Math.min(100, Number(v) | 0))));
         }
         result = await sock.sendMessage(jid, audioMsg, sendOpts);
     } else if (sticker_path) {
-        result = await sock.sendMessage(jid, { sticker: mediaFile(sticker_path, 'Sticker no encontrado') }, sendOpts);
+        result = await sock.sendMessage(jid, {
+            sticker: mediaFile(sticker_path, 'Sticker no encontrado'),
+            // webp 512x512; si es animado la app lo avisa (no hay sharp/jimp para detectarlo acá)
+            ...(body.sticker_animated ? { isAnimated: true } : {})
+        }, sendOpts);
     } else if (image_url) {
         result = await sock.sendMessage(jid, {
             image: { url: image_url },
             caption: msgText || undefined
         }, sendOpts);
     } else {
-        result = await sock.sendMessage(jid, { text: msgText }, sendOpts);
+        const content = { text: msgText };
+        // Texto con un link: se manda con su vista previa (si el sitio no responde rápido, sale sin ella)
+        const linkMatch = body.link_preview === false ? null : LINK_URL_RE.exec(msgText);
+        if (linkMatch) {
+            const matched = linkMatch[0].replace(/[.,;:!?)]+$/, '');
+            const lp = await Promise.race([getLinkPreview(matched), new Promise(r => setTimeout(() => r(null), 3000))]);
+            if (lp && (lp.title || lp.description)) {
+                content.linkPreview = {
+                    'canonical-url': lp.url || matched,
+                    'matched-text': matched,
+                    title: lp.title,
+                    description: lp.description,
+                    // WhatsApp espera una miniatura JPEG chica; sin sharp/jimp solo se manda si ya viene así
+                    ...(lp.image_b64 && lp.image_mime === 'image/jpeg' && lp.image_b64.length < 60000
+                        ? { jpegThumbnail: Buffer.from(lp.image_b64, 'base64') } : {})
+                };
+            }
+        }
+        result = await sock.sendMessage(jid, content, sendOpts);
     }
 
-    if (result?.key?.id) {
+    // external: lo manda otro programa (tools/enviar.py), no la ventana. No se marca como propio del bot para que
+    // messages.upsert lo entregue a la app como cualquier mensaje enviado desde el celular y aparezca en el chat.
+    if (result?.key?.id && !external) {
         sentBotMessageIds.add(result.key.id);
         if (sentBotMessageIds.size > 2000) {
             const first = sentBotMessageIds.values().next().value;
@@ -2560,6 +2868,13 @@ if (PARENT_PID > 0) {
         }
     }, 10000);
 }
+
+// Respuestas automáticas, encuestas, envío a varios y repetición de programados (gateway/extras.js)
+const extras = createExtras({
+    app, dataDir: USER_DATA_DIR, getSock: () => sock, isConnected: () => connectionStatus === 'connected' && Boolean(sock),
+    sendWhatsApp, deliverReliably, postEvent, webhookUrl: PYTHON_WEBHOOK_URL, decryptPollVote, log: console.log,
+    markSent: (id) => { sentBotMessageIds.add(id); }
+});
 
 // Iniciar servidor Express
 const server = app.listen(PORT, '127.0.0.1', () => {

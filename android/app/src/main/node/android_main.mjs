@@ -2,6 +2,22 @@
 // acá se completan las funciones que faltan ANTES de cargar Baileys (por eso el import dinámico).
 import { webcrypto } from 'crypto';
 import { Blob, isUtf8 } from 'buffer';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { syncBuiltinESMExports } from 'module';
+
+// En Android Node no lee TMPDIR (el proceso viene marcado como "seguro") y os.tmpdir() da /tmp, que no existe:
+// Baileys escribe ahí la multimedia cifrada al enviar fotos. Se fuerza una carpeta propia antes de cargarlo.
+{
+    const tmp = process.env.TMPDIR || path.join(process.env.ADVANCEDWHATSAPP_DATA_DIR || os.homedir(), 'tmp');
+    // Android puede vaciar la caché con la app abierta: se vuelve a crear si falta
+    os.tmpdir = () => {
+        if (!fs.existsSync(tmp)) { try { fs.mkdirSync(tmp, { recursive: true }); } catch {} }
+        return tmp;
+    };
+    syncBuiltinESMExports();   // que `import { tmpdir } from 'os'` también vea el cambio
+}
 
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 

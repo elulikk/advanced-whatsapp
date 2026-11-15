@@ -25,6 +25,7 @@ _PATHS = {
     "attach": '<path d="M21 11l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9"/>',
     "send": '<path d="M21 3L10.5 13.5"/><path d="M21 3l-6.5 18-4-7.5-7.5-4z"/>',
     "close": '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
+    "translate": '<path d="M3.5 5.5h10M8.5 3.5v2M5.5 5.5c.6 3.4 3 6 6 7.5M11.5 5.5c-.6 3.4-3.2 6.2-7.5 8"/><path d="M12.5 20.5l4.2-10 4.2 10M14.1 17h5.2"/>',
     "sparkle": '<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15.5l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/>',
     "info": '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5"/><circle cx="12" cy="7.8" r="1" fill="currentColor" stroke="none"/>',
     "user": '<circle cx="12" cy="8" r="4"/><path d="M4.5 20.5c0-3.9 3.4-6.3 7.5-6.3s7.5 2.4 7.5 6.3"/>',
@@ -40,6 +41,7 @@ _PATHS = {
     "folder": '<path d="M3.5 6.5a1.5 1.5 0 0 1 1.5-1.5h4.5l2 2.5H19a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 18z"/>',
     "eye": '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>',
     "mic": '<rect x="9" y="2.5" width="6" height="11.5" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0"/><path d="M12 17.5V21M8.5 21h7"/>',
+    "dictate": '<rect x="14" y="3" width="5.5" height="9.5" rx="2.75"/><path d="M11.5 10.5a5.25 5.25 0 0 0 10.5 0"/><path d="M16.75 15.8V19"/><path d="M3 6h6.5M3 11h4.5M3 16h6.5"/>',
     "pause": '<path d="M8.5 5v14M15.5 5v14"/>',
     "play": '<path d="M7.5 4.5v15l12-7.5z"/>',
     "reply": '<path d="M9.5 6.5L4 12l5.5 5.5"/><path d="M4 12h9.5a6.5 6.5 0 0 1 6.5 6.5v1"/>',
@@ -63,6 +65,7 @@ _PATHS = {
     "bell_off": '<path d="M8.6 5.9A6 6 0 0 1 18 11v4"/><path d="M6 11v5.5l-1.5 2H17"/><path d="M10 20.5a2.2 2.2 0 0 0 4 0"/><path d="M3.5 3.5l17 17"/>',
     "wifi_off": '<path d="M3.5 3.5l17 17"/><path d="M8.5 16a5 5 0 0 1 7 0"/><path d="M5 12.5a10 10 0 0 1 4.2-2.4M14.8 10.1A10 10 0 0 1 19 12.5"/><path d="M2 9a14.5 14.5 0 0 1 4.3-2.6M11 5.6a14.5 14.5 0 0 1 11 3.4"/><circle cx="12" cy="19.5" r="1" fill="currentColor" stroke="none"/>',
     "clock": '<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5.2l3.4 2"/>',
+    "star": '<path d="M12 3.5l2.6 5.4 5.9.8-4.3 4.1 1 5.9L12 16.9l-5.2 2.8 1-5.9-4.3-4.1 5.9-.8z"/>',
     "prev": '<path d="M15 5l-7 7 7 7"/>',
     "next": '<path d="M9 5l7 7-7 7"/>',
 }
@@ -100,6 +103,21 @@ def _screen_ratio() -> float:
 
 
 @lru_cache(maxsize=512)
+@lru_cache(maxsize=8)
+def flame_pixmap(size: int = 32) -> QPixmap:
+    """Logo de la llama de la app (assets/advancedwhatsapp.png) a tamaño lógico, nítido en pantallas HiDPI."""
+    import os
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                        "assets", "advancedwhatsapp.png")
+    ratio = _screen_ratio()
+    pm = QPixmap(path)
+    if pm.isNull():
+        return QPixmap()
+    pm = pm.scaled(int(size * ratio), int(size * ratio), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    pm.setDevicePixelRatio(ratio)
+    return pm
+
+
 def pixmap(name: str, color: str = None, size: int = 18, stroke: float = None, ratio: float = None) -> QPixmap:
     """Pixmap del icono a `size` px lógicos y a la escala de pantalla (o `ratio`)."""
     color = color or C["text_2"]

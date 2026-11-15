@@ -17,7 +17,9 @@ app/
   notifications.py / windows_integration.py   Toasts, bandeja, advancedwhatsapp://, instancia única, inicio con Windows
   tags.py          Tags visuales de chats (tablas tags / chat_tags)
   ai/              ai_service (Gemini/Groq/OpenAI/Claude con fallback), message_summary, psych_analysis,
-                   reply_polisher, transcription (Whisper)
+                   reply_polisher, transcription (Whisper), smart_features (lo que te perdiste, respuestas rápidas,
+                   búsqueda por significado, fechas detectadas, traducción, «sin responder»; widgets en ui/ai_extras.py)
+  reminders.py     Recordatorios locales (recordatorios.json + aviso por notificación)
   ui/              Widgets Qt: main_window, chat_list, chat_view, status_view, scheduled_messages, settings_view, theme...
 gateway/           server.js (Express + Baileys) y package.json. node_modules NO se versiona
 android/           App Kotlin/Compose con Node embebido (ver android/README.md); usa gateway/server.js tal cual
@@ -40,6 +42,9 @@ node --check gateway/server.js     # chequeo de sintaxis del gateway
   (`npm install --omit=dev` solo si cambió `package.json`). **Editar `gateway/server.js` y reabrir la app basta**: la huella
   (`gateway_build_id`) cambia y reemplaza el gateway viejo.
 - Copia de prueba junto a la real: `ADVANCEDWHATSAPP_WEBHOOK_PORT=5115` y `ADVANCEDWHATSAPP_GATEWAY_PORT=5116` (más otro `USERPROFILE`).
+- **Mandar algo por WhatsApp desde la terminal / otra sesión de Claude** (sin computer use, con la app abierta):
+  `python tools/enviar.py ARCHIVO [--a yo|NUMERO] [--texto "..."]`. Por defecto va a uno mismo; usa `POST /send`
+  del gateway con el token de `~/.magsapp/gateway.token`.
 - Logs: `~/.magsapp/app.log` (Python), `gateway.log` (Node), `gateway_stderr.log`, `npm_install.log`.
 
 ## Tests

@@ -97,7 +97,8 @@ def stage_gateway():
     dest = os.path.join(STAGING, "gateway")
     os.makedirs(dest, exist_ok=True)
     pkg = [os.path.join(ROOT, "gateway", n) for n in ("package.json", "package-lock.json")]
-    shutil.copy2(os.path.join(ROOT, "gateway", "server.js"), dest)
+    for name in ("server.js", "extras.js"):
+        shutil.copy2(os.path.join(ROOT, "gateway", name), dest)
     stamp = os.path.join(dest, ".deps.sha1")
     deps_hash = _file_hash(*pkg)
     try:

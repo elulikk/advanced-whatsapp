@@ -1,6 +1,7 @@
 package com.advancedwhatsapp.app.ui
 
 import android.graphics.BitmapFactory
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.SystemClock
 import android.util.Base64
@@ -27,6 +28,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material3.CircularProgressIndicator
@@ -46,6 +49,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -64,6 +68,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import coil.compose.AsyncImage
 import com.advancedwhatsapp.app.AppState
+import com.advancedwhatsapp.app.data.Db
 import com.advancedwhatsapp.app.data.StatusContact
 import com.advancedwhatsapp.app.data.StatusItem
 import com.advancedwhatsapp.app.data.Statuses
@@ -83,7 +88,7 @@ private data class ViewerStart(val contacts: List<StatusContact>, val index: Int
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun StatusListScreen(onBack: () -> Unit) {
+fun StatusListScreen(onBack: () -> Unit, onOpenChat: (String) -> Unit = {}) {
     var contacts by remember { mutableStateOf<List<StatusContact>?>(null) }
     var viewer by remember { mutableStateOf<ViewerStart?>(null) }
     val owner = LocalLifecycleOwner.current
@@ -99,7 +104,11 @@ fun StatusListScreen(onBack: () -> Unit) {
     }
 
     viewer?.let { start ->
-        StatusViewer(start.contacts, start.index, onClose = {
+        StatusViewer(start.contacts, start.index, onOpenChat = { jid ->
+            viewer = null
+            AppState.statusChanged()
+            onOpenChat(jid)
+        }, onClose = {
             viewer = null
             AppState.statusChanged()
         })
@@ -166,10 +175,11 @@ private fun statusTime(ts: Long): String {
 }
 
 @Composable
-private fun StatusViewer(contacts: List<StatusContact>, startContact: Int, onClose: () -> Unit) {
+private fun StatusViewer(contacts: List<StatusContact>, startContact: Int, onOpenChat: (String) -> Unit, onClose: () -> Unit) {
     var contactIndex by remember { mutableIntStateOf(startContact) }
     var itemIndex by remember { mutableIntStateOf(Statuses.startIndex(contacts[startContact])) }
     var held by remember { mutableStateOf(false) }
+    var muted by remember { mutableStateOf(true) }   // videos y audios arrancan en silencio
     var fraction by remember { mutableFloatStateOf(0f) }
     val marked = remember { mutableSetOf<String>() }
     val lifecycleState by LocalLifecycleOwner.current.lifecycle.currentStateFlow.collectAsState()
@@ -202,7 +212,7 @@ private fun StatusViewer(contacts: List<StatusContact>, startContact: Int, onClo
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         key(item.id) {
             StatusPage(
-                item = item, paused = paused, onProgress = { fraction = it }, onFinished = { next() },
+                item = item, paused = paused, muted = muted, onProgress = { fraction = it }, onFinished = { next() },
                 onShown = {
                     if (!item.seen && marked.add(item.id)) thread { runCatching { Statuses.markSeen(item.id) } }
                 },
@@ -224,10 +234,27 @@ private fun StatusViewer(contacts: List<StatusContact>, startContact: Int, onClo
         Column(Modifier.fillMaxWidth().background(Color(0x66000000)).padding(8.dp)) {
             ProgressBars(contact.items.size, itemIndex, fraction)
             Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Avatar(contact.name, contact.avatarPath, 38.dp)
-                Column(Modifier.padding(start = 10.dp).weight(1f)) {
-                    Text(contact.name, color = Color.White, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(statusTime(item.timestamp), color = Color(0xCCFFFFFF), fontSize = 12.sp)
+                // Tocar el avatar o el nombre abre el chat con quien subió el estado (se crea si no existía)
+                Row(
+                    Modifier.weight(1f).clickable {
+                        Db.openChat(contact.jid, contact.name, contact.jid.substringBefore('@').takeIf { contact.jid.endsWith("@s.whatsapp.net") })
+                        onOpenChat(contact.jid)
+                    },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Avatar(contact.name, contact.avatarPath, 38.dp)
+                    Column(Modifier.padding(start = 10.dp).weight(1f)) {
+                        Text(contact.name, color = Color.White, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(statusTime(item.timestamp), color = Color(0xCCFFFFFF), fontSize = 12.sp)
+                    }
+                }
+                if (item.type == "video" || item.type == "audio") {
+                    IconButton(onClick = { muted = !muted }) {
+                        Icon(
+                            if (muted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                            if (muted) "Activar sonido" else "Silenciar", tint = Color.White,
+                        )
+                    }
                 }
                 IconButton(onClick = onClose) { Icon(Icons.Default.Close, "Cerrar", tint = Color.White) }
             }
@@ -253,7 +280,7 @@ private fun ProgressBars(count: Int, current: Int, fraction: Float) {
 
 /** Un estado en pantalla: baja el archivo, lo muestra, y avisa cuándo se vio y cuándo terminó. */
 @Composable
-private fun StatusPage(item: StatusItem, paused: Boolean, onProgress: (Float) -> Unit, onShown: () -> Unit, onFinished: () -> Unit) {
+private fun StatusPage(item: StatusItem, paused: Boolean, muted: Boolean, onProgress: (Float) -> Unit, onShown: () -> Unit, onFinished: () -> Unit) {
     val usesPlayer = item.type == "video" || item.type == "audio"
     val isText = item.type == "text"
     var path by remember { mutableStateOf<String?>(null) }
@@ -321,7 +348,7 @@ private fun StatusPage(item: StatusItem, paused: Boolean, onProgress: (Float) ->
             )
             else -> {
                 StatusPlayer(
-                    path = file, paused = paused,
+                    path = file, paused = paused, muted = muted,
                     onPrepared = { ms ->
                         if (ms > 0) durationMs = ms
                         playerReady = true
@@ -357,13 +384,18 @@ private fun Thumbnail(base64: String?) {
 
 /** Video o audio. VideoView sirve para los dos y no suma otra librería a un APK que ya pesa mucho. */
 @Composable
-private fun StatusPlayer(path: String, paused: Boolean, onPrepared: (Long) -> Unit, onCompletion: () -> Unit, onError: () -> Unit) {
+private fun StatusPlayer(path: String, paused: Boolean, muted: Boolean, onPrepared: (Long) -> Unit, onCompletion: () -> Unit, onError: () -> Unit) {
     var ratio by remember { mutableStateOf<Float?>(null) }
+    var player by remember { mutableStateOf<MediaPlayer?>(null) }
+    val mutedNow by rememberUpdatedState(muted)
+    LaunchedEffect(muted, player) { player?.runCatching { setVolume(if (muted) 0f else 1f, if (muted) 0f else 1f) } }
     AndroidView(
         modifier = ratio?.let { Modifier.aspectRatio(it) } ?: Modifier.fillMaxSize(),
         factory = { c ->
             VideoView(c).apply {
                 setOnPreparedListener { mp ->
+                    player = mp
+                    if (mutedNow) mp.setVolume(0f, 0f)
                     if (mp.videoWidth > 0 && mp.videoHeight > 0) ratio = mp.videoWidth.toFloat() / mp.videoHeight
                     onPrepared(mp.duration.toLong())
                 }

@@ -53,7 +53,8 @@ object Photos {
         return sample
     }
 
-    private fun decode(file: File, maxSide: Int): Bitmap? {
+    /** Imagen decodificada y achicada a [maxSide] como máximo (la usan las miniaturas y Leer imágenes). */
+    fun decode(file: File, maxSide: Int): Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(file.path, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null

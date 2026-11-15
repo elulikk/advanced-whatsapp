@@ -1,17 +1,21 @@
 import sys
 import threading
+import time
 from urllib.parse import urlparse, parse_qs
 
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QSplitter, QStackedWidget, QApplication,
+    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter, QStackedWidget, QApplication,
     QSystemTrayIcon, QMenu, QMessageBox
 )
 from PySide6.QtCore import Qt, QTimer, QEvent, QSettings, QRectF, Signal
 from PySide6.QtGui import QShortcut, QKeySequence, QIcon, QPixmap, QPainter, QColor, QFont
 
-from app.config import APP_NAME, get_pref, set_pref
+from app import chat_lock
+from app import organization as org
+from app.config import APP_NAME, get_pref, set_pref, get_setting, set_setting
 from app.db import get_or_create_chat, get_chats, get_chat, mark_chat_as_read
 from app.gateway_manager import GatewayManager
+from app.media_service import auto_transcribe, auto_transcribe_backlog, auto_read_image, auto_read_images_backlog
 from app.webhook_server import signals, WebhookServer
 from app.notifications import NotificationCenter
 from app.windows_integration import TaskbarBadge
@@ -23,6 +27,9 @@ from app.ui.settings_view import SettingsPanel
 from app.ui.qr_dialog import QRDialog
 from app.ui.theme import QSS_STYLESHEET, C
 from app.ui.effects import WindowPolisher
+from app.ui import lock_dialogs
+from app.ui.app_lock import AppLockOverlay
+from app.ui.shortcuts import Shortcuts
 
 
 class MainWindow(QMainWindow):
@@ -68,6 +75,12 @@ class MainWindow(QMainWindow):
         self._presence_timer.timeout.connect(self._sync_presence)
         self._presence_sent = None
 
+        # Chats bloqueados: tras un rato en segundo plano o minimizada, la app los vuelve a cerrar
+        self._relock_timer = QTimer(self)
+        self._relock_timer.setSingleShot(True)
+        self._relock_timer.setInterval(90_000)
+        self._relock_timer.timeout.connect(self._relock_chats)
+
         self._init_ui()
 
         # Bandeja del sistema (siempre: es la forma de seguir recibiendo avisos con la ventana cerrada)
@@ -86,8 +99,18 @@ class MainWindow(QMainWindow):
             alert_widget=self, tray_provider=lambda: self._tray, parent=self)
         self.notifications.open_chat_requested.connect(lambda jid: self.handle_uri(f"advancedwhatsapp://open?chat={jid}"))
         self._badge = TaskbarBadge()
+        from app.reminders import ReminderService   # recordatorios creados desde fechas detectadas en mensajes
+        self.reminder_service = ReminderService(self.notifications.notify_simple, self)
 
         self._connect_signals()
+
+        # Bloqueo de la app entera (opcional): cubre la ventana hasta ingresar la contraseña de los chats bloqueados
+        self._app_lock = AppLockOverlay(self)
+        self._app_lock.unlocked.connect(self._on_app_unlocked)
+        self._app_lock.quit_requested.connect(self._quit_from_lock)
+        self._left_at = None            # momento en que la ventana pasó a la bandeja o se minimizó
+        self._unlocked_once = False
+        self._maybe_lock_app()
 
         # Estados programados: evitar la suspensión mientras haya pendientes
         self._keep_awake_on = False
@@ -149,10 +172,19 @@ class MainWindow(QMainWindow):
         self.stacked_widget.addWidget(self.status_panel)  # Índice 1: Estados
 
         # Vista 2: Configuración (⚙️)
-        self.settings_panel = SettingsPanel()
+        from app.ui.update_ui import UpdateController, UpdateBar
+        self.update_controller = UpdateController(self)
+        self.settings_panel = SettingsPanel(self.update_controller)
         self.stacked_widget.addWidget(self.settings_panel)  # Índice 2: Configuración
 
-        main_layout.addWidget(self.stacked_widget, stretch=1)
+        # Aviso de versión nueva (no intrusivo) arriba de las vistas
+        right = QWidget()
+        right_lay = QVBoxLayout(right)
+        right_lay.setContentsMargins(0, 0, 0, 0)
+        right_lay.setSpacing(0)
+        right_lay.addWidget(UpdateBar(self.update_controller))
+        right_lay.addWidget(self.stacked_widget, stretch=1)
+        main_layout.addWidget(right, stretch=1)
 
         # Atajos de teclado
         def sc(keys, fn):
@@ -164,6 +196,7 @@ class MainWindow(QMainWindow):
         sc("Ctrl+K", self._focus_chat_search)
         sc("Ctrl+F", self._find_in_chat)
         sc("Ctrl+Q", self.quit_app)
+        self._shortcuts = Shortcuts(self)   # marcar leído, silenciar, siguiente sin leer, archivar, estadísticas, Ctrl+/
 
     # ── Arranque ──
 
@@ -190,10 +223,33 @@ class MainWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
 
+    def _on_update_found(self, info):
+        """Una notificación por versión nueva (el aviso fino de arriba queda hasta que se descarte)."""
+        if get_setting("update_notified", "") == info.version:
+            return
+        set_setting("update_notified", info.version)
+        self.notifications.notify_simple("Advanced WhatsApp", f"Hay una versión nueva: {info.version}. Abrí la app para actualizar.")
+
+    _backlog_transcribed = False
+
     def after_startup(self):
         self._update_unread_ui(self._unread_total)
+        threading.Thread(target=self._background_housekeeping, daemon=True, name="advancedwhatsapp-housekeeping").start()
         self._presence_timer.start()
         QTimer.singleShot(4000, self.status_panel.refresh_contacts_badge)
+        self.update_controller.update_found.connect(self._on_update_found)
+        self.update_controller.start()   # busca versiones nuevas con demora y cada 12 h
+
+    @staticmethod
+    def _background_housekeeping():
+        """Limpieza automática de multimedia (si está activada) y poda de la caché de miniaturas, fuera del hilo de la UI."""
+        try:
+            time.sleep(20)     # que no compita con el arranque
+            from app import media_cleanup, thumb_cache
+            media_cleanup.run_auto_if_due()
+            thumb_cache.prune_disk()
+        except Exception as e:
+            print(f"[Advanced WhatsApp] mantenimiento en segundo plano: {e}")
 
     def _save_geometry(self):
         try:
@@ -230,9 +286,13 @@ class MainWindow(QMainWindow):
 
         # Conexión de Configuración
         self.settings_panel.qr_requested.connect(self._open_qr_dialog)
+        self.settings_panel.privacy_changed.connect(lambda: self.chat_list_panel.reload_chats(select_jid=self._current_jid_open()))
+        self.settings_panel.locks_cleared.connect(lambda: self.chat_list_panel.reload_chats(select_jid=self._current_jid_open()))
         self.settings_panel.font_scale_changed.connect(self.chat_view_panel.set_font_scale)
         self.chat_view_panel.font_scale_changed.connect(self.settings_panel.set_font_scale_silently)
         self.settings_panel.test_notification_requested.connect(self._test_notification)
+        self.settings_panel.starred_requested.connect(self.chat_view_panel.open_starred)
+        signals.poll_changed.connect(lambda data: self.chat_view_panel._on_media_event(data.get("id")))
 
         # Conexiones internas de Paneles
         self.chat_list_panel.chat_selected.connect(self._on_chat_selected)
@@ -243,6 +303,7 @@ class MainWindow(QMainWindow):
         self.chat_list_panel.chat_cleared.connect(self._on_chat_cleared)
         self.chat_list_panel.all_marked_read.connect(self.notifications.all_read)
         self.chat_list_panel.chat_marked_read.connect(self.notifications.chat_opened)
+        self.chat_list_panel.chat_lock_changed.connect(self._on_chat_lock_changed)
         self.chat_view_panel.message_sent.connect(self._on_message_sent)
         self.chat_view_panel.chat_open_requested.connect(self._on_chat_selected)
         self.chat_view_panel.ai_state_changed.connect(self.chat_list_panel.set_ai_state)
@@ -266,6 +327,8 @@ class MainWindow(QMainWindow):
         signals.app_activate.connect(self.handle_uri)
         signals.read_elsewhere.connect(self._on_read_elsewhere)
         signals.scheduled_changed.connect(self._on_scheduled_changed)
+        signals.sync_received.connect(self.settings_panel.backup_tab.on_sync_received)
+        self.settings_panel.backup_tab.sync_applied.connect(self._on_sync_applied)
 
     def _check_initial_connection(self):
         st = self.gateway.get_status()
@@ -273,9 +336,58 @@ class MainWindow(QMainWindow):
             self._open_qr_dialog()
 
     def _on_chat_selected(self, chat_data: dict):
+        jid = chat_data.get("jid")
+        # Un chat bloqueado pide la contraseña; al pasar a otro chat los demás vuelven a cerrarse
+        if not lock_dialogs.ensure_open(self, jid):
+            self.chat_list_panel.reload_chats(select_jid=self._current_jid_open())
+            return
+        chat_lock.relock(keep=jid)
         self.chat_view_panel.load_chat(chat_data)
         self.chat_list_panel.reload_chats(select_jid=chat_data.get("jid"))
         self.notifications.chat_opened(chat_data.get("jid"))
+
+    def _current_jid_open(self):
+        cur = self.chat_view_panel.current_chat
+        return cur.get("jid") if cur else None
+
+    def _close_if_locked_current(self):
+        """Si el chat abierto quedó bloqueado, se cierra la conversación."""
+        jid = self._current_jid_open()
+        if jid and not chat_lock.is_open(jid):
+            self.chat_view_panel.show_empty_state()
+            self.chat_list_panel.reload_chats()
+
+    def _on_chat_lock_changed(self, jid: str):
+        self._close_if_locked_current()
+
+    # ── Bloqueo de la app entera ──
+
+    def _maybe_lock_app(self):
+        """Cubre la ventana si corresponde pedir la contraseña: al abrir, o al volver tras X minutos fuera."""
+        if self._app_lock.active:
+            return
+        if self._unlocked_once:
+            left, self._left_at = self._left_at, None
+            if left is None or not org.app_lock_due(left):
+                return
+        elif not org.app_lock_due(None):
+            return
+        chat_lock.lock_all()
+        self._app_lock.engage()
+
+    def _on_app_unlocked(self):
+        self._unlocked_once = True
+        self._left_at = None
+        self.chat_list_panel.focus_search()
+
+    def _quit_from_lock(self):
+        self._quitting = True
+        self.close()
+
+    def _relock_chats(self):
+        chat_lock.lock_all()
+        self._close_if_locked_current()
+        self.chat_list_panel.reload_chats(select_jid=self._current_jid_open())
 
     def _is_current(self, jid: str) -> bool:
         cur = self.chat_view_panel.current_chat
@@ -294,8 +406,17 @@ class MainWindow(QMainWindow):
         super().changeEvent(event)
         if not hasattr(self, "notifications"):
             return   # todavía construyéndose
+        if event.type() == QEvent.WindowStateChange and hasattr(self, "_app_lock"):
+            if self.isMinimized():
+                self._left_at = time.time()
+            else:
+                self._maybe_lock_app()
         if event.type() in (QEvent.ActivationChange, QEvent.WindowStateChange):
             self._presence_timer.start()
+            if self._is_foreground():
+                self._relock_timer.stop()
+            elif chat_lock.locked_jids():
+                self._relock_timer.start()
             if self._is_foreground() and self.chat_view_panel.current_chat:
                 # Volver a la ventana con un chat abierto = leerlo (tildes azules y fuera la notificación)
                 jid = self.chat_view_panel.current_chat.get("jid")
@@ -427,6 +548,13 @@ class MainWindow(QMainWindow):
 
     def _on_incoming_message(self, data: dict):
         chat_jid = data.get("chat_jid")
+        if data.get("is_new") and data.get("media_type") == "audio":
+            # Audio nuevo (recibido o enviado por mí): se baja y transcribe solo, en segundo plano
+            auto_transcribe({"id": data.get("message_id"), "media_type": "audio",
+                             "media_path": data.get("media_path"), "media_raw": data.get("media_raw")})
+        if data.get("is_new") and data.get("media_type") == "image" and data.get("media_path"):
+            # Foto ya en disco (la que mandé yo): se lee sola si «Leer imágenes automáticamente» está activo
+            auto_read_image({"id": data.get("message_id"), "media_type": "image", "media_path": data.get("media_path")})
         active_chat = self.chat_view_panel.current_chat
 
         if active_chat and (active_chat.get("jid") == chat_jid or (chat_jid and chat_jid.startswith(active_chat.get("jid").split("@")[0]))):
@@ -459,6 +587,13 @@ class MainWindow(QMainWindow):
             self.notifications.chat_opened(jid)
         self._chat_reload_timer.start()
 
+    def _transcribe_backlog(self):
+        try:
+            auto_transcribe_backlog()
+            auto_read_images_backlog()
+        except Exception as e:
+            print(f"[Advanced WhatsApp] transcripción automática pendiente: {e}")
+
     def _on_history_synced(self):
         self._history_sync_timer.start()
 
@@ -481,6 +616,9 @@ class MainWindow(QMainWindow):
         status = data.get("status")
         self.chat_list_panel.set_connection_state(status)
         if status == "connected":
+            if not self._backlog_transcribed:
+                self._backlog_transcribed = True   # una sola vez por arranque
+                QTimer.singleShot(5000, self._transcribe_backlog)
             self._presence_sent = None
             self._presence_timer.start()
             self.chat_view_panel.refresh_scheduled()
@@ -501,6 +639,14 @@ class MainWindow(QMainWindow):
         dlg.exec()
         dlg.deleteLater()
         self.chat_view_panel.refresh_scheduled()
+
+    def _on_sync_applied(self, _n: int):
+        """Entraron cambios desde el celular (tags, bloqueos, nombres...): repintar la lista de chats."""
+        self.chat_list_panel.reload_chats(select_jid=self._current_jid_open())
+
+    def _send_to_phone(self):
+        self.show_from_background()
+        self.settings_panel.backup_tab.open_send_dialog()
 
     def _on_scheduled_changed(self, data: dict):
         self.chat_view_panel.refresh_scheduled()
@@ -546,6 +692,8 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
+        if hasattr(self, "_app_lock"):
+            self._maybe_lock_app()   # volvió de la bandeja
         # La barra de tareas recrea el botón al mostrar la ventana: volver a poner el contador
         self._badge.reset()
         QTimer.singleShot(300, lambda: self._update_unread_ui(self._unread_total))
@@ -592,6 +740,7 @@ class MainWindow(QMainWindow):
         menu.addAction("Abrir Advanced WhatsApp", self.show_from_background)
         menu.addAction("Estados", lambda: (self.show_from_background(), self.nav_rail.set_tab("status")))
         menu.addAction("Mensajes programados", lambda: (self.show_from_background(), self._open_scheduled()))
+        menu.addAction("Enviar al celular…", self._send_to_phone)
         menu.addSeparator()
         self._act_notify = menu.addAction("Notificaciones activadas")
         self._act_notify.setCheckable(True)
@@ -630,8 +779,11 @@ class MainWindow(QMainWindow):
             return False
         self._save_geometry()
         tray.show()
+        self._left_at = time.time()
         self.hide()
         self._presence_timer.start()
+        if chat_lock.locked_jids():
+            self._relock_timer.start()
         if pending:
             msg = f"Sigue funcionando en segundo plano para hacer {pending} envío(s) programado(s)."
         elif not self._told_about_tray and not self._settings.value("tray/told", False):
