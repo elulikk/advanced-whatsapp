@@ -89,11 +89,12 @@ class SettingsPanel(QWidget):
     starred_requested = Signal()   # abrir la lista de mensajes destacados
     privacy_changed = Signal()  # cambió algo que afecta la lista de chats (ocultos, archivado automático)
 
-    def __init__(self, parent=None):
+    def __init__(self, update_controller=None, parent=None):
         super().__init__(parent)
         self.config = load_app_config()
         self.ai_service = AIService(self.config)
         self.gateway = GatewayManager.get_instance()
+        self.update_controller = update_controller   # lo crea la ventana principal
 
         self._cached_groq_models = []
         self._cached_gemini_models = []
@@ -676,6 +677,9 @@ class SettingsPanel(QWidget):
         btn_open.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(DATA_DIR)))
         grid.addWidget(btn_open, len(rows), 0, 1, 2, Qt.AlignLeft)
         layout.addWidget(group)
+        from app.ui.update_ui import UpdateAboutBox
+        self.update_box = UpdateAboutBox(self.update_controller)
+        layout.addWidget(self.update_box)
         layout.addStretch()
         return tab
 

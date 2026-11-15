@@ -38,6 +38,7 @@ object Notifier {
     private val nm get() = ctx.getSystemService(NotificationManager::class.java)
     private fun idFor(jid: String) = jid.hashCode() and 0x7fffffff or 0x10000
     const val EXTRA_CHAT = "chat_jid"
+    private const val UPDATE_ID = 0x7001
 
     /** alert = false actualiza lo que ya se ve sin volver a sonar. */
     fun message(jid: String, alert: Boolean = true) {
@@ -116,6 +117,23 @@ object Notifier {
                 .setContentIntent(openChat(jid))
                 .setAutoCancel(true)
                 .setOnlyAlertOnce(true)
+                .build()
+        )
+    }
+
+    /** Aviso de versión nueva: al tocarlo abre la app (Ajustes > Actualizaciones). */
+    fun updateAvailable(version: String) {
+        nm.notify(
+            UPDATE_ID,
+            Notification.Builder(ctx, App.CH_UPDATES)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setColor(ACCENT)
+                .setContentTitle("Hay una versión nueva: $version")
+                .setContentText("Abrí Ajustes para ver las novedades y actualizar.")
+                .setContentIntent(PendingIntent.getActivity(
+                    ctx, UPDATE_ID, Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
+                .setAutoCancel(true)
                 .build()
         )
     }

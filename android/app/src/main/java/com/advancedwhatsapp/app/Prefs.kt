@@ -102,6 +102,21 @@ object Prefs {
         get() = p.getInt("auto_archive_days", 0)
         set(v) = p.edit().putInt("auto_archive_days", v).apply()
     /** Para las copias: ajustes que no son secretos (sin token, claves de IA ni contraseña de bloqueo), con tipos simples. */
+    /** Buscar versiones nuevas en GitHub al abrir y cada 12 h (Ajustes). */
+    var autoUpdate: Boolean
+        get() = p.getBoolean("auto_update", true)
+        set(v) = p.edit().putBoolean("auto_update", v).apply()
+
+    /** Dueño/repo de GitHub de donde salen los releases. */
+    var updateRepo: String
+        get() = p.getString("update_repo", "") ?: ""
+        set(v) = p.edit().putString("update_repo", v.trim()).apply()
+
+    /** Última versión de la que ya se avisó con una notificación. */
+    var updateNotified: String
+        get() = p.getString("update_notified", "") ?: ""
+        set(v) = p.edit().putString("update_notified", v).apply()
+
     fun exportNonSecret(): Map<String, Any> = p.all.filter { (k, v) ->
         k != "token" && !k.startsWith("key_") && !k.startsWith("lock_") && !k.startsWith("secret_") && k != "device_id" &&
             !k.startsWith("bk_") && !k.startsWith("sync_") && (v is Boolean || v is String || v is Int || v is Long)

@@ -265,3 +265,43 @@ Los `.webp` de stickers viajan solo la primera vez (hasta 20 MB por documento) o
 «Enviar al celular» (Configuración > Copias y sincronización, o menú de la bandeja): arrastrar o elegir archivos; `sync.send_files_to_phone`
 los manda como documentos a «Mi número». En Android, las burbujas de documentos de ese chat llevan el botón «Guardar en Descargas»
 (Descargas/AdvancedWhatsapp).
+
+## Actualizaciones automáticas (GitHub Releases)
+
+Las dos apps buscan versiones nuevas en los releases de `elulikk/advanced-whatsapp` (sin token; configurable con `update_repo`
+en `[GENERAL]` de `config.ini` en PC, y `Prefs.updateRepo` en Android). Si GitHub responde 404 el repo es privado: Ajustes
+muestra que hace falta un repositorio público para los releases.
+
+**Convención: un release por plataforma, con su propio tag** (las versiones de PC y Android son independientes):
+
+| Plataforma | Tag | Asset | Opcional |
+|---|---|---|---|
+| PC | `pc-v<APP_VERSION>` (p. ej. `pc-v1.1.0`) | `AdvancedWhatsapp-Setup-<ver>.exe` (lo genera `build_portable.py --instalador`) | `…exe.sha256` |
+| Android | `android-v<versionName>` (p. ej. `android-v0.5.0`) | `AdvancedWhatsapp-Android-<ver>.apk` (el `arm64-v8a` de release) | `…apk.sha256` |
+
+Como `/releases/latest` devuelve un solo release (el último, de cualquier plataforma), la app consulta `/releases?per_page=30`,
+descarta borradores y pre-releases, filtra por prefijo de tag, y se queda con la mayor versión semver que tenga el asset esperado.
+El cuerpo del release son las notas que se muestran en Ajustes.
+
+**Publicar** (no corre solo; sin `--publicar` es un ensayo):
+
+```powershell
+python tools/build_portable.py --instalador        # dist/AdvancedWhatsapp-Setup-<ver>.exe
+python tools/publicar_release.py pc --publicar     # gh release create pc-v<ver> exe + .sha256, notas del CHANGELOG
+cd android; .\gradlew.bat assembleRelease          # y luego:
+python tools/publicar_release.py android --publicar
+```
+
+Antes hay que subir la versión (`APP_VERSION` / `versionCode` y `versionName`) y tener `gh auth login`.
+
+**PC** (`app/updater.py` lógica pura + `app/ui/update_ui.py`): `UpdateController` busca 20 s después de abrir y cada 12 h en un
+hilo; la casilla «Buscar actualizaciones automáticamente» (`auto_update`, activada) y el botón están en Ajustes > Acerca de, junto
+a las notas. Aparece una barra fina arriba («Hay una versión nueva: 1.1.0 · Ver novedades · Actualizar») y una notificación por
+versión. En la versión empaquetada (`FROZEN`) «Actualizar» baja el Setup a `~/.magsapp/updates/` (verifica tamaño y SHA-256 si
+hay `.sha256`), cierra la app y el gateway y lanza el instalador con `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`; el `[Run]` de
+`instalador.iss` (`skipifnotsilent`) reabre la app al terminar. En desarrollo solo avisa y abre la página del release.
+
+**Android** (`data/Updater.kt`, `ui/UpdateSettings.kt`): `App` busca 30 s después de abrir y cada 12 h mientras viva el proceso
+(el servicio en primer plano lo mantiene) y avisa con una notificación (canal «Actualizaciones»). «Actualizar» baja el APK a
+`cacheDir/updates/` (FileProvider `cache-path`), verifica y abre el instalador del sistema; si falta el permiso «instalar apps
+desconocidas» abre su pantalla. La firma debe ser la misma que la instalada (clave de depuración de la PC de build).

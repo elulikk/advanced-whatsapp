@@ -4,7 +4,7 @@ import time
 from urllib.parse import urlparse, parse_qs
 
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QSplitter, QStackedWidget, QApplication,
+    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter, QStackedWidget, QApplication,
     QSystemTrayIcon, QMenu, QMessageBox
 )
 from PySide6.QtCore import Qt, QTimer, QEvent, QSettings, QRectF, Signal
@@ -12,7 +12,7 @@ from PySide6.QtGui import QShortcut, QKeySequence, QIcon, QPixmap, QPainter, QCo
 
 from app import chat_lock
 from app import organization as org
-from app.config import APP_NAME, get_pref, set_pref
+from app.config import APP_NAME, get_pref, set_pref, get_setting, set_setting
 from app.db import get_or_create_chat, get_chats, get_chat, mark_chat_as_read
 from app.gateway_manager import GatewayManager
 from app.media_service import auto_transcribe, auto_transcribe_backlog
@@ -172,10 +172,19 @@ class MainWindow(QMainWindow):
         self.stacked_widget.addWidget(self.status_panel)  # Índice 1: Estados
 
         # Vista 2: Configuración (⚙️)
-        self.settings_panel = SettingsPanel()
+        from app.ui.update_ui import UpdateController, UpdateBar
+        self.update_controller = UpdateController(self)
+        self.settings_panel = SettingsPanel(self.update_controller)
         self.stacked_widget.addWidget(self.settings_panel)  # Índice 2: Configuración
 
-        main_layout.addWidget(self.stacked_widget, stretch=1)
+        # Aviso de versión nueva (no intrusivo) arriba de las vistas
+        right = QWidget()
+        right_lay = QVBoxLayout(right)
+        right_lay.setContentsMargins(0, 0, 0, 0)
+        right_lay.setSpacing(0)
+        right_lay.addWidget(UpdateBar(self.update_controller))
+        right_lay.addWidget(self.stacked_widget, stretch=1)
+        main_layout.addWidget(right, stretch=1)
 
         # Atajos de teclado
         def sc(keys, fn):
@@ -214,6 +223,13 @@ class MainWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
 
+    def _on_update_found(self, info):
+        """Una notificación por versión nueva (el aviso fino de arriba queda hasta que se descarte)."""
+        if get_setting("update_notified", "") == info.version:
+            return
+        set_setting("update_notified", info.version)
+        self.notifications.notify_simple("Advanced WhatsApp", f"Hay una versión nueva: {info.version}. Abrí la app para actualizar.")
+
     _backlog_transcribed = False
 
     def after_startup(self):
@@ -221,6 +237,8 @@ class MainWindow(QMainWindow):
         threading.Thread(target=self._background_housekeeping, daemon=True, name="advancedwhatsapp-housekeeping").start()
         self._presence_timer.start()
         QTimer.singleShot(4000, self.status_panel.refresh_contacts_badge)
+        self.update_controller.update_found.connect(self._on_update_found)
+        self.update_controller.start()   # busca versiones nuevas con demora y cada 12 h
 
     @staticmethod
     def _background_housekeeping():

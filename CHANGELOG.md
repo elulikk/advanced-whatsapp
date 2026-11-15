@@ -1,5 +1,15 @@
 # Changelog
 
+## Sin publicar — Actualizaciones automáticas
+
+- **PC y Android buscan versiones nuevas en GitHub Releases** (`elulikk/advanced-whatsapp`; si el repo es privado, Ajustes lo avisa)
+  al abrir (con demora) y cada 12 h, con la casilla «Buscar actualizaciones automáticamente» y el botón «Buscar actualizaciones»
+  (Ajustes > Acerca de en PC, Ajustes en Android) que muestran las notas del release.
+- **PC**: barra discreta «Hay una versión nueva · Ver novedades · Actualizar» y notificación. Al aceptar baja el Setup con
+  verificación de tamaño y SHA-256, cierra la app y el gateway y lo instala en silencio; la app se reabre sola. En desarrollo solo avisa.
+- **Android**: notificación de versión nueva; baja el APK a la caché y abre el instalador del sistema.
+- **Publicar**: `python tools/publicar_release.py pc|android [--publicar]` (tags `pc-v<ver>` y `android-v<ver>`; ver `docs/ARQUITECTURA.md`).
+
 ## 2026-11-12 — Android 0.4.0 / PC
 
 ### Nuevo: IA

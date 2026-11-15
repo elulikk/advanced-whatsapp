@@ -4,7 +4,7 @@
 ;
 ; Instala por usuario (sin pedir administrador) en AppData\Local\Programs\Advanced WhatsApp. Correr una versión
 ; nueva encima actualiza: cierra Advanced WhatsApp, reemplaza los archivos y conserva los datos (~\.magsapp).
-; Para actualizaciones silenciosas: AdvancedWhatsapp-Setup-x.y.z.exe /SILENT /SUPPRESSMSGBOXES
+; Para actualizaciones silenciosas: AdvancedWhatsapp-Setup-x.y.z.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART (lo hace la app al actualizarse sola)
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -66,6 +66,8 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{app}\AdvancedWhatsapp.exe"; Description: "{cm:LaunchProgram,Advanced WhatsApp}"; Flags: nowait postinstall skipifsilent
+; Actualización automática (instalador silencioso): reabre la app al terminar
+Filename: "{app}\AdvancedWhatsapp.exe"; Flags: nowait skipifnotsilent
 
 [UninstallRun]
 ; Cierra Advanced WhatsApp y su gateway (node.exe) para poder borrar los archivos

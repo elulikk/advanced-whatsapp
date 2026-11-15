@@ -207,6 +207,8 @@ fun SettingsScreen(onBack: () -> Unit, onExtras: () -> Unit = {}) {
             BackupSettings()
             QolSettingsSection()
 
+            UpdateSettings()
+
             Text("Versión ${BuildConfig.VERSION_NAME}", color = C.text3, fontSize = 12.sp)
         }
     }
