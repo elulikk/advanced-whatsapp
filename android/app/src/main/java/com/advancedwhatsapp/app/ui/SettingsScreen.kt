@@ -47,6 +47,7 @@ import com.advancedwhatsapp.app.BuildConfig
 import com.advancedwhatsapp.app.Prefs
 import com.advancedwhatsapp.app.ai.AiService
 import com.advancedwhatsapp.app.ai.AutoTranscriber
+import com.advancedwhatsapp.app.ai.ImageReader
 import com.advancedwhatsapp.app.ai.SmartFeatures
 import com.advancedwhatsapp.app.data.Actions
 import com.advancedwhatsapp.app.data.ChatLock
@@ -190,6 +191,13 @@ fun SettingsScreen(onBack: () -> Unit, onExtras: () -> Unit = {}) {
                 Prefs.autoTranscribe = it
                 if (it) AutoTranscriber.backlogOnce(force = true)
             }
+            var autoReadImages by remember { mutableStateOf(Prefs.autoReadImages) }
+            Toggle("Leer imágenes automáticamente", autoReadImages) {
+                autoReadImages = it
+                Prefs.autoReadImages = it
+                if (it) ImageReader.backlogOnce(force = true)
+            }
+            Text("Las fotos que se descargan se leen solas (descripción y texto) para buscarlas por contenido. Gasta cuota de tu proveedor de IA con visión y nunca baja una foto solo para leerla; también podés leer una a mano en la burbuja.", color = C.text2, fontSize = 13.sp)
             var quickReplies by remember { mutableStateOf(SmartFeatures.quickRepliesOn) }
             Toggle("Sugerir respuestas rápidas sobre el campo de mensaje", quickReplies) {
                 quickReplies = it

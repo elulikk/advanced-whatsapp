@@ -56,6 +56,8 @@ data class Message(
     val pinnedAt: Long = 0,           // fijado en el chat (epoch ms); 0 = no
     val hasOriginal: Boolean = false, // eliminado por el remitente pero con el contenido original conservado
     val pollJson: String? = null,     // encuesta con opciones y votos
+    val imageDesc: String? = null,    // descripción de la foto leída por IA (Leer imágenes)
+    val imageOcr: String? = null,     // texto que contiene la foto, leído por IA
 )
 
 /** Un mensaje destacado con el nombre de su chat. */
@@ -188,7 +190,8 @@ object Db {
 
     /** Columnas y tabla de la mensajería extra: destacados, fijados, eliminados conservados, ediciones y encuestas. */
     private fun ensureExtras(d: SQLiteDatabase) {
-        for (col in listOf("starred_at INTEGER DEFAULT 0", "pinned_at INTEGER DEFAULT 0", "revoked_orig TEXT", "poll_json TEXT")) {
+        for (col in listOf("starred_at INTEGER DEFAULT 0", "pinned_at INTEGER DEFAULT 0", "revoked_orig TEXT", "poll_json TEXT",
+            "image_desc TEXT", "image_ocr TEXT")) {
             runCatching { d.execSQL("ALTER TABLE messages ADD COLUMN $col") }
         }
         d.execSQL("CREATE TABLE IF NOT EXISTS message_edits (message_id TEXT NOT NULL, text TEXT, edited_at INTEGER DEFAULT 0)")
@@ -225,7 +228,7 @@ object Db {
         quotedSender = str("quoted_sender"), timestamp = lng("timestamp"), status = str("status") ?: "sent",
         transcript = str("transcript"), summary = str("summary"), edited = lng("edited") != 0L,
         starredAt = lng("starred_at"), pinnedAt = lng("pinned_at"), hasOriginal = !str("revoked_orig").isNullOrEmpty(),
-        pollJson = str("poll_json"),
+        pollJson = str("poll_json"), imageDesc = str("image_desc"), imageOcr = str("image_ocr"),
     )
 
     /**
@@ -388,11 +391,8 @@ object Db {
         if (likes.isEmpty()) return emptyList()
         val locked = ChatLock.locked.toList()
         val args = mutableListOf<String>()
-        val cond = likes.joinToString(" OR ") { "(text LIKE ? OR transcript LIKE ?)" }
-        likes.forEach {
-            args += "%$it%"
-            args += "%$it%"
-        }
+        val cond = likes.joinToString(" OR ") { "(text LIKE ? OR transcript LIKE ? OR image_desc LIKE ? OR image_ocr LIKE ?)" }
+        likes.forEach { like -> repeat(4) { args += "%$like%" } }
         var q = "SELECT * FROM messages WHERE ($cond) AND COALESCE(media_type, 'text') != 'revoked'"
         if (locked.isNotEmpty()) {
             q += " AND chat_jid NOT IN (${locked.joinToString(",") { "?" }})"
@@ -718,6 +718,7 @@ object Db {
         d.update("messages", ContentValues().apply {
             put("text", ""); put("media_type", "revoked"); putNull("media_path"); putNull("media_raw")
             putNull("quoted_text"); putNull("quoted_sender"); putNull("transcript"); putNull("summary"); put("pinned_at", 0)
+            putNull("image_desc"); putNull("image_ocr")
         }, "id = ?", arrayOf(id))
         d.delete("reactions", "message_id = ?", arrayOf(id))
     }
@@ -767,9 +768,10 @@ object Db {
         val sql = "SELECT m.*, COALESCE(NULLIF(c.custom_name, ''), c.name, m.chat_jid) AS chat_name " +
             "FROM messages m LEFT JOIN chats c ON c.jid = m.chat_jid " +
             "WHERE m.starred_at > 0 AND m.media_type != 'revoked' AND (? = '' OR LOWER(COALESCE(m.text, '')) LIKE ? " +
-            "OR LOWER(COALESCE(m.transcript, '')) LIKE ? OR LOWER(COALESCE(c.custom_name, c.name, '')) LIKE ?) " +
+            "OR LOWER(COALESCE(m.transcript, '')) LIKE ? OR LOWER(COALESCE(m.image_desc, '')) LIKE ? " +
+            "OR LOWER(COALESCE(m.image_ocr, '')) LIKE ? OR LOWER(COALESCE(c.custom_name, c.name, '')) LIKE ?) " +
             "ORDER BY m.starred_at DESC LIMIT 300"
-        return db.rawQuery(sql, arrayOf(term, like, like, like)).use { c ->
+        return db.rawQuery(sql, arrayOf(term, like, like, like, like, like)).use { c ->
             buildList { while (c.moveToNext()) add(StarredItem(c.toMessage(), c.str("chat_name").orEmpty())) }
         }
     }
@@ -822,6 +824,16 @@ object Db {
             "AND (media_raw IS NOT NULL OR media_path IS NOT NULL) ORDER BY timestamp DESC LIMIT ?",
         arrayOf(since.toString(), limit.toString()),
     ).use { c -> buildList { while (c.moveToNext()) add(c.toMessage()) } }
+
+    /** Fotos desde [since] (epoch seg.) ya descargadas y sin leer. Las que no están en disco no entran: nunca se baja una para leerla. */
+    fun imagesPendingRead(since: Long, limit: Int): List<Message> = db.rawQuery(
+        "SELECT * FROM messages WHERE media_type = 'image' AND timestamp >= ? AND media_path IS NOT NULL " +
+            "AND COALESCE(image_desc, '') = '' AND COALESCE(image_ocr, '') = '' ORDER BY timestamp DESC LIMIT ?",
+        arrayOf(since.toString(), limit.toString()),
+    ).use { c -> buildList { while (c.moveToNext()) add(c.toMessage()) } }
+
+    fun setImageRead(id: String, desc: String, ocr: String) =
+        updateMessage(id) { put("image_desc", desc.trim()); put("image_ocr", ocr.trim()) }
 
     fun setMediaPath(id: String, path: String) = updateMessage(id) { put("media_path", path) }
     fun setTranscript(id: String, t: String) = updateMessage(id) { put("transcript", t); putNull("summary") }

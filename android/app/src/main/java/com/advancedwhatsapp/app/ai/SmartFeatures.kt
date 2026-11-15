@@ -476,7 +476,7 @@ object SmartFeatures {
         if (stems.isEmpty()) return emptyList()
         return Db.searchMessages(stems.map { it.replace('n', '_') }, scan)   // «_» deja pasar la ñ
             .map { m ->
-                val hay = stripAccents("${m.text} ${m.transcript.orEmpty()}").lowercase()
+                val hay = stripAccents("${m.text} ${m.transcript.orEmpty()} ${m.imageDesc.orEmpty()} ${m.imageOcr.orEmpty()}").lowercase()
                 Triple(stems.count { it in hay }, m.timestamp, m)
             }
             .filter { it.first > 0 }
@@ -488,7 +488,11 @@ object SmartFeatures {
         var t = text(m).split(Regex("\\s+")).joinToString(" ")
         if (t.length > width) t = t.take(width) + "…"
         val who = if (m.fromMe) "Yo" else m.senderName?.ifEmpty { null } ?: chatName(m.chatJid)
-        val kind = if (m.mediaType == "audio") " (audio transcripto)" else ""
+        val kind = when (m.mediaType) {
+            "audio" -> " (audio transcripto)"
+            "image", "sticker" -> " (imagen)"
+            else -> ""
+        }
         return "$i. [$who]$kind $t"
     }
 

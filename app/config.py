@@ -226,6 +226,7 @@ PREF_DEFAULTS = {
     "date_reminders": True,    # ⏰ en los mensajes que mencionan una fecha/hora para crear un recordatorio
     "auto_transcribe": True,     # transcribir solos los audios que llegan (y los que mando)
     "auto_update": True,         # buscar versiones nuevas en GitHub al abrir y cada 12 h (Ajustes > Acerca de)
+    "auto_read_images": False,   # leer con IA (descripción + texto) las fotos al descargarlas; apagado para no gastar cuota
     "keep_deleted": True,        # conservar el contenido de mensajes eliminados y las versiones anteriores de los editados
     "tags_palette_open": True,  # panel de tags abierto debajo de los filtros de la lista de chats
     "audio_autoplay": True,     # al terminar una nota de voz suena la siguiente del chat

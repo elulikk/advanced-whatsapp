@@ -138,7 +138,10 @@ fun MessageBubble(
                 }
             }
             when (m.mediaType) {
-                "image" -> ImageContent(m, busy, onOpenMedia)
+                "image" -> {
+                    ImageContent(m, busy, onOpenMedia)
+                    ImageReadBlock(m)
+                }
                 "sticker" -> StickerContent(m, stickerFile, busy, onOpenMedia, onAutoDownload)
                 "audio" -> VoiceContent(m, busy, scope, onOpenMedia, onTranscribe, transcriptOpen, onToggleTranscript)
                 "video" -> FileRow(Icons.Default.Videocam, "Video", m, busy, onOpenMedia, showCaptionAsName = false)

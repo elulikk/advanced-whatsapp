@@ -251,7 +251,10 @@ def init_db():
         # remitente (se conserva salvo que se apague el ajuste); poll_json: encuesta con las opciones y el conteo de votos
         for column in ("media_raw TEXT", "transcript TEXT", "pinned_at INTEGER", "summary TEXT",
                        "edited INTEGER DEFAULT 0", "transcript_failed INTEGER DEFAULT 0",
-                       "starred_at INTEGER", "revoked_orig TEXT", "poll_json TEXT"):
+                       "starred_at INTEGER", "revoked_orig TEXT", "poll_json TEXT",
+                       # image_desc / image_ocr: descripción y texto de una foto leídos por IA (Leer imágenes);
+                       # image_failed: la lectura automática falló y no se reintenta sola
+                       "image_desc TEXT", "image_ocr TEXT", "image_failed INTEGER DEFAULT 0"):
             try:
                 cursor.execute(f"ALTER TABLE messages ADD COLUMN {column}")
             except Exception:
@@ -1225,6 +1228,7 @@ def _revoke_in(cursor, msg_id: str) -> None:
     cursor.execute(
         "UPDATE messages SET media_type = 'revoked', text = '', media_path = NULL, media_raw = NULL, "
         "quoted_text = NULL, quoted_sender = NULL, transcript = NULL, summary = NULL, pinned_at = NULL, "
+        "image_desc = NULL, image_ocr = NULL, "
         "starred_at = CASE WHEN revoked_orig IS NULL THEN NULL ELSE starred_at END WHERE id = ?", (msg_id,))
     cursor.execute("DELETE FROM reactions WHERE message_id = ?", (msg_id,))
 
@@ -1298,8 +1302,9 @@ def get_starred_messages(search: str = "", limit: int = 300) -> List[Dict[str, A
             "FROM messages m LEFT JOIN chats c ON c.jid = m.chat_jid "
             "WHERE m.starred_at IS NOT NULL AND m.media_type != 'revoked' "
             "AND (? = '' OR LOWER(COALESCE(m.text, '')) LIKE ? OR LOWER(COALESCE(m.transcript, '')) LIKE ? "
+            "OR LOWER(COALESCE(m.image_desc, '')) LIKE ? OR LOWER(COALESCE(m.image_ocr, '')) LIKE ? "
             "OR LOWER(COALESCE(c.custom_name, c.name, '')) LIKE ?) "
-            "ORDER BY m.starred_at DESC LIMIT ?", (term, like, like, like, limit)).fetchall()
+            "ORDER BY m.starred_at DESC LIMIT ?", (term, like, like, like, like, like, limit)).fetchall()
         return [dict(r) for r in rows]
 
 
@@ -1390,6 +1395,39 @@ def get_audios_pending_transcript(since_ts: int, limit: int = 30) -> List[Dict[s
             "SELECT id, media_type, media_path, media_raw, from_me FROM messages "
             "WHERE media_type = 'audio' AND timestamp >= ? AND COALESCE(transcript, '') = '' "
             "AND COALESCE(transcript_failed, 0) = 0 AND (media_raw IS NOT NULL OR media_path IS NOT NULL) "
+            "ORDER BY timestamp DESC LIMIT ?", (since_ts, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def set_message_image_read(msg_id: str, description: str, ocr: str):
+    """Guarda lo que la IA leyó de una foto: descripción corta y texto que contiene (puede ser vacío)."""
+    with db_conn() as conn:
+        conn.execute("UPDATE messages SET image_desc = ?, image_ocr = ?, image_failed = 0 WHERE id = ?",
+                     ((description or "").strip(), (ocr or "").strip(), msg_id))
+        conn.commit()
+
+
+def set_message_image_failed(msg_id: str):
+    """Marca que la lectura automática falló: no se vuelve a intentar sola (queda el botón manual)."""
+    with db_conn() as conn:
+        conn.execute("UPDATE messages SET image_failed = 1 WHERE id = ?", (msg_id,))
+        conn.commit()
+
+
+def is_message_image_failed(msg_id: str) -> bool:
+    with db_conn() as conn:
+        row = conn.execute("SELECT image_failed FROM messages WHERE id = ?", (msg_id,)).fetchone()
+        return bool(row and row["image_failed"])
+
+
+def get_images_pending_read(since_ts: int, limit: int = 20) -> List[Dict[str, Any]]:
+    """Fotos y stickers recientes que ya están descargados (media_path) y todavía no se leyeron ni fallaron.
+    Las que no están en disco no entran: nunca se baja una imagen solo para analizarla."""
+    with db_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, media_type, media_path, media_raw, from_me FROM messages "
+            "WHERE media_type IN ('image', 'sticker') AND timestamp >= ? AND media_path IS NOT NULL "
+            "AND COALESCE(image_desc, '') = '' AND COALESCE(image_ocr, '') = '' AND COALESCE(image_failed, 0) = 0 "
             "ORDER BY timestamp DESC LIMIT ?", (since_ts, limit)).fetchall()
         return [dict(r) for r in rows]
 
