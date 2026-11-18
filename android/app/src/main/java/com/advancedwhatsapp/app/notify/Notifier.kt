@@ -39,6 +39,40 @@ object Notifier {
     private fun idFor(jid: String) = jid.hashCode() and 0x7fffffff or 0x10000
     const val EXTRA_CHAT = "chat_jid"
     private const val UPDATE_ID = 0x7001
+    private const val TRANSCRIPT_WAIT_MS = 15_000L
+    private const val TRANSCRIPT_MAX_CHARS = 300
+    private val waitingAudio = HashMap<String, String>()   // id del audio -> chat cuyo aviso espera la transcripción
+    private val mainHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
+
+    /** Retiene el aviso del chat hasta que el audio tenga texto ([transcriptReady]) o pasen 15 s. */
+    fun waitTranscript(jid: String, msgId: String) {
+        synchronized(waitingAudio) { waitingAudio[msgId] = jid }
+        mainHandler.postDelayed({ flushAudio(msgId) }, TRANSCRIPT_WAIT_MS)
+    }
+
+    /** Terminó (o falló) la transcripción de un audio: sale el aviso retenido, o se actualiza el texto del que ya se ve. */
+    fun transcriptReady(msgId: String) {
+        val jid = synchronized(waitingAudio) { waitingAudio.remove(msgId) }
+        thread(name = "notify-audio") {
+            runCatching {
+                if (jid != null) message(jid) else Db.getMessage(msgId)?.let { refresh(it.chatJid) }
+            }
+        }
+    }
+
+    private fun flushAudio(msgId: String) {
+        val jid = synchronized(waitingAudio) { waitingAudio.remove(msgId) } ?: return
+        thread(name = "notify-audio") { runCatching { message(jid) } }
+    }
+
+    /** Texto de un mensaje en la notificación: los audios transcriptos se leen enteros (también en el reloj). */
+    private fun notificationText(m: com.advancedwhatsapp.app.data.Message): String {
+        val t = m.transcript?.trim().orEmpty()
+        if (m.mediaType == "audio" && t.isNotEmpty() && !t.startsWith("(")) {
+            return "🎤 " + if (t.length > TRANSCRIPT_MAX_CHARS) t.take(TRANSCRIPT_MAX_CHARS).trimEnd() + "…" else t
+        }
+        return Db.preview(m.mediaType, m.text).ifEmpty { "Mensaje" }
+    }
 
     /** alert = false actualiza lo que ya se ve sin volver a sonar. */
     fun message(jid: String, alert: Boolean = true) {
@@ -60,7 +94,7 @@ object Notifier {
         val members = HashMap<String, Person>()
         val locked = ChatLock.isLocked(jid)
         for (m in if (locked) pending.takeLast(1) else pending) {
-            val text = if (locked) ChatLock.LOCKED_NOTIFICATION else Db.preview(m.mediaType, m.text).ifEmpty { "Mensaje" }
+            val text = if (locked) ChatLock.LOCKED_NOTIFICATION else notificationText(m)
             val sender = if (!chat.isGroup) person else members.getOrPut(m.senderJid ?: m.senderName.orEmpty()) {
                 Person.Builder().setName(m.senderName?.ifEmpty { null } ?: "Alguien").setKey(m.senderJid).build()
             }
@@ -78,11 +112,18 @@ object Notifier {
             broadcast(jid, ACTION_READ, PendingIntent.FLAG_IMMUTABLE),
         ).setSemanticAction(Notification.Action.SEMANTIC_ACTION_MARK_AS_READ).build()
 
+        // Título y texto explícitos además del estilo de mensajería: los relojes y pulseras (Zepp, Wear OS, Mi Fitness...)
+        // suelen leer solo estos campos
+        val last = pending.last()
+        val lastText = if (locked) ChatLock.LOCKED_NOTIFICATION else notificationText(last)
+        val lastLine = if (chat.isGroup && !locked) "${last.senderName?.ifEmpty { null } ?: "Alguien"}: $lastText" else lastText
         nm.notify(
             idFor(jid),
             Notification.Builder(ctx, App.CH_MESSAGES)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setColor(ACCENT)
+                .setContentTitle(chat.name)
+                .setContentText(lastLine)
                 .setStyle(style)
                 .setContentIntent(openChat(jid))
                 .setAutoCancel(true)

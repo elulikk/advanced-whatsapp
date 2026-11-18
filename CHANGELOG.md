@@ -1,5 +1,19 @@
 # Changelog
 
+## Sin publicar (Android 0.6.1 / PC)
+
+### Nuevo
+- **Audios en la notificación y en el reloj** (PC y Android): la notificación de una nota de voz espera la transcripción
+  automática (hasta 15 s) y muestra lo que dice ("🎤 …"). Cualquier reloj o pulsera que reciba las notificaciones del celular
+  (Zepp, Wear OS, Mi Fitness…) lo puede leer. Si tarda más, avisa "Nota de voz" y después actualiza el texto sin volver a sonar.
+- **Reemplazar las notificaciones de WhatsApp** (Android, Ajustes): con el permiso «Acceso a notificaciones», AW borra los avisos
+  de WhatsApp y WhatsApp Business apenas llegan, solo mientras AW está conectado (si se desconecta quedan los de WhatsApp).
+  No toca llamadas.
+
+### Cambios
+- Notificaciones de Android con título y texto explícitos además del estilo de mensajería, para que los relojes las muestren completas.
+- **Ícono**: globo verde con aro blanco y llama naranja con centro amarillo (PC, logo de la app e ícono adaptativo de Android).
+
 ## 2026-11-18 — Android 0.6.0 / PC
 
 ### Nuevo
