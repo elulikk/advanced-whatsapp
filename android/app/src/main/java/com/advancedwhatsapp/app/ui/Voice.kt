@@ -32,6 +32,8 @@ class VoiceRecorder {
     private var elapsedMs = 0L
     val seconds = MutableStateFlow(0)
     val paused = MutableStateFlow(false)
+    /** Últimos niveles (0..1) para el vúmetro en vivo: el más nuevo al final. */
+    val levels = MutableStateFlow<List<Float>>(emptyList())
 
     fun start(scope: CoroutineScope) {
         val out = File(App.sentDir, "nota_${System.currentTimeMillis()}.ogg")
@@ -54,7 +56,15 @@ class VoiceRecorder {
                 if (paused.value) continue
                 elapsedMs += STEP_MS
                 seconds.value = (elapsedMs / 1000).toInt()
-                recorder?.let { r -> runCatching { samples += r.maxAmplitude } }
+                recorder?.let { r ->
+                    runCatching {
+                        val amp = r.maxAmplitude
+                        samples += amp
+                        // Raíz para que se vean los tonos bajos; se guardan las últimas LIVE_BARS
+                        val lvl = sqrt(amp / 32767.0).toFloat().coerceIn(0f, 1f)
+                        levels.value = (levels.value + lvl).takeLast(LIVE_BARS)
+                    }
+                }
             }
         }
     }
@@ -92,6 +102,7 @@ class VoiceRecorder {
     companion object {
         private const val STEP_MS = 100L
         private const val BARS = 64
+        const val LIVE_BARS = 48
 
         /** Reduce las muestras a 64 barras de 0 a 100, escaladas con raíz para que se noten los tonos bajos. */
         fun buildWaveform(samples: List<Int>): List<Int> {

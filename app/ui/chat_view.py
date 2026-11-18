@@ -373,6 +373,7 @@ class ChatViewPanel(QWidget):
     _dictation_done = Signal(str, str, str)    # jid, texto dictado, aviso (error o IA no disponible)
     _scheduled_counts_ready = Signal(dict)     # jid -> mensajes programados pendientes
     scheduled_total_changed = Signal(int)
+    chat_lock_changed = Signal(str)            # se puso o se sacó la contraseña de un chat desde su menú (jid)
     _att_result = Signal(int, dict)            # índice del adjunto, respuesta del gateway
     _att_finished = Signal()
     _sticker_result = Signal(str, dict, str, int, str, str)   # jid, respuesta, ruta enviada, hora programada, cita, autor de la cita
@@ -2549,6 +2550,9 @@ class ChatViewPanel(QWidget):
         act_silent = menu.addAction(icon("eye"), "Lectura invisible (sin tildes azules en este chat)")
         act_silent.setCheckable(True)
         act_silent.setChecked(_org.is_silent_read(jid))
+        from app import chat_lock as _lock
+        is_locked = bool(jid) and _lock.is_locked(jid)
+        act_lock = menu.addAction(icon("lock"), "Quitar contraseña a este chat…" if is_locked else "Poner contraseña a este chat")
         menu.addSeparator()
         act_poll = menu.addAction(icon("list"), "Crear encuesta…")
         act_starred = menu.addAction(icon("star"), "Mensajes destacados…")
@@ -2582,6 +2586,15 @@ class ChatViewPanel(QWidget):
             self._open_gallery()
         elif act == act_silent:
             _org.set_silent_read(jid, act_silent.isChecked())
+        elif act == act_lock and jid:
+            from app.ui import lock_dialogs
+            if is_locked:
+                if not lock_dialogs.ask_current_password(self, "Ingresá la contraseña para quitarle el bloqueo al chat:"):
+                    return
+                _lock.unlock_chat(jid)
+            elif not lock_dialogs.ensure_password(self) or not _lock.lock_chat(jid):
+                return
+            self.chat_lock_changed.emit(jid)
         elif act == act_export:
             from app.ui.export_dialog import export_chat_flow
             export_chat_flow(self, self.current_chat or {})

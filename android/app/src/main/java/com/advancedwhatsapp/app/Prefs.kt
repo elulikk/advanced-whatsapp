@@ -38,6 +38,11 @@ object Prefs {
         get() = p.getBoolean("notify_groups", false)
         set(v) = p.edit().putBoolean("notify_groups", v).apply()
 
+    /** Vibración corta al tocar botones (además respeta el ajuste de vibración táctil del sistema). */
+    var haptics: Boolean
+        get() = p.getBoolean("haptics", true)
+        set(v) = p.edit().putBoolean("haptics", v).apply()
+
     var readReceipts: Boolean
         get() = p.getBoolean("read_receipts", true)
         set(v) = p.edit().putBoolean("read_receipts", v).apply()

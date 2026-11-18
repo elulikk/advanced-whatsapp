@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-18 — Android 0.6.0 / PC
+
+### Nuevo
+- **Vúmetro al grabar** (Android): barras que corren siguiendo tu voz mientras grabás una nota o dictás (en PC ya estaba).
+- **Respuesta táctil** (Android): todos los botones de ícono vibran al tocarlos; el botón de grabar además se achica al
+  apretarlo y vibra distinto al empezar a grabar y al descartar. Se apaga en Ajustes ("Vibrar al tocar botones") y respeta
+  la vibración táctil del sistema.
+- **Contraseña por chat desde el chat** (PC y Android): "Poner / Quitar contraseña a este chat" en el menú ⋮ del chat
+  (antes solo estaba al mantener apretado o con clic derecho en la lista). Elegís qué chats llevan contraseña y cuáles no.
+
+### Cambios
+- **Ícono nuevo** (PC y Android): globo verde con la llama blanca adentro. En Android es un ícono adaptativo (se ve bien con
+  cualquier forma del launcher). Se regenera con `python tools/generar_iconos.py`.
+
 ## 2026-11-15 — Android 0.5.1
 
 ### Cambios
