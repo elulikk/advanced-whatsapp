@@ -377,6 +377,7 @@ class ChatViewPanel(QWidget):
     chat_lock_changed = Signal(str)            # se puso o se sacó la contraseña de un chat desde su menú (jid)
     _att_result = Signal(int, dict)            # índice del adjunto, respuesta del gateway
     _att_finished = Signal()
+    _album_saved = Signal(str, int, str)       # ruta del .zip, fotos guardadas, error
     _sticker_result = Signal(str, dict, str, int, str, str)   # jid, respuesta, ruta enviada, hora programada, cita, autor de la cita
 
     def __init__(self, parent=None):
@@ -451,6 +452,7 @@ class ChatViewPanel(QWidget):
 
         self._scheduled_counts_ready.connect(self._on_scheduled_counts)
         self._sticker_result.connect(self._on_sticker_result)
+        self._album_saved.connect(self._on_album_saved)
 
         self._recorder.level.connect(self.voice_meter.push)
         self._recorder.failed.connect(self._on_recorder_failed)
@@ -2229,10 +2231,17 @@ class ChatViewPanel(QWidget):
     def _show_message_context_menu(self, _pos):
         if not self.current_chat or self._select_mode:
             return
-        msg = self._message_at(self.txt_messages.viewport().mapFromGlobal(QCursor.pos()))
+        vpos = self.txt_messages.viewport().mapFromGlobal(QCursor.pos())
+        msg = self._message_at(vpos)
         if not msg:
             self.txt_messages.createStandardContextMenu().exec(QCursor.pos())
             return
+        album = self._albums.get(msg["id"])
+        if album:
+            # En un álbum, «Guardar como…» va con la foto que está bajo el cursor (si hay una)
+            href = self.txt_messages.anchorAt(vpos)
+            under = href.rsplit("/", 1)[-1] if href.startswith("advancedwhatsapp://open/") else ""
+            msg = next((m for m in album if m["id"] == under), msg)
 
         mt = msg.get("media_type") or "text"
         revoked = mt == "revoked"
@@ -2244,7 +2253,11 @@ class ChatViewPanel(QWidget):
             ("copy", "copy", "Copiar", can_copy),
             ("forward", "forward", "Reenviar", mt in FORWARDABLE_TYPES),
         ]
-        if has_file:
+        if album:
+            if has_file and msg["id"] in {m["id"] for m in album} and                     self.txt_messages.anchorAt(vpos).endswith("/" + msg["id"]):
+                actions.append(("save", "download", "Guardar esta foto…", True))
+            actions.append(("savealbum", "download", f"Guardar las {len(album)} fotos (.zip)…", True))
+        elif has_file:
             actions.append(("save", "download", "Guardar como…", True))
         if mt == "sticker" and has_file:
             actions.append(("addsticker", "smile", "Agregar a mis stickers", True))
@@ -2279,6 +2292,8 @@ class ChatViewPanel(QWidget):
             self._forward_messages([msg])
         elif key == "save":
             self._save_media_as(msg)
+        elif key == "savealbum":
+            self._save_album_as(msg)
         elif key == "addsticker":
             self._add_sticker_from_msg(msg)
         elif key == "summarize":
@@ -2584,6 +2599,76 @@ class ChatViewPanel(QWidget):
                 shutil.copyfile(src, dest)
             except OSError as e:
                 QMessageBox.warning(self, "No se pudo guardar", str(e))
+
+    def _album_of(self, msg: dict) -> list:
+        return next((ms for ms in self._albums.values() if any(m["id"] == msg["id"] for m in ms)), [msg])
+
+    def _save_album_as(self, msg: dict):
+        """Todas las fotos del álbum en un .zip (la compresión se arma en un hilo)."""
+        album = [get_message(m["id"]) or m for m in self._album_of(msg)]
+        ready = [m for m in album if self._has_file(m)]
+        missing = [m for m in album if not self._has_file(m)]
+        if missing:
+            can_get = [m for m in missing if m.get("media_raw") and not unavailable_reason(m)]
+            box = QMessageBox(QMessageBox.Question, "Guardar fotos",
+                              f"Faltan bajar {len(missing)} de {len(album)} fotos.", parent=self)
+            b_dl = box.addButton("Bajarlas primero", QMessageBox.AcceptRole) if can_get else None
+            b_some = box.addButton(f"Guardar solo las {len(ready)}", QMessageBox.YesRole) if ready else None
+            box.addButton("Cancelar", QMessageBox.RejectRole)
+            box.exec()
+            clicked = box.clickedButton()
+            if b_dl is not None and clicked is b_dl:
+                for m in can_get:
+                    request_media(m)
+                QMessageBox.information(self, "Guardar fotos", "Se están bajando. Cuando aparezcan en el chat, "
+                                                               "volvé a elegir «Guardar las fotos».")
+                return
+            if b_some is None or clicked is not b_some:
+                return
+        ts = int(album[0].get("timestamp") or 0)
+        try:
+            stamp = datetime.fromtimestamp(ts).strftime("%Y%m%d_%H%M%S")
+        except (OSError, ValueError, OverflowError):
+            stamp = str(ts)
+        dest, _ = QFileDialog.getSaveFileName(self, "Guardar fotos", os.path.join(os.path.expanduser("~"), "Downloads",
+                                              f"WhatsApp_fotos_{stamp}.zip"), "Archivo ZIP (*.zip)")
+        if not dest:
+            return
+        if not dest.lower().endswith(".zip"):
+            dest += ".zip"
+        files = [m["media_path"] for m in ready]
+
+        def work():
+            import zipfile
+            err = ""
+            try:
+                tmp = dest + ".tmp"
+                # Las fotos ya vienen comprimidas: se guardan tal cual (más rápido y mismo tamaño)
+                with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED) as zf:
+                    for i, src in enumerate(files, 1):
+                        zf.write(src, f"foto_{i:02d}{os.path.splitext(src)[1].lower() or '.jpg'}")
+                os.replace(tmp, dest)
+            except OSError as e:
+                err = str(e)
+            try:
+                self._album_saved.emit(dest, len(files), err)
+            except RuntimeError:
+                pass
+
+        threading.Thread(target=work, daemon=True, name="advancedwhatsapp-album-zip").start()
+
+    def _on_album_saved(self, dest: str, count: int, err: str):
+        if err:
+            QMessageBox.warning(self, "No se pudo guardar", err)
+            return
+        box = QMessageBox(QMessageBox.Information, "Fotos guardadas",
+                          f"Se guardaron {count} fotos en {os.path.basename(dest)}.", parent=self)
+        b_show = box.addButton("Mostrar en la carpeta", QMessageBox.AcceptRole)
+        box.addButton("Cerrar", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is b_show:
+            import subprocess
+            subprocess.Popen(["explorer", "/select,", os.path.normpath(dest)])
 
     def _show_chat_options(self):
         menu = QMenu(self)
