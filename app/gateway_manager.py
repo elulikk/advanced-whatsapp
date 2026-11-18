@@ -350,13 +350,17 @@ class GatewayManager:
         quoted_text: Optional[str] = None,
         quoted_sender: Optional[str] = None,
         consume: bool = False,
-        repeat: Optional[Dict[str, Any]] = None
+        repeat: Optional[Dict[str, Any]] = None,
+        album_parent: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """`quoted` = {message_id, from_me, participant, text}: envía el mensaje como respuesta a otro.
         `audio_seconds` / `audio_waveform` (0..100): duración y onda que verá el destinatario de una nota de voz.
         Con `at` (epoch en segundos) no se envía: queda programado en el gateway. `chat_name`, `quoted_text` y
-        `quoted_sender` son para mostrarlo; `consume` mueve el archivo en vez de copiarlo."""
+        `quoted_sender` son para mostrarlo; `consume` mueve el archivo en vez de copiarlo.
+        `album_parent` (lo que devuelve `start_album`) agrupa la foto/video con las demás del álbum."""
         payload: Dict[str, Any] = {"to": to, "text": text}
+        if album_parent:
+            payload["album_parent"] = album_parent
         if quoted:
             payload["quoted"] = quoted
         if video_path:
@@ -400,6 +404,11 @@ class GatewayManager:
             return {"success": False, "error": f"HTTP {r.status_code}: {r.text}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    def start_album(self, to: str, images: int, videos: int = 0) -> Dict[str, Any]:
+        """Abre un álbum en WhatsApp: el destinatario ve las fotos/videos que siguen como un solo mensaje.
+        Devuelve {success, album_key}; cada archivo después va con `send_message(..., album_parent=album_key)`."""
+        return self._post_simple("album", {"to": to, "images": int(images), "videos": int(videos)})
 
     def send_reaction(self, to: str, message_id: str, emoji: str, from_me: bool = False,
                       participant: Optional[str] = None) -> Dict[str, Any]:

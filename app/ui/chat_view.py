@@ -49,6 +49,7 @@ from app.media_service import (
     media_signals, request_media, request_transcript, request_image_read, is_pending, get_error, unavailable_reason
 )
 from app import link_preview, audio_queue, thumb_cache
+from app.albums import group_albums
 from app.ui.chat_list import AvatarWidget, format_hour, format_day_label, resolve_display_name
 from app.ui.theme import C, HEADER_H, R_MD, R_LG, R_SM
 from app.ui.icons import icon, tool_button, image as icon_image, pixmap as icon_pixmap, flame_pixmap
@@ -389,6 +390,7 @@ class ChatViewPanel(QWidget):
         self._polish_models_loaded = False
         self.current_chat = None
         self._att_sending = False        # envío de adjuntos en curso (hilo aparte)
+        self._albums: dict = {}          # álbumes del chat dibujado: id de la primera foto -> fotos
         self._att_state = None           # estado del envío: paths, índice, progreso simulado
         self._drafts: dict = {}          # jid -> texto sin enviar
         self._messages_limit = 40
@@ -1344,6 +1346,10 @@ class ChatViewPanel(QWidget):
                     QDesktopServices.openUrl(QUrl.fromLocalFile(path))
                 else:
                     request_media(msg, save_copy=True)   # solo se baja y queda en la burbuja y en Descargas
+            elif action == "albumdl":
+                for m in self._albums.get(msg["id"], []):
+                    if not self._has_file(m):
+                        request_media(m)
             elif action == "play":
                 path = msg.get("media_path")
                 chip, self._voice_click_chip = self._voice_click_chip, False
@@ -1648,6 +1654,34 @@ class ChatViewPanel(QWidget):
     def _refresh_keep_scroll(self):
         self.refresh_messages(scroll_to_bottom=False)
 
+    def _album_html(self, album: list) -> str:
+        """Grilla de 2 columnas con las fotos de un álbum; cada una abre su foto (o la baja si falta)."""
+        side = 148
+        cells, missing = [], 0
+        for m in album:
+            path = m.get("media_path")
+            if path and os.path.exists(path):
+                thumb, tw, th = thumb_cache.thumb_for(path)
+                dw, dh = thumb_cache.fit_size(tw, th, side, side) if tw else (side, side)
+                url = "file:///" + os.path.abspath(thumb).replace("\\", "/")
+                inner = (f'<a href="advancedwhatsapp://open/{m["id"]}"><img src="{url}" border="0" '
+                         f'width="{dw}" height="{dh}"/></a>')
+            else:
+                missing += 1
+                inner = f'<span style="font-size: 11px;">{self._media_placeholder(m, "📷")}</span>'
+            cells.append(f'<td width="{side}" height="{side}" align="center" valign="middle" '
+                         f'style="background-color: rgba(0,0,0,0.18);">{inner}</td>')
+        if len(cells) % 2:
+            cells.append(f'<td width="{side}"></td>')
+        rows = "".join(f"<tr>{cells[i]}{cells[i + 1]}</tr>" for i in range(0, len(cells), 2))
+        extra = ""
+        if missing >= 2 and any(not is_pending("download", m["id"]) and m.get("media_raw") and not unavailable_reason(m)
+                                for m in album if not self._has_file(m)):
+            extra = (f'<div style="margin-top: 3px;"><a href="advancedwhatsapp://albumdl/{album[0]["id"]}" '
+                     f'style="color: {C["link"]}; font-size: 11px;">Descargar las {missing} fotos</a></div>')
+        return (f'<table border="0" cellpadding="0" cellspacing="3" style="margin-bottom: 3px;">{rows}</table>'
+                f'<div style="color: {C["text_2"]}; font-size: 10px;">{len(album)} fotos</div>{extra}')
+
     def _media_placeholder(self, msg: dict, label: str) -> str:
         """Texto de estado mientras un archivo se descarga o si WhatsApp ya no lo tiene."""
         msg_id = msg.get("id")
@@ -1727,8 +1761,14 @@ class ChatViewPanel(QWidget):
         voice_images: dict = {}
         self._voice_msgs = {}
         is_group = bool(self.current_chat.get("is_group"))
+        # Fotos mandadas juntas: una sola burbuja con la grilla (la primera foto representa al álbum)
+        albums = self._albums = group_albums(messages)
+        album_rest = {m["id"] for ms in albums.values() for m in ms[1:]}
 
         for msg in messages:
+            if msg["id"] in album_rest:
+                continue
+            album = albums.get(msg["id"])
             ts = msg.get("timestamp", 0)
             try:
                 msg_dt = datetime.fromtimestamp(ts)
@@ -1742,7 +1782,9 @@ class ChatViewPanel(QWidget):
 
             from_me = bool(msg.get("from_me"))
             raw_text = (msg.get("text") or "").strip()
-            hora = format_hour(ts)
+            if album:
+                raw_text = "\n".join(t for t in ((m.get("text") or "").strip() for m in album) if t)
+            hora = format_hour(album[-1].get("timestamp", ts) if album else ts)
             media_type = msg.get("media_type", "text")
             media_path = msg.get("media_path")
             quoted_text = msg.get("quoted_text")
@@ -1769,7 +1811,9 @@ class ChatViewPanel(QWidget):
             media_html = ""
             transcript_html = ""
             sticker_url = None
-            if media_type == "image" and has_file:
+            if album:
+                media_html = self._album_html(album)
+            elif media_type == "image" and has_file:
                 # Se muestra una miniatura en caché (la foto original puede pesar varios MB y se redibuja seguido)
                 thumb, tw, th = thumb_cache.thumb_for(media_path)
                 img_url = "file:///" + os.path.abspath(thumb).replace("\\", "/")
@@ -1838,17 +1882,21 @@ class ChatViewPanel(QWidget):
                 if poll:
                     media_html = panel(polls.poll_html(poll, C["accent"], C["text_2"]))
 
-            if media_type == "image":
+            if album:
+                # Lo que la IA leyó de cada foto (el pedido de lectura queda en el menú de cada foto abierta)
+                transcript_html = "".join(self._image_read_html(m, True) for m in album
+                                          if m.get("image_desc") or m.get("image_ocr") or is_pending("readimg", m["id"]))
+            elif media_type == "image":
                 transcript_html = self._image_read_html(msg, has_file)
             if transcript_html:
                 media_html += transcript_html
 
             mid = msg["id"]
-            anchor = f'<a name="m_{mid}"></a>'
+            anchor = "".join(f'<a name="m_{m["id"]}"></a>' for m in (album or [msg]))
             sel_cell = self._select_cell(mid)
             pin_mark = ('<img src="icon:pin" width="12" height="12" style="vertical-align: middle;" title="Fijado"/>'
                         '&nbsp;') if msg.get("pinned_at") else ""
-            ticks = self._ticks_html(msg.get("status", "sent")) if from_me else ""
+            ticks = self._ticks_html((album[-1] if album else msg).get("status", "sent")) if from_me else ""
             summary_link = self._summary_link(msg, mid in self._summary_hidden)
             edited_mark = (f'<a href="advancedwhatsapp://history/{mid}" title="Ver versiones anteriores" '
                            f'style="{meta_style} font-style: italic; text-decoration: none;">Editado&nbsp;</a>'
@@ -1919,7 +1967,7 @@ class ChatViewPanel(QWidget):
                         <div style="text-align: right; margin-top: 2px;">{meta}</div>
                       </td></tr>
                     </table>
-                    {self._reactions_html(mid, reactions, align)}
+                    {"".join(self._reactions_html(m["id"], reactions, align) for m in (album or [msg]))}
                   </td>''')}</tr>
                 </table>
             """)
@@ -2947,8 +2995,16 @@ class ChatViewPanel(QWidget):
         gateway = self.gateway
 
         def work():
+            # Dos o más fotos/videos juntos salen como álbum: WhatsApp los muestra como un solo mensaje.
+            # Lo programado sale archivo por archivo (la cola del gateway no arma álbumes).
+            kinds = [kind_for(p) for p in paths]
+            n_img, n_vid = kinds.count("image"), kinds.count("video")
+            album = None
+            if not at and n_img + n_vid >= 2:
+                r = gateway.start_album(chat_jid, n_img, n_vid)
+                album = r.get("album_key") if r.get("success") else None
             for i, path in enumerate(paths):
-                kind = kind_for(path)
+                kind = kinds[i]
                 caption = text if i == 0 else ""
                 res = gateway.send_message(
                     to=chat_jid, text=caption,
@@ -2957,6 +3013,7 @@ class ChatViewPanel(QWidget):
                     document_path=path if kind == "document" else None,
                     document_name=os.path.basename(path) if kind == "document" else None,
                     quoted=quoted if i == 0 else None,
+                    album_parent=album if kind in ("image", "video") else None,
                     **(scheduling if i == 0 else later))
                 self._att_result.emit(i, res)
             self._att_finished.emit()

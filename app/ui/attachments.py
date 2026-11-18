@@ -12,7 +12,7 @@ from app.ui.icons import tool_button, pixmap as icon_pixmap
 
 IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 VIDEO_EXT = (".mp4", ".mov", ".mkv", ".avi", ".webm", ".3gp")
-MAX_ATTACHMENTS = 10
+MAX_ATTACHMENTS = 30
 
 
 def kind_for(path: str) -> str:

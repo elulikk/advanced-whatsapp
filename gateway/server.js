@@ -2581,7 +2581,7 @@ app.get('/link-preview', async (req, res) => {
 // Envía un mensaje con el cuerpo de POST /send. Si algo falla lanza un error con httpStatus (404 = falta el archivo).
 async function sendWhatsApp(body, extraOpts = {}) {
     const { to, text, image_path, image_thumb, image_url, document_path, document_name, mimetype,
-            video_path, audio_path, audio_seconds, audio_waveform, sticker_path, quoted, external } = body;
+            video_path, audio_path, audio_seconds, audio_waveform, sticker_path, quoted, external, album_parent } = body;
     const msgText = (text || '').trim();
     const fail = (httpStatus, message) => Object.assign(new Error(message), { httpStatus });
 
@@ -2601,6 +2601,11 @@ async function sendWhatsApp(body, extraOpts = {}) {
         if (jid.endsWith('@g.us') && quoted.participant && !quoted.from_me) qKey.participant = quoted.participant;
         sendOpts.quoted = { key: qKey, message: { conversation: quoted.text || '' } };
     }
+
+    // Foto o video que forma parte de un álbum (POST /album devolvió la clave del mensaje padre)
+    const album = album_parent?.id
+        ? { albumParentKey: { remoteJid: album_parent.remoteJid || jid, id: album_parent.id, fromMe: true } }
+        : {};
 
     const mediaFile = (p, missing) => {
         if (!fs.existsSync(p)) throw fail(404, `${missing}: ${p}`);
@@ -2622,12 +2627,13 @@ async function sendWhatsApp(body, extraOpts = {}) {
         result = await sock.sendMessage(jid, {
             image: buffer,
             caption: msgText || undefined,
+            ...album,
             // En Android no hay sharp ni jimp: la miniatura la arma la app
             ...(image_thumb ? { jpegThumbnail: image_thumb } : {})
         }, sendOpts);
     } else if (video_path) {
         const buffer = mediaFile(video_path, 'Video no encontrado');
-        result = await sock.sendMessage(jid, { video: buffer, caption: msgText || undefined }, sendOpts);
+        result = await sock.sendMessage(jid, { video: buffer, caption: msgText || undefined, ...album }, sendOpts);
     } else if (audio_path) {
         let buffer = mediaFile(audio_path, 'Audio no encontrado');
         // Se reempaqueta el OGG/Opus (granule, fin de stream y CRC correctos) y de ahí sale la duración exacta
@@ -2677,15 +2683,37 @@ async function sendWhatsApp(body, extraOpts = {}) {
 
     // external: lo manda otro programa (tools/enviar.py), no la ventana. No se marca como propio del bot para que
     // messages.upsert lo entregue a la app como cualquier mensaje enviado desde el celular y aparezca en el chat.
-    if (result?.key?.id && !external) {
-        sentBotMessageIds.add(result.key.id);
-        if (sentBotMessageIds.size > 2000) {
-            const first = sentBotMessageIds.values().next().value;
-            sentBotMessageIds.delete(first);
-        }
-    }
+    if (result?.key?.id && !external) rememberBotMessage(result.key.id);
     return result;
 }
+
+function rememberBotMessage(id) {
+    sentBotMessageIds.add(id);
+    if (sentBotMessageIds.size > 2000) {
+        const first = sentBotMessageIds.values().next().value;
+        sentBotMessageIds.delete(first);
+    }
+}
+
+// Abre un álbum (varias fotos/videos que WhatsApp muestra como un solo mensaje): manda el mensaje padre y devuelve
+// su clave; después cada foto/video va por POST /send con album_parent = esa clave.
+app.post('/album', async (req, res) => {
+    try {
+        const { to, images, videos } = req.body || {};
+        if (!to) return res.status(400).json({ error: 'Falta parámetro "to"' });
+        if (connectionStatus !== 'connected' || !sock) return res.status(503).json({ error: 'WhatsApp no está conectado.' });
+        const jid = to.includes('@') ? to : `${to.replace(/\D/g, '')}@s.whatsapp.net`;
+        const result = await sock.sendMessage(jid, {
+            album: { expectedImageCount: Math.max(0, Number(images) | 0), expectedVideoCount: Math.max(0, Number(videos) | 0) }
+        });
+        if (!result?.key?.id) return res.status(500).json({ error: 'WhatsApp no devolvió la clave del álbum.' });
+        rememberBotMessage(result.key.id);
+        res.json({ success: true, album_key: { remoteJid: result.key.remoteJid || jid, id: result.key.id } });
+    } catch (e) {
+        console.error('[Baileys] Error abriendo álbum:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
 
 app.post('/send', async (req, res) => {
     try {
