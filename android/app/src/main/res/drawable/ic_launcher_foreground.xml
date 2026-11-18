@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generado por tools/generar_iconos.py: globo verde con la llama blanca -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#25D366" android:pathData="M54.00,23.06a29.25,29.25 0 1,1 0,58.50a29.25,29.25 0 1,1 0,-58.50z" />
+    <path android:fillColor="#25D366" android:pathData="M33.75,68.62L24.19,85.50L45.00,78.75z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M54.00,32.84C57.52,41.98 68.06,46.20 68.06,58.15C68.06,66.59 61.73,72.91 54.00,72.91C46.27,72.91 39.94,66.59 39.94,58.15C39.94,51.82 43.45,47.60 46.97,44.79C46.97,49.01 49.78,51.12 51.19,51.12C49.08,44.79 50.48,38.46 54.00,32.84z" />
+</vector>

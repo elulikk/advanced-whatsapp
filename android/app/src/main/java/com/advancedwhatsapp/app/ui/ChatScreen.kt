@@ -54,7 +54,6 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -78,6 +77,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import com.advancedwhatsapp.app.data.ChatLock
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.LocalIndication
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.foundation.layout.height
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -500,6 +506,8 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
     if (editingContact) ContactEditDialog(jid) { editingContact = false }
     if (exportingChat) ExportChatFlow(jid, chat?.name.orEmpty()) { exportingChat = false }
     var silentRead by remember(jid) { mutableStateOf(Organization.isSilentRead(jid)) }   // lectura invisible solo en este chat
+    var lockedChat by remember(jid) { mutableStateOf(ChatLock.isLocked(jid)) }
+    var lockDialog by remember { mutableStateOf("") }   // "new" (crear contraseña), "ask" (pedirla para quitar el bloqueo)
     val hasNote = chat?.notes?.isNotBlank() == true
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
@@ -534,6 +542,18 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
                     }
                     if (chat?.isGroup == false) IconButton(onClick = onAnalysis) { Icon(Icons.Default.Psychology, "Análisis") }
                     ChatExtrasMenu(jid, onNav = onExtras, onMessage = { notifyError(it) }) { close ->
+                        DropdownMenuItem(text = { Text(if (lockedChat) "🔓 Quitar contraseña a este chat" else "🔒 Poner contraseña a este chat") }, onClick = {
+                            close()
+                            when {
+                                lockedChat -> lockDialog = "ask"
+                                ChatLock.hasPassword() -> {
+                                    ChatLock.lock(jid)
+                                    lockedChat = true
+                                    scope.launch { snackbar.showSnackbar("Chat bloqueado: la próxima vez te va a pedir la contraseña.") }
+                                }
+                                else -> lockDialog = "new"
+                            }
+                        })
                         DropdownMenuItem(text = { Text("Galería (fotos, documentos, links, audios)") }, onClick = { close(); onGallery() })
                         DropdownMenuItem(text = { Text(if (silentRead) "✓ Lectura invisible (sin tildes azules)" else "Lectura invisible (sin tildes azules)") }, onClick = {
                             close()
@@ -762,6 +782,19 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
         }
     }
     viewerImage?.let { ImageViewer(it) { viewerImage = null } }
+    when (lockDialog) {
+        "new" -> NewPasswordDialog(onDone = {
+            lockDialog = ""
+            ChatLock.lock(jid)
+            lockedChat = true
+            scope.launch { snackbar.showSnackbar("Chat bloqueado: la próxima vez te va a pedir la contraseña.") }
+        }, onDismiss = { lockDialog = "" })
+        "ask" -> AskPasswordDialog("Quitar contraseña del chat", onOk = {
+            lockDialog = ""
+            ChatLock.unlock(jid)
+            lockedChat = false
+        }, onDismiss = { lockDialog = "" })
+    }
     reminderFor?.let { (rm, found) ->
         ReminderDialog(
             rm, found, chat?.name.orEmpty(),
@@ -873,6 +906,7 @@ private fun Composer(
 ) {
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
+    val view = LocalView.current
     // El campo usa TextFieldState: es el único que acepta imágenes del teclado (la sugerencia "Pegar" con la miniatura).
     // Se sincroniza en los dos sentidos con `draft`, que sigue siendo lo que usa el resto de la pantalla.
     val fieldState = remember { TextFieldState(draft.text, draft.selection) }
@@ -902,6 +936,7 @@ private fun Composer(
         try {
             VoicePlayer.release()
             recorder = VoiceRecorder().also { it.start(scope) }
+            Haptics.confirm(view)   // se nota en la mano que empezó a grabar
             dictation = dict
             if (!dict) onRecordingState(true)
         } catch (e: Exception) {
@@ -931,12 +966,15 @@ private fun Composer(
         val paused by rec.paused.collectAsStateWithLifecycle()
         Row(Modifier.fillMaxWidth().background(C.surface).padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = {
+                Haptics.reject(view)
                 rec.cancel()
                 recorder = null
                 if (!dictation) onRecordingState(false)
             }) { Icon(Icons.Default.Delete, "Descartar", tint = C.danger) }
             Box(Modifier.size(10.dp).background(if (paused) C.text3 else C.danger, CircleShape))
-            Text(formatSeconds(seconds), color = C.text, modifier = Modifier.padding(start = 8.dp).weight(1f))
+            val levels by rec.levels.collectAsStateWithLifecycle()
+            Text(formatSeconds(seconds), color = C.text, modifier = Modifier.padding(start = 8.dp))
+            LiveWave(levels, paused, Modifier.weight(1f).height(32.dp).padding(horizontal = 10.dp))
             if (dictation) {
                 Row(
                     Modifier.clickable {
@@ -1067,10 +1105,16 @@ private fun Composer(
         }
         Box(Modifier.padding(start = 6.dp)) {
             if (!typing) {
-                // Toque: nota de voz. Mantener apretado: dictar a texto.
+                // Toque: nota de voz. Mantener apretado: dictar a texto. Se achica mientras lo apretás.
+                val micSource = remember { MutableInteractionSource() }
+                val micPressed by micSource.collectIsPressedAsState()
+                val micScale by animateFloatAsState(if (micPressed) 0.85f else 1f, label = "mic")
                 Box(
-                    Modifier.size(48.dp).clip(CircleShape).background(C.accent).combinedClickable(
-                        onClick = { beginRecording(false) },
+                    Modifier.size(48.dp).graphicsLayer { scaleX = micScale; scaleY = micScale }
+                        .clip(CircleShape).background(C.accent).combinedClickable(
+                        interactionSource = micSource,
+                        indication = LocalIndication.current,
+                        onClick = { Haptics.tap(view); beginRecording(false) },
                         onLongClick = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             beginRecording(true)
@@ -1084,6 +1128,32 @@ private fun Composer(
                     else Icon(Icons.AutoMirrored.Filled.Send, "Enviar", tint = C.onAccent)
                 }
             }
+        }
+    }
+}
+
+
+/** Vúmetro de la grabación: barras que corren de derecha a izquierda siguiendo la voz. */
+@Composable
+private fun LiveWave(levels: List<Float>, paused: Boolean, modifier: Modifier) {
+    val active = if (paused) C.text3 else C.accent
+    val idle = C.text3
+    androidx.compose.foundation.Canvas(modifier) {
+        val n = VoiceRecorder.LIVE_BARS
+        val step = size.width / n
+        val barW = (step * 0.55f).coerceAtLeast(2f)
+        val mid = size.height / 2
+        val offset = n - levels.size
+        for (i in 0 until n) {
+            val lvl = if (i >= offset) levels[i - offset] else 0f
+            val h = (size.height * (0.08f + 0.92f * lvl)).coerceAtLeast(barW)
+            val x = i * step + (step - barW) / 2
+            drawRoundRect(
+                color = if (i >= offset) active else idle.copy(alpha = 0.35f),
+                topLeft = androidx.compose.ui.geometry.Offset(x, mid - h / 2),
+                size = androidx.compose.ui.geometry.Size(barW, h),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(barW / 2, barW / 2),
+            )
         }
     }
 }

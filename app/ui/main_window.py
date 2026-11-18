@@ -304,6 +304,7 @@ class MainWindow(QMainWindow):
         self.chat_list_panel.all_marked_read.connect(self.notifications.all_read)
         self.chat_list_panel.chat_marked_read.connect(self.notifications.chat_opened)
         self.chat_list_panel.chat_lock_changed.connect(self._on_chat_lock_changed)
+        self.chat_view_panel.chat_lock_changed.connect(self._on_chat_lock_changed_from_chat)
         self.chat_view_panel.message_sent.connect(self._on_message_sent)
         self.chat_view_panel.chat_open_requested.connect(self._on_chat_selected)
         self.chat_view_panel.ai_state_changed.connect(self.chat_list_panel.set_ai_state)
@@ -358,6 +359,11 @@ class MainWindow(QMainWindow):
             self.chat_list_panel.reload_chats()
 
     def _on_chat_lock_changed(self, jid: str):
+        self._close_if_locked_current()
+
+    def _on_chat_lock_changed_from_chat(self, jid: str):
+        # Bloqueado desde el menú del chat abierto: se cierra (la próxima vez pide la contraseña) y la lista muestra el candado
+        self.chat_list_panel.reload_chats(select_jid=None if not chat_lock.is_open(jid) else jid)
         self._close_if_locked_current()
 
     # ── Bloqueo de la app entera ──

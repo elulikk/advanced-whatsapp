@@ -48,7 +48,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -201,7 +200,7 @@ fun ChatListScreen(
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         androidx.compose.foundation.Image(
-                            painter = androidx.compose.ui.res.painterResource(com.advancedwhatsapp.app.R.mipmap.ic_launcher),
+                            painter = androidx.compose.ui.res.painterResource(com.advancedwhatsapp.app.R.drawable.app_logo),
                             contentDescription = "Logo", modifier = Modifier.size(30.dp),
                         )
                         Text("Advanced WhatsApp", color = C.ember, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(start = 8.dp))

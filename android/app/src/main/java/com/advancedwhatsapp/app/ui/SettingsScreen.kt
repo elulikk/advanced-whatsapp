@@ -19,7 +19,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -67,6 +66,7 @@ fun SettingsScreen(onBack: () -> Unit, onExtras: () -> Unit = {}) {
     var confirmUnlink by remember { mutableStateOf(false) }
     var notifications by remember { mutableStateOf(Prefs.notifications) }
     var notifyGroups by remember { mutableStateOf(Prefs.notifyGroups) }
+    var haptics by remember { mutableStateOf(Prefs.haptics) }
     var receipts by remember { mutableStateOf(Prefs.readReceipts) }
     var statusReceipts by remember { mutableStateOf(Prefs.statusReceipts) }
     var keepCpu by remember { mutableStateOf(Prefs.keepCpuAwake) }
@@ -101,6 +101,7 @@ fun SettingsScreen(onBack: () -> Unit, onExtras: () -> Unit = {}) {
             Section("Notificaciones y lectura")
             Toggle("Avisar de mensajes y llamadas", notifications) { notifications = it; Prefs.notifications = it }
             Toggle("Avisar de mensajes de grupos", notifyGroups) { notifyGroups = it; Prefs.notifyGroups = it }
+            Toggle("Vibrar al tocar botones", haptics) { haptics = it; Prefs.haptics = it }
             Toggle("Enviar confirmación de lectura (tildes azules)", receipts) { receipts = it; Prefs.readReceipts = it }
             Toggle("Al ver un estado, avisar al contacto que lo viste", statusReceipts) { statusReceipts = it; Prefs.statusReceipts = it }
 
