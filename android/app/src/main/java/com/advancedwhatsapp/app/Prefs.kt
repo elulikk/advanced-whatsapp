@@ -38,6 +38,11 @@ object Prefs {
         get() = p.getBoolean("notify_groups", false)
         set(v) = p.edit().putBoolean("notify_groups", v).apply()
 
+    /** Borrar las notificaciones de WhatsApp mientras AW está conectado (notify/WaNotificationSilencer). */
+    var replaceWaNotifications: Boolean
+        get() = p.getBoolean("replace_wa_notifications", false)
+        set(v) = p.edit().putBoolean("replace_wa_notifications", v).apply()
+
     /** Vibración corta al tocar botones (además respeta el ajuste de vibración táctil del sistema). */
     var haptics: Boolean
         get() = p.getBoolean("haptics", true)

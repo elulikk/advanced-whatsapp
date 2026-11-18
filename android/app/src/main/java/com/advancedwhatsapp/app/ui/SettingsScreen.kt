@@ -1,5 +1,6 @@
 package com.advancedwhatsapp.app.ui
 
+import androidx.compose.foundation.clickable
 import android.content.Intent
 import android.net.Uri
 import android.os.PowerManager
@@ -102,6 +103,7 @@ fun SettingsScreen(onBack: () -> Unit, onExtras: () -> Unit = {}) {
             Toggle("Avisar de mensajes y llamadas", notifications) { notifications = it; Prefs.notifications = it }
             Toggle("Avisar de mensajes de grupos", notifyGroups) { notifyGroups = it; Prefs.notifyGroups = it }
             Toggle("Vibrar al tocar botones", haptics) { haptics = it; Prefs.haptics = it }
+            WhatsAppNotificationsSetting()
             Toggle("Enviar confirmación de lectura (tildes azules)", receipts) { receipts = it; Prefs.readReceipts = it }
             Toggle("Al ver un estado, avisar al contacto que lo viste", statusReceipts) { statusReceipts = it; Prefs.statusReceipts = it }
 
@@ -320,3 +322,42 @@ private fun ProviderCard(provider: String) {
         result?.let { Text(it, fontSize = 13.sp, color = if (it.startsWith("✓")) C.accent else C.danger) }
     }
 }
+
+/**
+ * Reemplazar las notificaciones de WhatsApp: el interruptor y el estado del permiso "Acceso a notificaciones",
+ * que se vuelve a mirar cada vez que volvés a la app (por si lo diste en Ajustes de Android).
+ */
+@Composable
+private fun WhatsAppNotificationsSetting() {
+    val c = LocalContext.current
+    var enabled by remember { mutableStateOf(Prefs.replaceWaNotifications) }
+    var access by remember { mutableStateOf(com.advancedwhatsapp.app.notify.WaNotificationSilencer.hasAccess(c)) }
+    val owner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(owner) {
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, e ->
+            if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME) access = com.advancedwhatsapp.app.notify.WaNotificationSilencer.hasAccess(c)
+        }
+        owner.lifecycle.addObserver(obs)
+        onDispose { owner.lifecycle.removeObserver(obs) }
+    }
+    Toggle("Reemplazar las notificaciones de WhatsApp", enabled) {
+        enabled = it
+        Prefs.replaceWaNotifications = it
+        if (it && !access) com.advancedwhatsapp.app.notify.WaNotificationSilencer.openAccessSettings(c)
+    }
+    Text(
+        "Borra los avisos de WhatsApp apenas llegan, mientras Advanced WhatsApp está conectado (si se desconecta, quedan los de " +
+            "WhatsApp y no te perdés nada). Las llamadas no se tocan. En el reloj (Zepp u otro): dejá activada solo " +
+            "Advanced WhatsApp en las alertas de apps para no recibir todo dos veces; los audios llegan ya transcriptos.",
+        color = C.text2, fontSize = 12.sp,
+    )
+    if (enabled && !access) {
+        Text(
+            "Falta el permiso «Acceso a notificaciones»: tocá acá para darlo. Si aparece en gris, andá a Ajustes > Apps > " +
+                "Advanced WhatsApp > ⋮ > «Permitir configuración restringida» y volvé a intentar.",
+            color = C.ember, fontSize = 12.sp,
+            modifier = Modifier.clickable { com.advancedwhatsapp.app.notify.WaNotificationSilencer.openAccessSettings(c) },
+        )
+    }
+}
+

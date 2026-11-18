@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Generado por tools/generar_iconos.py: globo verde con la llama blanca -->
+<!-- Generado por tools/generar_iconos.py: globo verde con aro blanco y llama naranja (opción «Brasa») -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
     <path android:fillColor="#25D366" android:pathData="M54.00,23.06a29.25,29.25 0 1,1 0,58.50a29.25,29.25 0 1,1 0,-58.50z" />
     <path android:fillColor="#25D366" android:pathData="M33.75,68.62L24.19,85.50L45.00,78.75z" />
-    <path android:fillColor="#FFFFFF" android:pathData="M54.00,32.84C57.52,41.98 68.06,46.20 68.06,58.15C68.06,66.59 61.73,72.91 54.00,72.91C46.27,72.91 39.94,66.59 39.94,58.15C39.94,51.82 43.45,47.60 46.97,44.79C46.97,49.01 49.78,51.12 51.19,51.12C49.08,44.79 50.48,38.46 54.00,32.84z" />
+    <path android:fillColor="#00000000" android:strokeColor="#FFFFFF" android:strokeWidth="3.09" android:pathData="M54.00,28.69a23.62,23.62 0 1,1 0,47.25a23.62,23.62 0 1,1 0,-47.25z" />
+    <path android:fillColor="#FF6A1A" android:pathData="M54.00,36.84C56.81,44.16 65.25,47.53 65.25,57.09C65.25,63.84 60.19,68.91 54.00,68.91C47.81,68.91 42.75,63.84 42.75,57.09C42.75,52.03 45.56,48.66 48.38,46.41C48.38,49.78 50.62,51.47 51.75,51.47C50.06,46.41 51.19,41.34 54.00,36.84z" />
+    <path android:fillColor="#FFC531" android:pathData="M54.00,52.88C55.41,56.53 59.62,58.22 59.62,63.00C59.62,66.38 57.09,68.91 54.00,68.91C50.91,68.91 48.38,66.38 48.38,63.00C48.38,60.47 49.78,58.78 51.19,57.66C51.19,59.34 52.31,60.19 52.88,60.19C52.03,57.66 52.59,55.12 54.00,52.88z" />
 </vector>

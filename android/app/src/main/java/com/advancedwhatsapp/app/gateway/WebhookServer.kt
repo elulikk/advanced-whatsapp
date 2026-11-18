@@ -199,10 +199,14 @@ class WebhookServer {
         if (saved) d.optJSONObject("poll")?.let { Db.setPoll(id, it.toString()) }
         if (saved && d.has("link_preview")) LinkPreviews.storeEvent(d)
         val isNew = !existed && !d.optBoolean("edited") && !d.optBoolean("revoked")
-        if (saved && isNew && !fromMe && d.optString("upsert_type") == "notify" && !d.optBoolean("already_read")) {
-            Notifier.message(chat)
+        val notify = saved && isNew && !fromMe && d.optString("upsert_type") == "notify" && !d.optBoolean("already_read")
+        val isAudio = (d.str("media_type") ?: "text") == "audio"
+        // Un audio nuevo se avisa cuando ya está transcripto (o a los 15 s): la notificación, y el reloj, muestran el texto
+        if (notify && isAudio) Notifier.waitTranscript(chat, id)
+        val queued = saved && isNew && isAudio && AutoTranscriber.enqueue(id)
+        if (notify && (!isAudio || !queued)) {
+            if (isAudio) Notifier.transcriptReady(id) else Notifier.message(chat)
         }
-        if (saved && isNew && (d.str("media_type") ?: "text") == "audio") AutoTranscriber.enqueue(id)
     }
 
     private fun readElsewhere(chats: JSONArray?) {

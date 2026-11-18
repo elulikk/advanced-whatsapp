@@ -46,6 +46,16 @@
         </service>
 
         <!-- Node.js corre en su propio proceso: solo puede arrancar una vez por proceso -->
+        <!-- Reemplazar las notificaciones de WhatsApp (solo si el usuario da "Acceso a notificaciones") -->
+        <service
+            android:name=".notify.WaNotificationSilencer"
+            android:exported="true"
+            android:label="Advanced WhatsApp: reemplazar avisos de WhatsApp"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
         <service
             android:name=".gateway.NodeService"
             android:exported="false"

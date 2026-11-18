@@ -15,7 +15,7 @@ import os
 import time
 from typing import Callable, Dict, Optional
 
-from PySide6.QtCore import QObject, QUrl, Signal
+from PySide6.QtCore import QObject, QTimer, QUrl, Signal
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
 from app.config import get_pref
@@ -26,6 +26,9 @@ from app.windows_integration import Toaster, thumbnail_from_media_raw, ICON_PNG
 # Mensajes enviados antes de abrir Advanced WhatsApp: no se anuncian (ya se ven como "no leídos" en la lista)
 BACKLOG_GRACE = 30
 MAX_AGE = 12 * 3600
+# Un audio con transcripción automática espera hasta este tiempo para avisar ya con el texto (se lee en la notificación)
+TRANSCRIPT_WAIT_MS = 15000
+TRANSCRIPT_MAX_CHARS = 300
 
 
 def _display_name(chat: Optional[dict], data: dict) -> str:
@@ -54,6 +57,13 @@ class NotificationCenter(QObject):
         self._last_balloon_chat: Optional[str] = None
         self._sound = None
         self._tray_signal_connected = False
+        self._waiting_audio: Dict[str, dict] = {}   # message_id -> aviso armado que espera la transcripción
+        try:
+            from app.media_service import media_signals
+            media_signals.transcript_ready.connect(self._flush_audio)
+            media_signals.job_failed.connect(self._flush_audio)
+        except Exception as e:
+            print(f"[Advanced WhatsApp Notificaciones] sin espera de transcripciones: {e}")
         if get_pref("notify_enabled"):
             self.toaster.warm_up()
 
@@ -130,13 +140,47 @@ class NotificationCenter(QObject):
                 raw = (msg or {}).get("media_raw")
             hero = thumbnail_from_media_raw(raw, data.get("message_id") or chat_jid)
 
+        toast = {"chat_jid": chat_jid, "title": title, "body": body, "avatar": avatar or ICON_PNG, "hero": hero,
+                 "attribution": attribution}
+        msg_id = data.get("message_id") or ""
+        if show_preview and media_type == "audio" and msg_id and self._will_transcribe():
+            # Se avisa cuando llega el texto (o a los 15 s): así la notificación, y el reloj, muestran lo que dice
+            self._waiting_audio[msg_id] = toast
+            QTimer.singleShot(TRANSCRIPT_WAIT_MS, lambda: self._flush_audio(msg_id))
+            return
+        self._show_toast(toast)
+
+    @staticmethod
+    def _will_transcribe() -> bool:
+        try:
+            from app.media_service import auto_transcribe_enabled
+            from app.ai.transcription import has_transcription_key
+            return auto_transcribe_enabled() and has_transcription_key()
+        except Exception:
+            return False
+
+    def _flush_audio(self, msg_id: str):
+        toast = self._waiting_audio.pop(msg_id, None)
+        if toast is None:
+            return
+        try:
+            text = ((get_message(msg_id) or {}).get("transcript") or "").strip()
+            if text and not text.startswith("("):   # "(sin voz detectable)" no aporta
+                if len(text) > TRANSCRIPT_MAX_CHARS:
+                    text = text[:TRANSCRIPT_MAX_CHARS].rstrip() + "…"
+                toast["body"] = f"🎤 {text}"
+        except Exception as e:
+            print(f"[Advanced WhatsApp Notificaciones] transcripción para el aviso: {e}")
+        self._show_toast(toast)
+
+    def _show_toast(self, t: dict):
         sound = get_pref("notify_sound")
         shown = False
         if self.toaster.available and not self.toaster.disabled_by_user:
-            shown = self.toaster.show_message(chat_jid, title, body, avatar=avatar or ICON_PNG, hero=hero,
-                                              attribution=attribution, sound=sound)
+            shown = self.toaster.show_message(t["chat_jid"], t["title"], t["body"], avatar=t["avatar"], hero=t["hero"],
+                                              attribution=t["attribution"], sound=sound)
         if not shown:
-            self._balloon(chat_jid, title, body)
+            self._balloon(t["chat_jid"], t["title"], t["body"])
         if self._alert_widget is not None:
             QApplication.alert(self._alert_widget, 0)   # parpadeo del icono en la barra de tareas
 

@@ -16,13 +16,18 @@ import struct
 import sys
 
 from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QPointF, Qt
-from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QPainterPath, QTransform
+from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QPainterPath, QPen, QTransform
 
 ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
 SIZES = (16, 20, 24, 32, 40, 48, 64, 128, 256)
 
 DARK = "#0b1114"
 GREEN = "#25D366"
+FLAME = "#FF6A1A"          # llama naranja
+FLAME_CORE = "#FFC531"     # centro amarillo
+RING_R, RING_W = 84, 11    # aro blanco dentro del globo (lienzo de 256)
+FLAME_SCALE = 1.0          # tamaño de la llama respecto de flame_path
+CORE_SCALE = 0.5           # la llamita amarilla: la llama achicada desde la base
 ANDROID_RES = os.path.join(os.path.dirname(ASSETS), "android", "app", "src", "main", "res")
 
 
@@ -52,8 +57,17 @@ def bubble_path(s: float) -> QPainterPath:
     return bubble.united(tail)
 
 
+def flame_transform(s: float) -> QTransform:
+    """Lleva la llama de flame_path al centro del globo, al tamaño FLAME_SCALE."""
+    t = QTransform()
+    t.translate(128 * s, 124 * s)
+    t.scale(FLAME_SCALE, FLAME_SCALE)
+    t.translate(-128 * s, -119 * s)
+    return t
+
+
 def draw_icon(size: int, background: str = None) -> QImage:
-    """Globo verde estilo WhatsApp con la llama blanca adentro (opción «Minimal»). Fondo transparente salvo `background`."""
+    """Globo verde estilo WhatsApp con aro blanco y la llama naranja con centro amarillo (opción «Brasa»)."""
     img = QImage(size, size, QImage.Format_ARGB32)
     img.fill(QColor(background) if background else Qt.transparent)
     p = QPainter(img)
@@ -62,16 +76,24 @@ def draw_icon(size: int, background: str = None) -> QImage:
     p.setPen(Qt.NoPen)
     p.setBrush(QColor(GREEN))
     p.drawPath(bubble_path(s))
-    # Llama blanca, un poco más grande que la original y centrada en el globo
-    t = QTransform()
-    t.translate(128 * s, 124 * s)
-    t.scale(1.25, 1.25)
-    t.translate(-128 * s, -119 * s)
-    p.setBrush(QColor("#ffffff"))
-    p.drawPath(t.map(flame_path(s)))
+    if size >= 24:   # en 16/20 px el aro se empasta: queda solo la llama
+        p.setPen(QPen(QColor("#ffffff"), RING_W * s))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(QPointF(128 * s, 122 * s), RING_R * s, RING_R * s)
+        p.setPen(Qt.NoPen)
+    flame = flame_transform(s).map(flame_path(s))
+    p.setBrush(QColor(FLAME))
+    p.drawPath(flame)
+    if size >= 24:
+        core = QTransform()
+        base = flame.boundingRect()
+        core.translate(base.center().x(), base.bottom())
+        core.scale(CORE_SCALE, CORE_SCALE)
+        core.translate(-base.center().x(), -base.bottom())
+        p.setBrush(QColor(FLAME_CORE))
+        p.drawPath(core.map(flame))
     p.end()
     return img
-
 
 # Puntos de la llama (lienzo de 256 px) en el orden de flame_path: inicio y luego tríos de control de cada curva
 FLAME_PTS = [(128, 62), [(138, 88), (168, 100), (168, 134)], [(168, 158), (150, 176), (128, 176)],
@@ -83,26 +105,35 @@ def android_foreground_xml() -> str:
     """Capa de adelante del ícono adaptativo (vector de 108x108 con la zona segura de 66 en el centro)."""
     k, off = 72 / 256, 18
 
-    def tr(x, y, flame=False):
-        if flame:   # misma transformación que en draw_icon
-            x, y = (x - 128) * 1.25 + 128, (y - 119) * 1.25 + 124
-        return f"{off + x * k:.2f},{off + y * k:.2f}"
+    def flame_pts(scale_core=False):
+        pts = [FLAME_PTS[0]] + [pt for c in FLAME_PTS[1:] for pt in c]
+        pts = [((x - 128) * FLAME_SCALE + 128, (y - 119) * FLAME_SCALE + 124) for x, y in pts]
+        if scale_core:
+            cx, bottom = (min(x for x, _ in pts) + max(x for x, _ in pts)) / 2, max(y for _, y in pts)
+            pts = [((x - cx) * CORE_SCALE + cx, (y - bottom) * CORE_SCALE + bottom) for x, y in pts]
+        return pts
 
-    cx, cy, r = off + 128 * k, off + 122 * k, 104 * k
-    circle = f"M{cx:.2f},{cy - r:.2f}a{r:.2f},{r:.2f} 0 1,1 0,{2 * r:.2f}a{r:.2f},{r:.2f} 0 1,1 0,{-2 * r:.2f}z"
-    tail = f"M{tr(56, 180)}L{tr(22, 240)}L{tr(96, 216)}z"
-    start, *curves = FLAME_PTS
-    flame = f"M{tr(*start, flame=True)}" + "".join("C" + " ".join(tr(*pt, flame=True) for pt in c) for c in curves) + "z"
+    def path(pts):
+        f = lambda x, y: f"{off + x * k:.2f},{off + y * k:.2f}"
+        head, rest = pts[0], pts[1:]
+        return f"M{f(*head)}" + "".join("C" + " ".join(f(*pt) for pt in rest[i:i + 3]) for i in range(0, len(rest), 3)) + "z"
+
+    def circle(r):
+        cx, cy, r = off + 128 * k, off + 122 * k, r * k
+        return f"M{cx:.2f},{cy - r:.2f}a{r:.2f},{r:.2f} 0 1,1 0,{2 * r:.2f}a{r:.2f},{r:.2f} 0 1,1 0,{-2 * r:.2f}z"
+
+    tail = "M" + "L".join(f"{off + x * k:.2f},{off + y * k:.2f}" for x, y in ((56, 180), (22, 240), (96, 216))) + "z"
     return f"""<?xml version="1.0" encoding="utf-8"?>
-<!-- Generado por tools/generar_iconos.py: globo verde con la llama blanca -->
+<!-- Generado por tools/generar_iconos.py: globo verde con aro blanco y llama naranja (opción «Brasa») -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
-    <path android:fillColor="{GREEN}" android:pathData="{circle}" />
+    <path android:fillColor="{GREEN}" android:pathData="{circle(104)}" />
     <path android:fillColor="{GREEN}" android:pathData="{tail}" />
-    <path android:fillColor="#FFFFFF" android:pathData="{flame}" />
+    <path android:fillColor="#00000000" android:strokeColor="#FFFFFF" android:strokeWidth="{RING_W * k:.2f}" android:pathData="{circle(RING_R)}" />
+    <path android:fillColor="{FLAME}" android:pathData="{path(flame_pts())}" />
+    <path android:fillColor="{FLAME_CORE}" android:pathData="{path(flame_pts(True))}" />
 </vector>
 """
-
 
 def png_bytes(img: QImage) -> bytes:
     data = QByteArray()

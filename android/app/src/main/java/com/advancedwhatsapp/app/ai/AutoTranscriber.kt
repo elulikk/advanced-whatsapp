@@ -1,5 +1,6 @@
 package com.advancedwhatsapp.app.ai
 
+import com.advancedwhatsapp.app.notify.Notifier
 import android.util.Log
 import com.advancedwhatsapp.app.Prefs
 import com.advancedwhatsapp.app.data.Actions
@@ -23,7 +24,7 @@ object AutoTranscriber {
     private val inFlight = HashSet<String>()
     private val backlogDone = AtomicBoolean(false)
 
-    private fun available() = Prefs.autoTranscribe && (AiService.hasKey("Groq") || AiService.hasKey("OpenAI"))
+    fun available() = Prefs.autoTranscribe && (AiService.hasKey("Groq") || AiService.hasKey("OpenAI"))
 
     private fun failedIds(): List<String> = Prefs.getString("auto_transcribe_failed").split(',').filter { it.isNotEmpty() }
 
@@ -53,6 +54,7 @@ object AutoTranscriber {
                 markFailed(id)
             } finally {
                 synchronized(inFlight) { inFlight.remove(id) }
+                Notifier.transcriptReady(id)   // el aviso que esperaba este audio sale ya (con texto o sin él)
             }
         }
         return true
