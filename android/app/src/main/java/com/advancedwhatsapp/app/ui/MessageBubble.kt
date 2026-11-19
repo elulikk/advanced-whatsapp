@@ -77,6 +77,7 @@ import coil.compose.AsyncImage
 import coil.decode.ImageDecoderDecoder
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
+import com.advancedwhatsapp.app.Prefs
 import com.advancedwhatsapp.app.ai.MessageSummary
 import com.advancedwhatsapp.app.ai.SmartFeatures
 import com.advancedwhatsapp.app.data.Db
@@ -111,6 +112,7 @@ fun MessageBubble(
     onAutoDownload: () -> Unit = {}, onSaveSticker: () -> Unit = {}, onSaveToDownloads: (() -> Unit)? = null,
     translation: String? = null, onTranslate: () -> Unit = {}, onHideTranslation: () -> Unit = {},
     reminder: SmartFeatures.Detected? = null, onReminder: () -> Unit = {},
+    onForward: (() -> Unit)? = null,
 ) {
     var menu by remember { mutableStateOf(false) }
     var dialog by remember { mutableStateOf("") }   // «original» (mensaje eliminado) o «history» (versiones de una edición)
@@ -120,7 +122,12 @@ fun MessageBubble(
     // Un sticker va suelto, sin burbuja, como en WhatsApp (con una cita sí lleva fondo)
     val bare = stickerFile != null && m.quotedText.isNullOrBlank()
 
+    // Botón rápido de reenviar al costado, como WhatsApp: en multimedia y links (en textos, si se activó en Ajustes)
+    val quickForward = onForward != null && !revoked &&
+        (m.mediaType != "text" || Prefs.forwardButtonAll || URL.containsMatchIn(m.text))
     Box(Modifier.fillMaxWidth(), contentAlignment = if (m.fromMe) Alignment.CenterEnd else Alignment.CenterStart) {
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        if (quickForward && m.fromMe) QuickForwardButton { onForward?.invoke() }
         Column(
             Modifier.widthIn(max = 310.dp)
                 .background(if (bare) Color.Transparent else if (m.fromMe) C.bubbleOut else C.bubbleIn, RoundedCornerShape(10.dp))
@@ -200,6 +207,8 @@ fun MessageBubble(
             }
             if (translation != null) TranslationPanel(translation, onHideTranslation)
         }
+        if (quickForward && !m.fromMe) QuickForwardButton { onForward?.invoke() }
+      }
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
             if (!revoked) {
                 Row(Modifier.padding(horizontal = 8.dp)) {
@@ -214,6 +223,12 @@ fun MessageBubble(
                     menu = false
                     onReply()
                 })
+                if (onForward != null) {
+                    DropdownMenuItem(text = { Text("Reenviar") }, onClick = {
+                        menu = false
+                        onForward()
+                    })
+                }
                 DropdownMenuItem(text = { Text(if (m.starredAt > 0) "Quitar destacado" else "Destacar") }, onClick = {
                     menu = false
                     scope.launch(Dispatchers.IO) { Db.setStarred(m.id, m.starredAt == 0L) }

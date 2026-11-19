@@ -83,6 +83,42 @@ object Actions {
         StickerLibrary.markUsed(sticker.id)
     }
 
+    /** Tipos que se pueden reenviar (ubicaciones, contactos y encuestas no: WhatsApp los arma distinto). */
+    val FORWARDABLE = setOf("text", "image", "video", "audio", "document", "sticker")
+
+    fun canForward(m: Message): Boolean =
+        m.mediaType in FORWARDABLE && (m.mediaType != "text" || m.text.isNotBlank())
+
+    /**
+     * Reenvía un mensaje a otro chat con la etiqueta «Reenviado» de WhatsApp. Si el archivo todavía no estaba
+     * bajado, lo baja primero (una sola vez aunque se reenvíe a varios chats: queda en mediaPath).
+     */
+    fun forward(to: String, m: Message) {
+        val body = JSONObject().put("to", to).put("forwarded", true)
+        if (m.mediaType == "text") {
+            body.put("text", m.text)
+            saveSent(to, body, m.text, "text", null, null, null)
+            return
+        }
+        val path = downloadMedia(m)
+        val file = File(path)
+        var text = m.text
+        when (m.mediaType) {
+            "image" -> body.put("text", text).put("image_path", path).put("image_thumb", Photos.thumbnailBase64(file))
+            "video" -> body.put("text", text).put("video_path", path)
+            "audio" -> { text = ""; body.put("audio_path", path) }
+            "sticker" -> { text = ""; body.put("sticker_path", path) }
+            else -> {
+                val name = Downloads.displayName(m.text, file)
+                val mime = android.webkit.MimeTypeMap.getSingleton()
+                    .getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase())
+                body.put("document_path", path).put("document_name", name).put("mimetype", mime ?: "application/octet-stream")
+                text = name
+            }
+        }
+        saveSent(to, body, text, m.mediaType, path, null, null)
+    }
+
     fun markRead(jid: String) {
         val ids = Db.markChatRead(jid)
         com.advancedwhatsapp.app.notify.Notifier.cancel(jid)   // leído: que la notificación (y el globo del ícono) baje
