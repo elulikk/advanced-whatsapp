@@ -73,6 +73,11 @@ object Prefs {
         set(v) = p.edit().putBoolean("auto_read_images", v).apply()
 
     /** Al terminar una nota de voz suena la siguiente del chat (si es otro audio ya bajado). */
+    /** Botón rápido de reenviar también en los mensajes de texto (si no, solo en fotos, videos, archivos y links). */
+    var forwardButtonAll: Boolean
+        get() = p.getBoolean("forward_button_all", false)
+        set(v) = p.edit().putBoolean("forward_button_all", v).apply()
+
     var audioAutoplay: Boolean
         get() = p.getBoolean("audio_autoplay", true)
         set(v) = p.edit().putBoolean("audio_autoplay", v).apply()

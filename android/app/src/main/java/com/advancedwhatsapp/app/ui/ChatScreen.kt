@@ -159,6 +159,7 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
     var messages by remember { mutableStateOf(emptyList<Message>()) }
     var limit by remember { mutableIntStateOf(PAGE) }
     var replyTo by remember { mutableStateOf<Message?>(null) }
+    var forwarding by remember { mutableStateOf<Message?>(null) }
     // El borrador guarda también el cursor: los emojis se insertan donde está. `draft` es solo su texto.
     val draftState = remember { mutableStateOf(TextFieldValue("")) }
     val draftText = remember { DraftText(draftState) }
@@ -677,6 +678,7 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
                             onHideTranslation = { translations.remove(m.id) },
                             reminder = if (SmartFeatures.dateRemindersOn) SmartFeatures.futureDatetime(m) else null,
                             onReminder = { SmartFeatures.futureDatetime(m)?.let { found -> reminderFor = m to found } },
+                            onForward = if (Actions.canForward(m)) ({ forwarding = m }) else null,
                         )
                     }
                 }
@@ -794,6 +796,22 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
             ChatLock.unlock(jid)
             lockedChat = false
         }, onDismiss = { lockDialog = "" })
+    }
+    forwarding?.let { fm ->
+        ForwardDialog(fm, onDismiss = { forwarding = null }, onSend = { targets ->
+            forwarding = null
+            withBusy(fm.id) {
+                val failed = targets.filter { to -> runCatching { Actions.forward(to, fm) }.isFailure }
+                val ok = targets.size - failed.size
+                snackbar.showSnackbar(
+                    when {
+                        failed.isEmpty() -> if (ok == 1) "Reenviado." else "Reenviado a $ok chats."
+                        ok == 0 -> "No se pudo reenviar. ¿Está conectado WhatsApp?"
+                        else -> "Reenviado a $ok; falló en ${failed.size}."
+                    },
+                )
+            }
+        })
     }
     reminderFor?.let { (rm, found) ->
         ReminderDialog(

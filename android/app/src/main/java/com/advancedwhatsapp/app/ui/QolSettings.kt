@@ -38,6 +38,7 @@ fun QolSettingsSection() {
     val scope = rememberCoroutineScope()
     var autoplay by remember { mutableStateOf(Prefs.audioAutoplay) }
     var previews by remember { mutableStateOf(Prefs.linkPreviews) }
+    var fwdAll by remember { mutableStateOf(Prefs.forwardButtonAll) }
     var usage by remember { mutableStateOf<MediaCleanup.Usage?>(null) }
     var days by remember { mutableStateOf(if (Prefs.mediaAutoDays > 0) Prefs.mediaAutoDays.toString() else "") }
     var gb by remember { mutableStateOf(if (Prefs.mediaAutoGb > 0f) Prefs.mediaAutoGb.toString() else "") }
@@ -61,6 +62,9 @@ fun QolSettingsSection() {
     Text("Chat", color = C.ember, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 10.dp))
     SwitchRow("Reproducir sola la siguiente nota de voz al terminar una", autoplay) { autoplay = it; Prefs.audioAutoplay = it }
     SwitchRow("Mostrar vista previa de los links (título, descripción e imagen)", previews) { previews = it; Prefs.linkPreviews = it }
+    SwitchRow("Botón rápido de reenviar también en los mensajes de texto (siempre está en fotos, videos, audios, archivos y links)", fwdAll) {
+        fwdAll = it; Prefs.forwardButtonAll = it
+    }
     OutlinedButton(onClick = { showStats = true }, modifier = Modifier.fillMaxWidth()) { Text("Ver estadísticas de mis chats") }
     Text(
         "Widget: mantené apretado un lugar libre de la pantalla de inicio, elegí «Widgets» y agregá «Sin leer» para ver los chats pendientes.",

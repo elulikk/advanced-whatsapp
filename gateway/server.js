@@ -2607,6 +2607,9 @@ async function sendWhatsApp(body, extraOpts = {}) {
         ? { albumParentKey: { remoteJid: album_parent.remoteJid || jid, id: album_parent.id, fromMe: true } }
         : {};
 
+    // Reenvío: WhatsApp lo muestra con la etiqueta «Reenviado», como el reenvío del celular
+    const fwd = body.forwarded ? { contextInfo: { isForwarded: true, forwardingScore: 1 } } : {};
+
     const mediaFile = (p, missing) => {
         if (!fs.existsSync(p)) throw fail(404, `${missing}: ${p}`);
         return fs.readFileSync(p);
@@ -2620,7 +2623,8 @@ async function sendWhatsApp(body, extraOpts = {}) {
             document: buffer,
             mimetype: mimetype || 'application/octet-stream',
             fileName: fileName,
-            caption: msgText || undefined
+            caption: msgText || undefined,
+            ...fwd
         }, sendOpts);
     } else if (image_path) {
         const buffer = mediaFile(image_path, 'Imagen no encontrada');
@@ -2628,19 +2632,20 @@ async function sendWhatsApp(body, extraOpts = {}) {
             image: buffer,
             caption: msgText || undefined,
             ...album,
+            ...fwd,
             // En Android no hay sharp ni jimp: la miniatura la arma la app
             ...(image_thumb ? { jpegThumbnail: image_thumb } : {})
         }, sendOpts);
     } else if (video_path) {
         const buffer = mediaFile(video_path, 'Video no encontrado');
-        result = await sock.sendMessage(jid, { video: buffer, caption: msgText || undefined, ...album }, sendOpts);
+        result = await sock.sendMessage(jid, { video: buffer, caption: msgText || undefined, ...album, ...fwd }, sendOpts);
     } else if (audio_path) {
         let buffer = mediaFile(audio_path, 'Audio no encontrado');
         // Se reempaqueta el OGG/Opus (granule, fin de stream y CRC correctos) y de ahí sale la duración exacta
         const ogg = normalizeOggOpus(buffer);
         if (ogg) buffer = ogg.buffer;
         else logger.warn?.(`Audio ${path.basename(audio_path)} no es un OGG/Opus válido: se envía sin tocar`);
-        const audioMsg = { audio: buffer, mimetype: 'audio/ogg; codecs=opus', ptt: true };
+        const audioMsg = { audio: buffer, mimetype: 'audio/ogg; codecs=opus', ptt: true, ...fwd };
         // Notas grabadas en la app: llegan con su duración y su onda (si no, Baileys calcula solo la duración)
         const secs = ogg ? ogg.seconds : Number(audio_seconds);
         if (secs > 0) audioMsg.seconds = Math.max(1, Math.round(secs));
@@ -2652,7 +2657,8 @@ async function sendWhatsApp(body, extraOpts = {}) {
         result = await sock.sendMessage(jid, {
             sticker: mediaFile(sticker_path, 'Sticker no encontrado'),
             // webp 512x512; si es animado la app lo avisa (no hay sharp/jimp para detectarlo acá)
-            ...(body.sticker_animated ? { isAnimated: true } : {})
+            ...(body.sticker_animated ? { isAnimated: true } : {}),
+            ...fwd
         }, sendOpts);
     } else if (image_url) {
         result = await sock.sendMessage(jid, {
@@ -2660,7 +2666,7 @@ async function sendWhatsApp(body, extraOpts = {}) {
             caption: msgText || undefined
         }, sendOpts);
     } else {
-        const content = { text: msgText };
+        const content = { text: msgText, ...fwd };
         // Texto con un link: se manda con su vista previa (si el sitio no responde rápido, sale sin ella)
         const linkMatch = body.link_preview === false ? null : LINK_URL_RE.exec(msgText);
         if (linkMatch) {
