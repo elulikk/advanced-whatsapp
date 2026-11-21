@@ -20,8 +20,8 @@ from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
 from app.config import get_pref
 from app import chat_lock
-from app.db import get_chat, is_chat_muted, find_chat_avatar, _preview_for, get_message
-from app.windows_integration import Toaster, thumbnail_from_media_raw, ICON_PNG
+from app.db import get_chat, is_chat_muted, find_chat_avatar, _preview_for, get_message, get_revoked_original
+from app.windows_integration import Toaster, thumbnail_from_media_raw, ICON_PNG, make_uri
 
 # Mensajes enviados antes de abrir Advanced WhatsApp: no se anuncian (ya se ven como "no leídos" en la lista)
 BACKLOG_GRACE = 30
@@ -29,6 +29,8 @@ MAX_AGE = 12 * 3600
 # Un audio con transcripción automática espera hasta este tiempo para avisar ya con el texto (se lee en la notificación)
 TRANSCRIPT_WAIT_MS = 15000
 TRANSCRIPT_MAX_CHARS = 300
+# Las vistas de un estado llegan en ráfaga: se espera un poco para avisar de todas juntas
+STATUS_VIEW_BATCH_MS = 5000
 
 
 def _display_name(chat: Optional[dict], data: dict) -> str:
@@ -58,6 +60,7 @@ class NotificationCenter(QObject):
         self._sound = None
         self._tray_signal_connected = False
         self._waiting_audio: Dict[str, dict] = {}   # message_id -> aviso armado que espera la transcripción
+        self._pending_views: list = []   # nombres de quienes vieron un estado, a juntar en un solo aviso
         try:
             from app.media_service import media_signals
             media_signals.transcript_ready.connect(self._flush_audio)
@@ -89,9 +92,72 @@ class NotificationCenter(QObject):
 
     def on_message(self, data: dict):
         try:
-            self._on_message(data)
+            if data.get("revoked"):
+                self._on_deleted(data)
+            else:
+                self._on_message(data)
         except Exception as e:
             print(f"[Advanced WhatsApp Notificaciones] Error: {e}")
+
+    def _can_alert(self, chat_jid: str, chat: Optional[dict]) -> bool:
+        """Reglas comunes de los avisos que no son mensajes nuevos (borrados): mismas que un mensaje."""
+        if not get_pref("notify_enabled") or chat_lock.is_hidden(chat_jid) or is_chat_muted(chat):
+            return False
+        if chat_jid.endswith("@g.us") and not get_pref("notify_groups"):
+            return False
+        return not self._is_viewing(chat_jid) and not self._is_foreground()
+
+    def _on_deleted(self, data: dict):
+        """«Ana eliminó un mensaje: …» con lo que decía (si se conservó)."""
+        if data.get("from_me") or not get_pref("notify_deleted") or data.get("upsert_type") not in (None, "notify"):
+            return
+        chat_jid = data.get("chat_jid") or ""
+        msg_id = data.get("message_id") or ""
+        ts = int(data.get("timestamp") or 0)
+        if not chat_jid or (ts and time.time() - ts > MAX_AGE):
+            return
+        chat = get_chat(chat_jid)
+        if not self._can_alert(chat_jid, chat):
+            return
+        title = _display_name(chat, data)
+        if chat_jid.endswith("@g.us") and data.get("push_name"):
+            title = f"{data['push_name']} · {title}"
+        body = "🗑 Eliminó un mensaje"
+        orig = get_revoked_original(msg_id) if msg_id else None
+        if orig and get_pref("notify_preview") and not chat_lock.is_locked(chat_jid):
+            preview = _preview_for(orig.get("media_type") or "text", (orig.get("text") or "").strip())
+            if preview:
+                body += f": «{preview[:TRANSCRIPT_MAX_CHARS]}»"
+        self.notify_simple(title, body, uri=make_uri("open", chat_jid), tag=f"del_{msg_id[:40]}",
+                           sound=False)
+
+    # ── «Ana vio tu estado» (se juntan los que llegan seguidos en un solo aviso) ──
+
+    def on_status_view(self, data: dict):
+        try:
+            if not get_pref("notify_enabled") or not get_pref("notify_status_views") or self._is_foreground():
+                return
+            name = (data.get("name") or "").strip() or ("+" + data["phone"] if data.get("phone") else "")
+            if not name:
+                return
+            if not self._pending_views:
+                QTimer.singleShot(STATUS_VIEW_BATCH_MS, self._flush_status_views)
+            if name not in self._pending_views:
+                self._pending_views.append(name)
+        except Exception as e:
+            print(f"[Advanced WhatsApp Notificaciones] Error en vista de estado: {e}")
+
+    def _flush_status_views(self):
+        names, self._pending_views = self._pending_views, []
+        if not names:
+            return
+        if len(names) == 1:
+            body = f"{names[0]} vio tu estado"
+        elif len(names) == 2:
+            body = f"{names[0]} y {names[1]} vieron tu estado"
+        else:
+            body = f"{names[0]}, {names[1]} y {len(names) - 2} más vieron tu estado"
+        self.notify_simple("Tu estado", body, tag="status_views")
 
     def _on_message(self, data: dict):
         if not data.get("is_new") or data.get("from_me") or not get_pref("notify_enabled"):

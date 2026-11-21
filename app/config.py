@@ -228,6 +228,11 @@ PREF_DEFAULTS = {
     "auto_update": True,         # buscar versiones nuevas en GitHub al abrir y cada 12 h (Ajustes > Acerca de)
     "auto_read_images": False,   # leer con IA (descripción + texto) las fotos al descargarlas; apagado para no gastar cuota
     "keep_deleted": True,        # conservar el contenido de mensajes eliminados y las versiones anteriores de los editados
+    "ghost_mode": False,         # modo fantasma: sin tildes azules, sin "escribiendo…", sin "en línea" y estados sin visto
+    "notify_deleted": True,      # avisar cuando alguien elimina un mensaje que te mandó (con lo que decía)
+    "notify_status_views": False,  # avisar cuando alguien ve uno de tus estados
+    "double_click_react": True,  # doble clic sobre un mensaje = reaccionar con el emoji rápido
+    "time_seconds": False,       # mostrar los segundos en la hora de los mensajes
     "tags_palette_open": True,  # panel de tags abierto debajo de los filtros de la lista de chats
     "audio_autoplay": True,     # al terminar una nota de voz suena la siguiente del chat
     "link_previews": True,      # tarjeta con tÃ­tulo, descripciÃ³n e imagen de los links
@@ -267,6 +272,19 @@ def set_setting(key: str, value) -> bool:
     cfg = load_app_config()
     cfg.set("GENERAL", key, str(value))
     return save_app_config(cfg)
+
+
+# Emoji del doble clic sobre un mensaje (Configuración › Apariencia)
+QUICK_REACTIONS = ("❤️", "👍", "😂", "😮", "😢", "🙏", "🔥", "👏")
+
+
+def get_quick_reaction() -> str:
+    v = get_setting("quick_reaction", "").strip()
+    return v[:8] if v else QUICK_REACTIONS[0]
+
+
+def set_quick_reaction(emoji: str) -> bool:
+    return set_setting("quick_reaction", (emoji or "").strip()[:8] or QUICK_REACTIONS[0])
 
 
 def get_tag_palette_view() -> str:

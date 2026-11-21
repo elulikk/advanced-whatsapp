@@ -1305,6 +1305,29 @@ async function initWhatsApp() {
                     if (!isIndividualJid(fromJid)) continue;
                     const resolved = resolveContact(fromJid);
                     if (resolved.isSelf) continue;
+                    const tracked = callTracker.get(c.id) || {};
+                    if (tracked.rejected) continue;   // ya la cortamos: no avisa ni queda como perdida
+                    if (c.status === 'offer' && shouldRejectCall(fromJid, resolved)) {
+                        Object.assign(tracked, { rejected: true, handled: true, logged: true });
+                        callTracker.set(c.id, tracked);
+                        await sock.rejectCall(c.id, c.from).catch(e => console.error('[Baileys] No se pudo rechazar la llamada:', e.message));
+                        console.log(`[Baileys] 📵 Llamada de ${resolved.name} rechazada (filtro de llamadas: ${gatewayPrefs.calls.mode})`);
+                        await deliverReliably(PYTHON_WEBHOOK_URL, {
+                            message_id: `call_${c.id}`,
+                            upsert_type: 'notify',
+                            chat_jid: fromJid,
+                            sender_jid: fromJid,
+                            push_name: resolved.name,
+                            phone: resolved.phone,
+                            from_me: false,
+                            already_read: true,
+                            text: c.isVideo ? '📵 Videollamada rechazada automáticamente' : '📵 Llamada rechazada automáticamente',
+                            media_type: 'text',
+                            timestamp: Math.floor((c.date ? new Date(c.date).getTime() : Date.now()) / 1000),
+                            is_call: true
+                        });
+                        continue;
+                    }
                     console.log(`[Baileys] 📞 Llamada ${c.status} de ${resolved.name} (${c.isVideo ? 'video' : 'voz'})`);
                     postEvent('call', {
                         call_id: c.id, chat_jid: fromJid, name: resolved.name, phone: resolved.phone,
@@ -1831,8 +1854,11 @@ function noteStatusView(r) {
     const resolved = resolveContact(viewer);
     const key = resolved.phone || viewer.split('@')[0].split(':')[0];
     if (resolved.isSelf || key === myPhone || s.viewers[key]) return;
-    s.viewers[key] = { name: resolved.name, ts: Number(rec.readTimestamp || rec.playedTimestamp) };
+    const ts = Number(rec.readTimestamp || rec.playedTimestamp);
+    s.viewers[key] = { name: resolved.name, ts };
     saveMyStatuses();
+    // Aviso «X vio tu estado» (la app decide si lo muestra); los recibos viejos que llegan al reconectar no avisan
+    if (ts >= Date.now() / 1000 - 600) postEvent('status_view', { status_id: s.id, name: resolved.name, phone: key, ts });
 }
 
 // ─── ESTADOS DE LOS CONTACTOS (últimas 24 h) ─────────────────────────────────
@@ -1850,6 +1876,77 @@ try {
 function contactStatusMediaPath(s) {
     const ext = s.type === 'video' ? 'mp4' : s.type === 'audio' ? 'ogg' : 'jpg';
     return path.join(MEDIA_DIR, 'estados_contactos', `${s.id}.${ext}`);
+}
+
+// Baja una sola vez el archivo de un estado de contacto (dos pedidos a la vez comparten la misma descarga)
+const contactStatusDownloads = new Map();
+function ensureContactStatusMedia(s) {
+    const mediaPath = contactStatusMediaPath(s);
+    if (fs.existsSync(mediaPath)) return Promise.resolve(mediaPath);
+    if (contactStatusDownloads.has(s.id)) return contactStatusDownloads.get(s.id);
+    const job = (async () => {
+        fs.mkdirSync(path.dirname(mediaPath), { recursive: true });
+        const buffer = await downloadWithReupload(JSON.parse(s.media_raw, BufferJSON.reviver));
+        const tmp = `${mediaPath}.tmp`;
+        fs.writeFileSync(tmp, buffer);
+        fs.renameSync(tmp, mediaPath);
+        return mediaPath;
+    })().finally(() => contactStatusDownloads.delete(s.id));
+    contactStatusDownloads.set(s.id, job);
+    return job;
+}
+
+// ─── AJUSTES DE PRIVACIDAD DEL GATEWAY (rigen aunque la ventana esté cerrada) ─
+// keep_deleted_statuses: un estado que el contacto borra queda marcado como eliminado en vez de desaparecer.
+// calls.mode: off | blocklist (rechaza los números de la lista) | unknown (rechaza los que no están en la agenda,
+// salvo los de la lista) | allowlist (solo suenan los de la lista). Rechazar desde acá corta la llamada en todos los
+// dispositivos, como tocar «Rechazar» en el celular.
+const GATEWAY_PREFS_FILE = path.join(USER_DATA_DIR, 'ajustes_gateway.json');
+const CALL_MODES = ['off', 'blocklist', 'unknown', 'allowlist'];
+function normalizeGatewayPrefs(p = {}) {
+    const calls = p.calls || {};
+    return {
+        keep_deleted_statuses: p.keep_deleted_statuses !== false,
+        calls: {
+            mode: CALL_MODES.includes(calls.mode) ? calls.mode : 'off',
+            list: [...new Set((Array.isArray(calls.list) ? calls.list : [])
+                .map(n => String(n || '').replace(/\D/g, '')).filter(n => n.length >= 6))].slice(0, 500)
+        }
+    };
+}
+let gatewayPrefs = normalizeGatewayPrefs();
+try {
+    if (fs.existsSync(GATEWAY_PREFS_FILE)) gatewayPrefs = normalizeGatewayPrefs(JSON.parse(fs.readFileSync(GATEWAY_PREFS_FILE, 'utf-8')));
+} catch (e) {
+    console.error('[Ajustes] No se pudo leer ajustes_gateway.json:', e.message);
+}
+
+function saveGatewayPrefs() {
+    try {
+        const tmp = `${GATEWAY_PREFS_FILE}.tmp`;
+        fs.writeFileSync(tmp, JSON.stringify(gatewayPrefs, null, 2), 'utf-8');
+        fs.renameSync(tmp, GATEWAY_PREFS_FILE);
+    } catch (e) {
+        console.error('[Ajustes] No se pudo guardar ajustes_gateway.json:', e.message);
+    }
+}
+
+// Mismo número aunque uno esté escrito sin código de país: alcanza con que coincidan los últimos 8 dígitos
+function samePhone(a, b) {
+    if (!a || !b) return false;
+    return a === b || (a.length >= 8 && b.length >= 8 && a.slice(-8) === b.slice(-8));
+}
+
+function shouldRejectCall(fromJid, resolved) {
+    const { mode, list } = gatewayPrefs.calls;
+    if (mode === 'off') return false;
+    const phone = resolved.phone || fromJid.split('@')[0].split(':')[0].replace(/\D/g, '');
+    const listed = list.some(n => samePhone(n, phone));
+    if (mode === 'blocklist') return listed;
+    if (mode === 'allowlist') return !listed;
+    // unknown: pasan los que tenés agendados (nombre de la agenda, no el que se puso la persona) y los de la lista
+    const c = contactsStore[phone];
+    return !listed && !(c?.name && !c.nameFromPush);
 }
 
 function pruneContactStatuses() {
@@ -1890,12 +1987,22 @@ function trackContactStatus(msg, live) {
         if (!details) return;
         if (details.mediaType === 'revoked') {
             const rid = details.revokeOf;
-            if (rid && contactStatuses[rid]) {
-                fs.rm(contactStatusMediaPath(contactStatuses[rid]), { force: true }, () => {});
-                const sender = contactStatuses[rid].sender;
+            const s = rid && contactStatuses[rid];
+            if (s && gatewayPrefs.keep_deleted_statuses) {
+                // Anti-borrado: el estado queda marcado como eliminado (y se baja ya, por si el archivo deja de estar)
+                if (!s.deleted) {
+                    s.deleted = true;
+                    s.deleted_at = now;
+                    saveContactStatuses();
+                    if (s.media_raw) ensureContactStatusMedia(s).catch(e => console.error('[Estados] No se pudo guardar el estado eliminado:', e.message));
+                    console.log(`[Estados] 🗑 ${s.name} eliminó un estado (se conserva)`);
+                    postEvent('contact_status', { sender: s.sender, name: s.name, deleted: rid });
+                }
+            } else if (s) {
+                fs.rm(contactStatusMediaPath(s), { force: true }, () => {});
                 delete contactStatuses[rid];
                 saveContactStatuses();
-                postEvent('contact_status', { sender, removed: rid });
+                postEvent('contact_status', { sender: s.sender, removed: rid });
             }
             return;
         }
@@ -1929,7 +2036,8 @@ function trackContactStatus(msg, live) {
             seconds: m.videoMessage?.seconds || m.audioMessage?.seconds || null,
             thumb: media?.jpegThumbnail ? Buffer.from(media.jpegThumbnail).toString('base64') : null,
             media_raw: type === 'text' ? null : serializeMediaRaw(msg, type),
-            seen: Boolean(prev.seen)
+            seen: Boolean(prev.seen),
+            ...(prev.deleted ? { deleted: true, deleted_at: prev.deleted_at } : {})
         };
         fetchAndSaveAvatar(senderJid);
         saveContactStatuses();
@@ -1973,13 +2081,7 @@ app.post('/contact-statuses/media', async (req, res) => {
         const s = contactStatuses[req.body?.id];
         if (!s) return res.status(404).json({ error: 'Ese estado ya no está disponible (pasaron 24 h o lo borró).' });
         if (!s.media_raw) return res.status(404).json({ error: 'Ese estado no tiene archivo' });
-        const mediaPath = contactStatusMediaPath(s);
-        if (!fs.existsSync(mediaPath)) {
-            fs.mkdirSync(path.dirname(mediaPath), { recursive: true });
-            const buffer = await downloadWithReupload(JSON.parse(s.media_raw, BufferJSON.reviver));
-            fs.writeFileSync(mediaPath, buffer);
-        }
-        res.json({ success: true, media_path: mediaPath });
+        res.json({ success: true, media_path: await ensureContactStatusMedia(s) });
     } catch (e) {
         console.error('[Estados] Error bajando estado de contacto:', e.message);
         res.status(502).json({ error: e.message || 'No se pudo descargar' });
@@ -2014,6 +2116,56 @@ app.post('/presence', async (req, res) => {
         await sock.sendPresenceUpdate(desiredPresence).catch(() => {});
     }
     res.json({ success: true, presence: desiredPresence });
+});
+
+// Ajustes que aplica el gateway por su cuenta (filtro de llamadas, conservar estados eliminados)
+app.get('/gateway-prefs', (req, res) => {
+    res.json({ success: true, ...gatewayPrefs });
+});
+
+app.post('/gateway-prefs', (req, res) => {
+    try {
+        const body = req.body || {};
+        gatewayPrefs = normalizeGatewayPrefs({
+            ...gatewayPrefs, ...body,
+            calls: { ...gatewayPrefs.calls, ...(body.calls || {}) }
+        });
+        saveGatewayPrefs();
+        res.json({ success: true, ...gatewayPrefs });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Privacidad de la CUENTA (vale también en el celular): quién ve tu última vez y tu «en línea», y las
+// confirmaciones de lectura. WhatsApp es recíproco: si ocultás la tuya, tampoco ves la de los demás.
+const LAST_SEEN_VALUES = ['all', 'contacts', 'contact_blacklist', 'none'];
+const ONLINE_VALUES = ['all', 'match_last_seen'];
+const READ_RECEIPT_VALUES = ['all', 'none'];
+app.get('/privacy', async (req, res) => {
+    try {
+        if (!sock || connectionStatus !== 'connected') return res.status(503).json({ error: 'WhatsApp no está conectado.' });
+        const p = await sock.fetchPrivacySettings(true);
+        res.json({ success: true, last: p?.last || null, online: p?.online || null, readreceipts: p?.readreceipts || null });
+    } catch (e) {
+        res.status(502).json({ error: e.message || 'No se pudo leer la privacidad' });
+    }
+});
+
+app.post('/privacy', async (req, res) => {
+    try {
+        if (!sock || connectionStatus !== 'connected') return res.status(503).json({ error: 'WhatsApp no está conectado.' });
+        const { last, online, readreceipts } = req.body || {};
+        if (last !== undefined && !LAST_SEEN_VALUES.includes(last)) return res.status(400).json({ error: 'Valor de «última vez» inválido' });
+        if (online !== undefined && !ONLINE_VALUES.includes(online)) return res.status(400).json({ error: 'Valor de «en línea» inválido' });
+        if (readreceipts !== undefined && !READ_RECEIPT_VALUES.includes(readreceipts)) return res.status(400).json({ error: 'Valor de confirmaciones inválido' });
+        if (last !== undefined) await sock.updateLastSeenPrivacy(last);
+        if (online !== undefined) await sock.updateOnlinePrivacy(online);
+        if (readreceipts !== undefined) await sock.updateReadReceiptsPrivacy(readreceipts);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(502).json({ error: e.message || 'No se pudo cambiar la privacidad' });
+    }
 });
 
 // "Escribiendo…" hacia un contacto y suscripción a su "en línea" al abrir su chat

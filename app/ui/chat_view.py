@@ -36,7 +36,8 @@ from app.gateway_manager import GatewayManager
 from app import stickers as stickerlib
 from app.config import (
     get_chat_font_scale, set_chat_font_scale, clamp_font_scale, get_polish_ai, set_polish_ai, load_app_config,
-    get_polish_mode, set_polish_mode, get_polish_profile, set_polish_profile, MEDIA_DIR
+    get_polish_mode, set_polish_mode, get_polish_profile, set_polish_profile, MEDIA_DIR, get_pref,
+    get_quick_reaction
 )
 from app.ai import psych_analysis as pa
 from app.ai import reply_polisher
@@ -1786,7 +1787,7 @@ class ChatViewPanel(QWidget):
             raw_text = (msg.get("text") or "").strip()
             if album:
                 raw_text = "\n".join(t for t in ((m.get("text") or "").strip() for m in album) if t)
-            hora = format_hour(album[-1].get("timestamp", ts) if album else ts)
+            hora = format_hour(album[-1].get("timestamp", ts) if album else ts, seconds=get_pref("time_seconds"))
             media_type = msg.get("media_type", "text")
             media_path = msg.get("media_path")
             quoted_text = msg.get("quoted_text")
@@ -2183,6 +2184,10 @@ class ChatViewPanel(QWidget):
                 self._add_attachments(files)
                 event.acceptProposedAction()
                 return True
+        # Doble clic sobre un mensaje = reacción rápida (no se selecciona la palabra)
+        if obj is self.txt_messages.viewport() and etype == QEvent.MouseButtonDblClick \
+                and event.button() == Qt.LeftButton and self._quick_react_at(event.position().toPoint()):
+            return True
         if obj is self.txt_messages and etype == QEvent.Resize:
             self.btn_bottom.move(self.txt_messages.width() - 54, self.txt_messages.height() - 54)
         elif obj is self.txt_messages.viewport() and event.type() == QEvent.MouseButtonPress                 and event.button() == Qt.LeftButton:
@@ -2200,6 +2205,20 @@ class ChatViewPanel(QWidget):
         mark = "sel_on" if mid in self._selected else "sel_off"
         return (f'<td width="32" valign="middle"><a href="advancedwhatsapp://select/{mid}" style="text-decoration: none;">'
                 f'<img src="icon:{mark}" width="20" height="20"/></a></td>')
+
+    def _quick_react_at(self, vpos) -> bool:
+        """Reacciona con el emoji rápido al mensaje bajo `vpos` (o la saca si ya era esa). True si reaccionó."""
+        if not get_pref("double_click_react") or self._select_mode or not self.current_chat:
+            return False
+        if self.txt_messages.anchorAt(vpos):
+            return False   # links, audios, fotos y botones: el doble clic sigue siendo suyo
+        msg = self._message_at(vpos)
+        if not msg or (msg.get("media_type") or "text") == "revoked" or str(msg.get("id", "")).startswith("call_"):
+            return False
+        emoji = get_quick_reaction()
+        mine = next((e for e, who in get_reactions([msg["id"]]).get(msg["id"], []) if who == "me"), "")
+        self._react(msg, "" if mine == emoji else emoji)
+        return True
 
     def _message_at(self, vpos):
         """Mensaje bajo la posición `vpos` (coordenadas del viewport), o None."""

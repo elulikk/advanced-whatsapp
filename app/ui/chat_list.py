@@ -59,12 +59,12 @@ def resolve_display_name(chat_data: dict) -> str:
     return raw_name
 
 
-def format_hour(ts: int) -> str:
-    """Hora del mensaje al estilo WhatsApp: '2:15 p. m.'."""
+def format_hour(ts: int, seconds: bool = False) -> str:
+    """Hora del mensaje al estilo WhatsApp: '2:15 p. m.' (o '2:15:07 p. m.' con segundos)."""
     if not ts:
         return ""
     try:
-        h = datetime.fromtimestamp(ts).strftime("%I:%M %p").lower()
+        h = datetime.fromtimestamp(ts).strftime("%I:%M:%S %p" if seconds else "%I:%M %p").lower()
     except (OSError, ValueError, OverflowError):
         return ""
     h = h.replace("am", "a. m.").replace("pm", "p. m.")

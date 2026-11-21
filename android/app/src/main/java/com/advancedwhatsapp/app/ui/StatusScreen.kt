@@ -244,7 +244,7 @@ private fun StatusViewer(contacts: List<StatusContact>, startContact: Int, onOpe
                     Avatar(contact.name, contact.avatarPath, 38.dp)
                     Column(Modifier.padding(start = 10.dp).weight(1f)) {
                         Text(contact.name, color = Color.White, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(statusTime(item.timestamp), color = Color(0xCCFFFFFF), fontSize = 12.sp)
+                        Text(statusTime(item.timestamp) + if (item.deleted) "  ·  🗑 Lo eliminó" else "", color = Color(0xCCFFFFFF), fontSize = 12.sp)
                     }
                 }
                 if (item.type == "video" || item.type == "audio") {

@@ -15,7 +15,8 @@ from datetime import datetime
 from PySide6.QtCore import Qt, QTimer, Signal, QObject, QRectF, QUrl, QSize
 from PySide6.QtGui import QPainter, QColor, QPixmap, QFont, QPainterPath, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStackedWidget, QPushButton, QSizePolicy
+    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStackedWidget, QPushButton, QSizePolicy, QFileDialog,
+    QMessageBox
 )
 
 from app.config import get_pref
@@ -145,6 +146,7 @@ class StatusViewerDialog(QDialog):
         self._fetcher = _Fetcher()
         self._fetcher.done.connect(self._on_media)
         self._marked = set()
+        self._media_path = ""   # archivo ya bajado del estado que se está viendo (para «Guardar»)
         self.gateway = GatewayManager.get_instance()
 
         self.setWindowTitle("Estados")
@@ -263,6 +265,13 @@ class StatusViewerDialog(QDialog):
         self.btn_reply.setCursor(Qt.PointingHandCursor)
         self.btn_reply.clicked.connect(self._reply)
         foot.addWidget(self.btn_reply)
+        self.btn_save = QPushButton("  Guardar")
+        self.btn_save.setIcon(icon("download"))
+        self.btn_save.setCursor(Qt.PointingHandCursor)
+        self.btn_save.setToolTip("Guardar la foto, el video o el audio de este estado en la PC")
+        self.btn_save.clicked.connect(self._save)
+        self.btn_save.hide()   # aparece cuando el archivo terminó de bajar
+        foot.addWidget(self.btn_save)
         foot.addStretch()
         root.addLayout(foot)
 
@@ -353,7 +362,10 @@ class StatusViewerDialog(QDialog):
         self.loading = False
         self.duration = IMAGE_SECONDS
         self.lbl_name.setText(contact.get("name") or "Contacto")
-        self.lbl_when.setText(when_label(item.get("timestamp")))
+        when = when_label(item.get("timestamp"))
+        self.lbl_when.setText(f"{when}  ·  🗑 Lo eliminó" if item.get("deleted") else when)
+        self._media_path = ""
+        self.btn_save.hide()
         self.avatar.set_avatar(contact.get("name") or "?", contact.get("avatar_path"))
         self.btn_prev.setEnabled(self.ci > 0 or self.ii > 0)
         caption = (item.get("text") or "").strip() if item.get("type") != "text" else ""
@@ -406,6 +418,8 @@ class StatusViewerDialog(QDialog):
             return
         path = res.get("media_path") or ""
         kind = item.get("type")
+        self._media_path = path if path and os.path.exists(path) else ""
+        self.btn_save.setVisible(bool(self._media_path))
         if kind == "image":
             pm = QPixmap(path)
             if pm.isNull():
@@ -500,6 +514,29 @@ class StatusViewerDialog(QDialog):
                 self.next()
                 return
         self._update_bars()
+
+    def _save(self):
+        """Copia el archivo del estado a donde elija el usuario (por defecto, Descargas)."""
+        contact, item = self._current()
+        src = self._media_path
+        if not item or not src or not os.path.exists(src):
+            return
+        was_paused = self.paused
+        if not was_paused:
+            self.toggle_pause()
+        name = "".join(ch for ch in (contact.get("name") or "contacto") if ch not in '\\/:*?"<>|').strip() or "contacto"
+        stamp = datetime.fromtimestamp(item.get("timestamp") or time.time()).strftime("%Y-%m-%d %H.%M")
+        ext = os.path.splitext(src)[1]
+        default = os.path.join(os.path.expanduser("~"), "Downloads", f"Estado de {name} {stamp}{ext}")
+        dest, _ = QFileDialog.getSaveFileName(self, "Guardar estado", default, f"Archivo (*{ext})")
+        if dest:
+            try:
+                import shutil
+                shutil.copy2(src, dest)
+            except OSError as e:
+                QMessageBox.warning(self, "No se pudo guardar", str(e))
+        if not was_paused:
+            self.toggle_pause()
 
     def _reply(self):
         contact, _ = self._current()
