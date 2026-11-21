@@ -3,19 +3,20 @@
 ## Sin publicar (Android 0.6.1 / PC)
 
 ### Nuevo
-- **Pestaña «Privacidad y llamadas»** (PC, Configuración):
+- **«Privacidad y llamadas»** (PC: pestaña de Configuración; Android: Ajustes › Privacidad y llamadas):
   - **Modo fantasma**: desde la PC no salen tildes azules, ni «escribiendo…», ni «en línea», y los estados que mirás no avisan.
   - **Privacidad de la cuenta**: quién ve tu última vez y tu «en línea», y las tildes azules de toda la cuenta (el mismo
     ajuste del celular, recíproco como en WhatsApp).
   - **Filtro de llamadas**: rechaza solo las llamadas de números no agendados, las de una lista negra o todas menos las de
     una lista blanca. La llamada se corta en todos los dispositivos y queda anotada en el chat. Lo aplica el gateway, así
-    que anda con la ventana cerrada (Android todavía no tiene pantalla para configurarlo).
+    que anda con la ventana cerrada.
   - **Avisos**: cuando alguien elimina un mensaje (con lo que decía) y cuando alguien ve tus estados (juntos en un solo aviso).
+    En Android van sin sonido, en su propio canal «Borrados y vistas de estados».
 - **Estados eliminados** (PC y Android): si un contacto borra un estado, queda en Estados marcado «🗑 Lo eliminó» hasta
   las 24 h (se baja al instante para no perderlo). Se apaga en «Privacidad y llamadas».
-- **Guardar un estado** (PC): botón «Guardar» en el visor para copiar la foto, el video o el audio a la PC.
-- **Reacción con doble clic** (PC): doble clic sobre un mensaje reacciona con el emoji elegido en Apariencia (❤️ por
-  defecto); otro doble clic la saca. **Segundos en la hora** de los mensajes, opcional (Apariencia).
+- **Guardar un estado** (PC y Android): botón «Guardar» en el visor; en el celular va a Descargas/AdvancedWhatsapp.
+- **Reacción con doble clic / doble toque** (PC y Android): reacciona con el emoji elegido (❤️ por defecto; en PC en
+  Apariencia, en Android en Ajustes › Chat); otro doble clic la saca. **Segundos en la hora** de los mensajes, opcional.
 - **Audios en la notificación y en el reloj** (PC y Android): la notificación de una nota de voz espera la transcripción
   automática (hasta 15 s) y muestra lo que dice ("🎤 …"). Cualquier reloj o pulsera que reciba las notificaciones del celular
   (Zepp, Wear OS, Mi Fitness…) lo puede leer. Si tarda más, avisa "Nota de voz" y después actualiza el texto sin volver a sonar.

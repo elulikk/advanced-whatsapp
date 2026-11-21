@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import coil.compose.AsyncImage
+import com.advancedwhatsapp.app.Prefs
 import com.advancedwhatsapp.app.data.Downloads
 import java.io.File
 import java.text.SimpleDateFormat
@@ -95,6 +96,10 @@ fun Avatar(name: String, path: String?, size: Dp = 48.dp) {
 }
 
 fun timeOf(ts: Long): String = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ts * 1000))
+
+/** Hora de una burbuja: con segundos si se activó en Ajustes. */
+fun bubbleTime(ts: Long): String =
+    if (Prefs.timeSeconds) SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(ts * 1000)) else timeOf(ts)
 
 private fun sameDay(a: Calendar, b: Calendar) =
     a.get(Calendar.YEAR) == b.get(Calendar.YEAR) && a.get(Calendar.DAY_OF_YEAR) == b.get(Calendar.DAY_OF_YEAR)

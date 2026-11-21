@@ -49,6 +49,9 @@ class App : Application() {
                 NotificationChannel(CH_CALLS, "Llamadas", NotificationManager.IMPORTANCE_HIGH).apply {
                     description = "Avisa de las llamadas; se atienden en la app oficial"
                 },
+                NotificationChannel(CH_ALERTS, "Borrados y vistas de estados", NotificationManager.IMPORTANCE_LOW).apply {
+                    description = "Cuando alguien elimina un mensaje que te mandó y cuando ven tus estados (sin sonido)"
+                },
             )
         )
     }
@@ -58,6 +61,7 @@ class App : Application() {
         const val CH_MESSAGES = "mensajes"
         const val CH_CALLS = "llamadas"
         const val CH_UPDATES = "actualizaciones"
+        const val CH_ALERTS = "avisos"
         const val GATEWAY_PORT = 5016
         const val WEBHOOK_PORT = 5015
 

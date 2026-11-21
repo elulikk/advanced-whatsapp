@@ -57,6 +57,35 @@ object Prefs {
         get() = p.getBoolean("status_receipts", true)
         set(v) = p.edit().putBoolean("status_receipts", v).apply()
 
+    /** Modo fantasma: sin tildes azules, sin «escribiendo…», sin «en línea» y los estados que mirás no avisan. */
+    var ghostMode: Boolean
+        get() = p.getBoolean("ghost_mode", false)
+        set(v) = p.edit().putBoolean("ghost_mode", v).apply()
+
+    /** Avisar cuando alguien elimina un mensaje que te mandó (con lo que decía, si se conservó). */
+    var notifyDeleted: Boolean
+        get() = p.getBoolean("notify_deleted", true)
+        set(v) = p.edit().putBoolean("notify_deleted", v).apply()
+
+    /** Avisar cuando alguien ve uno de tus estados. */
+    var notifyStatusViews: Boolean
+        get() = p.getBoolean("notify_status_views", false)
+        set(v) = p.edit().putBoolean("notify_status_views", v).apply()
+
+    /** Doble toque sobre un mensaje = reaccionar con [quickReaction]. */
+    var doubleTapReact: Boolean
+        get() = p.getBoolean("double_tap_react", true)
+        set(v) = p.edit().putBoolean("double_tap_react", v).apply()
+
+    var quickReaction: String
+        get() = p.getString("quick_reaction", null)?.ifBlank { null } ?: "❤️"
+        set(v) = p.edit().putString("quick_reaction", v.trim()).apply()
+
+    /** Segundos en la hora de los mensajes. */
+    var timeSeconds: Boolean
+        get() = p.getBoolean("time_seconds", false)
+        set(v) = p.edit().putBoolean("time_seconds", v).apply()
+
     /** Mantener despierto el procesador: los mensajes llegan al instante, a cambio de más batería. */
     var keepCpuAwake: Boolean
         get() = p.getBoolean("keep_cpu", true)

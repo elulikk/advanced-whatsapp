@@ -78,7 +78,7 @@ object Statuses {
     fun markSeen(id: String) {
         GatewayClient.post(
             "/contact-statuses/seen",
-            JSONObject().put("ids", JSONArray(listOf(id))).put("receipt", Prefs.statusReceipts),
+            JSONObject().put("ids", JSONArray(listOf(id))).put("receipt", Prefs.statusReceipts && !Prefs.ghostMode),
         )
     }
 

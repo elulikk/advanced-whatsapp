@@ -122,7 +122,7 @@ object Actions {
     fun markRead(jid: String) {
         val ids = Db.markChatRead(jid)
         com.advancedwhatsapp.app.notify.Notifier.cancel(jid)   // leído: que la notificación (y el globo del ícono) baje
-        if (ids.isEmpty() || !Prefs.readReceipts || Organization.isSilentRead(jid)) return   // lectura invisible: ni global ni por chat
+        if (ids.isEmpty() || !Prefs.readReceipts || Prefs.ghostMode || Organization.isSilentRead(jid)) return   // lectura invisible: global, fantasma o por chat
         // Los leídos se reintentan solos en la siguiente apertura si no hay conexión
         runCatching { GatewayClient.post("/read", JSONObject().put("to", jid).put("messages", JSONArray(ids))) }
     }
@@ -134,6 +134,12 @@ object Actions {
                 .put("participant", m.senderJid).put("emoji", emoji),
         )
         Db.setReaction(m.id, "me", emoji, nowSec(), m.chatJid)
+    }
+
+    /** Doble toque: reacciona con el emoji rápido de Ajustes, o la saca si ya era ese. */
+    fun quickReact(m: Message) {
+        val e = Prefs.quickReaction
+        react(m, if (Db.myReaction(m.id) == e) "" else e)
     }
 
     fun deleteForEveryone(m: Message) {
@@ -156,13 +162,16 @@ object Actions {
         return path
     }
 
+    /** En modo fantasma nunca figura en línea. */
     fun setPresence(available: Boolean) {
-        runCatching { GatewayClient.post("/presence", JSONObject().put("available", available)) }
+        runCatching { GatewayClient.post("/presence", JSONObject().put("available", available && !Prefs.ghostMode)) }
     }
 
     fun chatPresence(jid: String, subscribe: Boolean = false, state: String? = null) {
+        val st = state.takeUnless { Prefs.ghostMode }   // fantasma: sin «escribiendo…» ni «grabando»
+        if (st == null && !subscribe) return
         val body = JSONObject().put("to", jid).put("subscribe", subscribe)
-        if (state != null) body.put("state", state)
+        if (st != null) body.put("state", st)
         runCatching { GatewayClient.post("/chat-presence", body) }
     }
 

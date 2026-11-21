@@ -119,7 +119,10 @@ private fun AppNav(pendingChat: String?, onChatOpened: () -> Unit) {
             ScheduledScreen(e.arguments?.getString("chat"), onBack = { nav.popBackStack() })
         }
         composable("link") { LinkScreen(onBack = { nav.popBackStack() }) }
-        composable("settings") { SettingsScreen(onBack = { nav.popBackStack() }, onExtras = { nav.navigate("extras/home") }) }
+        composable("settings") {
+            SettingsScreen(onBack = { nav.popBackStack() }, onExtras = { nav.navigate("extras/home") }, onPrivacy = { nav.navigate("privacy") })
+        }
+        composable("privacy") { PrivacyScreen(onBack = { nav.popBackStack() }) }
         composable("extras/{section}", arguments = listOf(navArgument("section") { type = NavType.StringType })) { e ->
             ExtrasHost(
                 e.arguments?.getString("section").orEmpty(), onBack = { nav.popBackStack() },

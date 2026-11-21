@@ -151,6 +151,7 @@ class WebhookServer {
             "bulk" -> Extras.bulkDone.value = d
             "presence" -> AppState.updatePresence(d)
             "call" -> Notifier.call(d)
+            "status_view" -> Notifier.statusView(d)
             "contact_status" -> AppState.statusChanged()
             "scheduled" -> {
                 AppState.scheduledChanged()
@@ -181,6 +182,7 @@ class WebhookServer {
         if (existed && d.optBoolean("revoked")) {
             Db.revokeMessage(id)
             Notifier.refresh(chat)
+            Notifier.deleted(d)
             return
         }
         if (existed && d.optBoolean("edited")) {

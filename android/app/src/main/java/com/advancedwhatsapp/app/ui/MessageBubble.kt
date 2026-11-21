@@ -113,6 +113,7 @@ fun MessageBubble(
     translation: String? = null, onTranslate: () -> Unit = {}, onHideTranslation: () -> Unit = {},
     reminder: SmartFeatures.Detected? = null, onReminder: () -> Unit = {},
     onForward: (() -> Unit)? = null,
+    onDoubleTap: (() -> Unit)? = null,
 ) {
     var menu by remember { mutableStateOf(false) }
     var dialog by remember { mutableStateOf("") }   // «original» (mensaje eliminado) o «history» (versiones de una edición)
@@ -131,7 +132,11 @@ fun MessageBubble(
         Column(
             Modifier.widthIn(max = 310.dp)
                 .background(if (bare) Color.Transparent else if (m.fromMe) C.bubbleOut else C.bubbleIn, RoundedCornerShape(10.dp))
-                .combinedClickable(onClick = {}, onLongClick = { menu = true })
+                .combinedClickable(
+                    onClick = {}, onLongClick = { menu = true },
+                    // Doble toque = reacción rápida (solo si está activado: si no, el toque simple no espera)
+                    onDoubleClick = onDoubleTap.takeIf { Prefs.doubleTapReact && !revoked && !m.id.startsWith("call_") },
+                )
                 .padding(horizontal = 9.dp, vertical = 5.dp),
         ) {
             if (showSender && !m.senderName.isNullOrBlank()) {
@@ -199,7 +204,7 @@ fun MessageBubble(
                 }
                 if (m.starredAt > 0) Icon(Icons.Default.Star, "Destacado", tint = C.ember, modifier = Modifier.size(13.dp))
                 if (m.edited) Text("Editado", color = C.text3, fontSize = 11.sp, modifier = Modifier.clickable { dialog = "history" })
-                Text(timeOf(m.timestamp), color = C.text2, fontSize = 11.sp)
+                Text(bubbleTime(m.timestamp), color = C.text2, fontSize = 11.sp)
                 if (m.fromMe && !revoked) StatusTicks(m.status)
             }
             if (summaryOpen || m.summary != null) {
