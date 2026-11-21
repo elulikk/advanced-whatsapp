@@ -20,7 +20,8 @@ import kotlinx.coroutines.launch
 /**
  * Reemplaza las notificaciones de WhatsApp (y WhatsApp Business) por las de Advanced WhatsApp: las borra apenas
  * aparecen, pero solo mientras AW está conectado. Si AW se desconecta, las de WhatsApp quedan y no te perdés nada.
- * No toca llamadas (en curso ni perdidas) ni notificaciones fijas de WhatsApp. Necesita "Acceso a notificaciones".
+ * No toca llamadas (en curso ni perdidas) ni servicios en primer plano de WhatsApp. Las fijas que no se pueden borrar
+ * (reproductor de audios, progreso de envío) se posponen. Necesita "Acceso a notificaciones".
  */
 class WaNotificationSilencer : NotificationListenerService() {
     private var scope: CoroutineScope? = null
@@ -38,12 +39,22 @@ class WaNotificationSilencer : NotificationListenerService() {
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
-        if (shouldHide(sbn)) runCatching { cancelNotification(sbn.key) }.onFailure { Log.w(TAG, "No se pudo borrar: ${it.message}") }
+        if (shouldHide(sbn)) hide(sbn)
     }
 
     private fun sweep() {
         if (!active()) return
-        runCatching { activeNotifications?.filter(::shouldHide)?.forEach { cancelNotification(it.key) } }
+        runCatching { activeNotifications?.filter(::shouldHide)?.forEach(::hide) }
+    }
+
+    /**
+     * Android no deja que un listener borre las notificaciones fijas (ej. el reproductor de audios de WhatsApp Business,
+     * que queda clavado en la pantalla de bloqueo): a esas se las posterga. Cuando vuelven, pasan otra vez por acá.
+     */
+    private fun hide(sbn: StatusBarNotification) {
+        runCatching {
+            if (sbn.isOngoing) snoozeNotification(sbn.key, SNOOZE_MS) else cancelNotification(sbn.key)
+        }.onFailure { Log.w(TAG, "No se pudo ocultar: ${it.message}") }
     }
 
     private fun active() = Prefs.replaceWaNotifications && AppState.connection.value.isConnected
@@ -51,13 +62,14 @@ class WaNotificationSilencer : NotificationListenerService() {
     private fun shouldHide(sbn: StatusBarNotification): Boolean {
         if (sbn.packageName !in WHATSAPP_PACKAGES || !active()) return false
         val n = sbn.notification
-        if (sbn.isOngoing || n.flags and Notification.FLAG_FOREGROUND_SERVICE != 0) return false
+        if (n.flags and Notification.FLAG_FOREGROUND_SERVICE != 0) return false
         if (n.category == Notification.CATEGORY_CALL || n.category == "missed_call") return false   // AW no avisa llamadas
         return true
     }
 
     companion object {
         private const val TAG = "WaSilencer"
+        private const val SNOOZE_MS = 6 * 60 * 60 * 1000L   // al volver se re-evalúa (si AW está desconectado, queda)
         val WHATSAPP_PACKAGES = setOf("com.whatsapp", "com.whatsapp.w4b")
 
         fun hasAccess(ctx: Context): Boolean = NotificationManagerCompat.getEnabledListenerPackages(ctx).contains(ctx.packageName)
