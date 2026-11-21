@@ -1,6 +1,6 @@
 # Changelog
 
-## Sin publicar (Android 0.6.1 / PC)
+## Sin publicar (Android 0.6.3 / PC)
 
 ### Nuevo
 - **«Privacidad y llamadas»** (PC: pestaña de Configuración; Android: Ajustes › Privacidad y llamadas):
