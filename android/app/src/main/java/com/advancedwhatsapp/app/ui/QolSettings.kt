@@ -42,6 +42,7 @@ fun QolSettingsSection() {
     var doubleTap by remember { mutableStateOf(Prefs.doubleTapReact) }
     var quickEmoji by remember { mutableStateOf(Prefs.quickReaction) }
     var seconds by remember { mutableStateOf(Prefs.timeSeconds) }
+    var pattern by remember { mutableStateOf(Prefs.chatPattern) }
     var usage by remember { mutableStateOf<MediaCleanup.Usage?>(null) }
     var days by remember { mutableStateOf(if (Prefs.mediaAutoDays > 0) Prefs.mediaAutoDays.toString() else "") }
     var gb by remember { mutableStateOf(if (Prefs.mediaAutoGb > 0f) Prefs.mediaAutoGb.toString() else "") }
@@ -74,6 +75,7 @@ fun QolSettingsSection() {
             { quickEmoji = it; Prefs.quickReaction = it })
     }
     SwitchRow("Mostrar los segundos en la hora de los mensajes", seconds) { seconds = it; Prefs.timeSeconds = it }
+    SwitchRow("Textura de dibujitos de fondo en los chats", pattern) { pattern = it; Prefs.chatPattern = it }
     OutlinedButton(onClick = { showStats = true }, modifier = Modifier.fillMaxWidth()) { Text("Ver estadísticas de mis chats") }
     Text(
         "Widget: mantené apretado un lugar libre de la pantalla de inicio, elegí «Widgets» y agregá «Sin leer» para ver los chats pendientes.",

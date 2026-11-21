@@ -634,7 +634,7 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
             )
             return@Scaffold
         }
-        Column(Modifier.padding(pad).fillMaxSize().background(C.chatBg)) {
+        Column(Modifier.padding(pad).fillMaxSize().background(C.chatBg).then(if (Prefs.chatPattern) Modifier.chatPattern() else Modifier)) {
             MissedBanner(jid, chat?.name.orEmpty(), chat?.isGroup == true, missedUnread)
             PinBar(
                 pins = remember(messages) { messages.filter { it.pinnedAt > 0 }.sortedByDescending { it.pinnedAt } },

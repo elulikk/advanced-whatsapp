@@ -72,6 +72,11 @@ object Prefs {
         get() = p.getBoolean("notify_status_views", false)
         set(v) = p.edit().putBoolean("notify_status_views", v).apply()
 
+    /** Textura de dibujitos de fondo en los chats (como WhatsApp), activada por defecto. */
+    var chatPattern: Boolean
+        get() = p.getBoolean("chat_pattern", true)
+        set(v) = p.edit().putBoolean("chat_pattern", v).apply()
+
     /** Doble toque sobre un mensaje = reaccionar con [quickReaction]. */
     var doubleTapReact: Boolean
         get() = p.getBoolean("double_tap_react", true)
