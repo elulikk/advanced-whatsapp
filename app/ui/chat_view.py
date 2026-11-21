@@ -53,7 +53,8 @@ from app import link_preview, audio_queue, thumb_cache
 from app.albums import group_albums
 from app.ui.chat_list import AvatarWidget, format_hour, format_day_label, resolve_display_name
 from app.ui.theme import C, HEADER_H, R_MD, R_LG, R_SM
-from app.ui.icons import icon, tool_button, image as icon_image, pixmap as icon_pixmap, flame_pixmap
+from app.ui.icons import icon, tool_button, image as icon_image, pixmap as icon_pixmap
+from app.ui.brand import brand_pixmap
 from app.ui.effects import HoverFade, overlay, menu_below, mix
 from app import tags as tagdb
 from app.ui.tag_widgets import HeaderTagList, tag_id_from_mime
@@ -482,13 +483,10 @@ class ChatViewPanel(QWidget):
         empty_layout.setAlignment(Qt.AlignCenter)
         empty_layout.setSpacing(6)
 
-        icon_lbl = QLabel()
-        icon_lbl.setPixmap(flame_pixmap(72))
-        empty_layout.addWidget(icon_lbl, alignment=Qt.AlignCenter)
-
-        title_lbl = QLabel("Advanced WhatsApp")
-        title_lbl.setStyleSheet(f"font-size: 20px; font-weight: 300; color: {C['text']}; letter-spacing: 1px;")
-        empty_layout.addWidget(title_lbl, alignment=Qt.AlignCenter)
+        brand_lbl = QLabel()   # logo y nombre en una sola pieza (app/ui/brand.py)
+        brand_lbl.setPixmap(brand_pixmap(72))
+        brand_lbl.setContentsMargins(0, 0, 0, 12)
+        empty_layout.addWidget(brand_lbl, alignment=Qt.AlignCenter)
 
         desc_lbl = QLabel("Elige un chat de la lista para empezar.\n"
                           "Ctrl+N nuevo chat  ·  Ctrl+K buscar  ·  Ctrl+F buscar en el chat")

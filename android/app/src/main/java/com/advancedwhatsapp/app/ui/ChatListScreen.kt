@@ -10,6 +10,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -198,13 +200,13 @@ fun ChatListScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        androidx.compose.foundation.Image(
-                            painter = androidx.compose.ui.res.painterResource(com.advancedwhatsapp.app.R.drawable.app_logo),
-                            contentDescription = "Logo", modifier = Modifier.size(30.dp),
-                        )
-                        Text("Advanced WhatsApp", color = C.ember, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(start = 8.dp))
-                    }
+                    // logo y nombre en una sola pieza (la genera tools/generar_iconos.py, igual que en escritorio)
+                    val brand = androidx.compose.ui.res.painterResource(com.advancedwhatsapp.app.R.drawable.app_brand)
+                    androidx.compose.foundation.Image(
+                        painter = brand, contentDescription = "Advanced WhatsApp",
+                        modifier = Modifier.height(32.dp)
+                            .aspectRatio(brand.intrinsicSize.width / brand.intrinsicSize.height),
+                    )
                 },
                 actions = {
                     IconButton(onClick = { searching = !searching; if (!searching) search = "" }) { Icon(Icons.Default.Search, "Buscar") }
