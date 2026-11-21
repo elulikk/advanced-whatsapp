@@ -614,6 +614,7 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
                             summaryOpen = openSummaries[m.id] == true,
                             onSetSummaryOpen = { openSummaries[m.id] = it },
                             onReact = { emoji -> runTask { Actions.react(m, emoji) } },
+                            onDoubleTap = { runTask { Actions.quickReact(m) } },
                             onAutoDownload = { scope.launch(Dispatchers.IO) { runCatching { Actions.downloadMedia(m) } } },
                             onSaveSticker = {
                                 scope.launch(Dispatchers.IO) {

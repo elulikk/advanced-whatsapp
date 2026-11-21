@@ -835,6 +835,12 @@ object Db {
         notifyChange(m.chatJid)
     }
 
+    /** Mi reacción a un mensaje ("" si no reaccioné). */
+    fun myReaction(id: String): String =
+        db.rawQuery("SELECT emoji FROM reactions WHERE message_id = ? AND reactor_jid = 'me'", arrayOf(id)).use { c ->
+            if (c.moveToFirst()) c.getString(0).orEmpty() else ""
+        }
+
     fun setReaction(id: String, reactor: String, emoji: String, ts: Long, chat: String?) {
         if (emoji.isBlank()) {
             db.delete("reactions", "message_id = ? AND reactor_jid = ?", arrayOf(id, reactor))

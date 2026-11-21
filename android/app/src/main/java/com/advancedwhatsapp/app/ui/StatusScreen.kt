@@ -31,6 +31,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -72,6 +73,10 @@ import com.advancedwhatsapp.app.data.StatusContact
 import com.advancedwhatsapp.app.data.StatusItem
 import com.advancedwhatsapp.app.data.Statuses
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
+import com.advancedwhatsapp.app.data.Downloads
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.withContext
@@ -185,6 +190,24 @@ private fun StatusViewer(contacts: List<StatusContact>, startContact: Int, onOpe
     val paused = held || !lifecycleState.isAtLeast(Lifecycle.State.RESUMED)
     val contact = contacts[contactIndex]
     val item = contact.items[itemIndex]
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    /** Copia el archivo del estado a Descargas/AdvancedWhatsapp (ya bajado, o lo baja ahora). */
+    fun save(c: StatusContact, it: StatusItem) {
+        scope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    val f = File(Statuses.media(it.id))
+                    val who = c.name.replace(Regex("[\\\\/:*?\"<>|]"), "_").ifBlank { "contacto" }
+                    val stamp = java.text.SimpleDateFormat("yyyy-MM-dd HH.mm", java.util.Locale.getDefault())
+                        .format(java.util.Date(it.timestamp * 1000))
+                    Downloads.saveCopy(f, "Estado de $who $stamp.${f.extension}")
+                }.getOrDefault(false)
+            }
+            toast(ctx, if (ok) "Guardado en Descargas/AdvancedWhatsapp" else "No se pudo guardar el estado")
+        }
+    }
 
     fun show(newContact: Int, newItem: Int) {
         contactIndex = newContact
@@ -254,6 +277,9 @@ private fun StatusViewer(contacts: List<StatusContact>, startContact: Int, onOpe
                             if (muted) "Activar sonido" else "Silenciar", tint = Color.White,
                         )
                     }
+                }
+                if (item.hasMedia) {
+                    IconButton(onClick = { save(contact, item) }) { Icon(Icons.Default.Download, "Guardar", tint = Color.White) }
                 }
                 IconButton(onClick = onClose) { Icon(Icons.Default.Close, "Cerrar", tint = Color.White) }
             }

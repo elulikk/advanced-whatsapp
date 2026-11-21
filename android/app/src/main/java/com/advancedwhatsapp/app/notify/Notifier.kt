@@ -39,6 +39,8 @@ object Notifier {
     private fun idFor(jid: String) = jid.hashCode() and 0x7fffffff or 0x10000
     const val EXTRA_CHAT = "chat_jid"
     private const val UPDATE_ID = 0x7001
+    private const val STATUS_VIEWS_ID = 0x7002
+    private const val STATUS_VIEW_BATCH_MS = 5_000L
     private const val TRANSCRIPT_WAIT_MS = 15_000L
     private const val TRANSCRIPT_MAX_CHARS = 300
     private val waitingAudio = HashMap<String, String>()   // id del audio -> chat cuyo aviso espera la transcripción
@@ -173,6 +175,75 @@ object Notifier {
                 .setContentText("Abrí Ajustes para ver las novedades y actualizar.")
                 .setContentIntent(PendingIntent.getActivity(
                     ctx, UPDATE_ID, Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
+                .setAutoCancel(true)
+                .build()
+        )
+    }
+
+    /** «Ana eliminó un mensaje: …» con lo que decía (si se conservó). Mismas reglas que un mensaje nuevo. */
+    fun deleted(d: JSONObject) {
+        if (!Prefs.notifications || !Prefs.notifyDeleted || d.optBoolean("from_me")) return
+        if (d.optString("upsert_type").let { it.isNotEmpty() && it != "notify" }) return
+        val jid = d.optString("chat_jid").ifEmpty { return }
+        val ts = d.optLong("timestamp")
+        if (ts > 0 && System.currentTimeMillis() / 1000 - ts > 12 * 3600) return
+        if (AppState.inForeground && AppState.activeChat == jid) return
+        if (jid.endsWith("@g.us") && !Prefs.notifyGroups) return
+        if (ChatLock.isHidden(jid)) return
+        val chat = Db.getChat(jid) ?: return
+        if (chat.isMuted) return
+        val msgId = d.optString("message_id")
+        var body = "🗑 Eliminó un mensaje"
+        if (!ChatLock.isLocked(jid)) {
+            Db.revokedOriginal(msgId)?.let { o ->
+                val preview = Db.preview(o.optString("media_type", "text"), o.optString("text")).trim()
+                if (preview.isNotEmpty()) body += ": «${preview.take(TRANSCRIPT_MAX_CHARS)}»"
+            }
+        }
+        val push = d.optString("push_name").takeUnless { d.isNull("push_name") }.orEmpty()
+        val title = if (chat.isGroup && push.isNotEmpty()) "$push · ${chat.name}" else chat.name
+        nm.notify(
+            idFor("borrado_$msgId"),
+            Notification.Builder(ctx, App.CH_ALERTS)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setColor(ACCENT)
+                .setContentTitle(title)
+                .setContentText(body)
+                .setStyle(Notification.BigTextStyle().bigText(body))
+                .setContentIntent(openChat(jid))
+                .setAutoCancel(true)
+                .build()
+        )
+    }
+
+    private val pendingViews = LinkedHashSet<String>()
+
+    /** «Ana vio tu estado»: las vistas que llegan seguidas se juntan en un solo aviso. */
+    fun statusView(d: JSONObject) {
+        if (!Prefs.notifications || !Prefs.notifyStatusViews || AppState.inForeground) return
+        val name = d.optString("name").ifEmpty { d.optString("phone").takeIf { it.isNotEmpty() }?.let { "+$it" } ?: return }
+        val first = synchronized(pendingViews) { pendingViews.isEmpty().also { pendingViews.add(name) } }
+        if (first) mainHandler.postDelayed({ flushStatusViews() }, STATUS_VIEW_BATCH_MS)
+    }
+
+    private fun flushStatusViews() {
+        val names = synchronized(pendingViews) { pendingViews.toList().also { pendingViews.clear() } }
+        if (names.isEmpty()) return
+        val body = when (names.size) {
+            1 -> "${names[0]} vio tu estado"
+            2 -> "${names[0]} y ${names[1]} vieron tu estado"
+            else -> "${names[0]}, ${names[1]} y ${names.size - 2} más vieron tu estado"
+        }
+        nm.notify(
+            STATUS_VIEWS_ID,
+            Notification.Builder(ctx, App.CH_ALERTS)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setColor(ACCENT)
+                .setContentTitle("Tu estado")
+                .setContentText(body)
+                .setContentIntent(PendingIntent.getActivity(
+                    ctx, STATUS_VIEWS_ID, Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
                     PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
                 .setAutoCancel(true)
                 .build()

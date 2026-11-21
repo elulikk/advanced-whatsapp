@@ -39,6 +39,9 @@ fun QolSettingsSection() {
     var autoplay by remember { mutableStateOf(Prefs.audioAutoplay) }
     var previews by remember { mutableStateOf(Prefs.linkPreviews) }
     var fwdAll by remember { mutableStateOf(Prefs.forwardButtonAll) }
+    var doubleTap by remember { mutableStateOf(Prefs.doubleTapReact) }
+    var quickEmoji by remember { mutableStateOf(Prefs.quickReaction) }
+    var seconds by remember { mutableStateOf(Prefs.timeSeconds) }
     var usage by remember { mutableStateOf<MediaCleanup.Usage?>(null) }
     var days by remember { mutableStateOf(if (Prefs.mediaAutoDays > 0) Prefs.mediaAutoDays.toString() else "") }
     var gb by remember { mutableStateOf(if (Prefs.mediaAutoGb > 0f) Prefs.mediaAutoGb.toString() else "") }
@@ -65,6 +68,12 @@ fun QolSettingsSection() {
     SwitchRow("Botón rápido de reenviar también en los mensajes de texto (siempre está en fotos, videos, audios, archivos y links)", fwdAll) {
         fwdAll = it; Prefs.forwardButtonAll = it
     }
+    SwitchRow("Doble toque sobre un mensaje para reaccionar (otro doble toque la saca)", doubleTap) { doubleTap = it; Prefs.doubleTapReact = it }
+    if (doubleTap) {
+        Selector("Emoji del doble toque", quickEmoji, listOf("❤️", "👍", "😂", "😮", "😢", "🙏", "🔥", "👏"),
+            { quickEmoji = it; Prefs.quickReaction = it })
+    }
+    SwitchRow("Mostrar los segundos en la hora de los mensajes", seconds) { seconds = it; Prefs.timeSeconds = it }
     OutlinedButton(onClick = { showStats = true }, modifier = Modifier.fillMaxWidth()) { Text("Ver estadísticas de mis chats") }
     Text(
         "Widget: mantené apretado un lugar libre de la pantalla de inicio, elegí «Widgets» y agregá «Sin leer» para ver los chats pendientes.",

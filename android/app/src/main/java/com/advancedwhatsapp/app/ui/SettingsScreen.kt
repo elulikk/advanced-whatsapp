@@ -60,7 +60,7 @@ import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(onBack: () -> Unit, onExtras: () -> Unit = {}) {
+fun SettingsScreen(onBack: () -> Unit, onExtras: () -> Unit = {}, onPrivacy: () -> Unit = {}) {
     val c = LocalContext.current
     val scope = rememberCoroutineScope()
     val conn by AppState.connection.collectAsStateWithLifecycle()
@@ -68,8 +68,6 @@ fun SettingsScreen(onBack: () -> Unit, onExtras: () -> Unit = {}) {
     var notifications by remember { mutableStateOf(Prefs.notifications) }
     var notifyGroups by remember { mutableStateOf(Prefs.notifyGroups) }
     var haptics by remember { mutableStateOf(Prefs.haptics) }
-    var receipts by remember { mutableStateOf(Prefs.readReceipts) }
-    var statusReceipts by remember { mutableStateOf(Prefs.statusReceipts) }
     var keepCpu by remember { mutableStateOf(Prefs.keepCpuAwake) }
     var autoTranscribe by remember { mutableStateOf(Prefs.autoTranscribe) }
     var provider by remember { mutableStateOf(Prefs.provider) }
@@ -104,8 +102,13 @@ fun SettingsScreen(onBack: () -> Unit, onExtras: () -> Unit = {}) {
             Toggle("Avisar de mensajes de grupos", notifyGroups) { notifyGroups = it; Prefs.notifyGroups = it }
             Toggle("Vibrar al tocar botones", haptics) { haptics = it; Prefs.haptics = it }
             WhatsAppNotificationsSetting()
-            Toggle("Enviar confirmación de lectura (tildes azules)", receipts) { receipts = it; Prefs.readReceipts = it }
-            Toggle("Al ver un estado, avisar al contacto que lo viste", statusReceipts) { statusReceipts = it; Prefs.statusReceipts = it }
+
+            Section("Privacidad y llamadas")
+            Text(
+                "Modo fantasma, tildes azules, visto de estados, quién ve tu última vez, filtro de llamadas y avisos de mensajes borrados.",
+                color = C.text2, fontSize = 13.sp,
+            )
+            OutlinedButton(onClick = onPrivacy, modifier = Modifier.fillMaxWidth()) { Text("Privacidad y llamadas") }
 
             Section("Mensajería")
             Text(
