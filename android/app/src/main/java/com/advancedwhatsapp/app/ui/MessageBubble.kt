@@ -114,6 +114,10 @@ fun MessageBubble(
     reminder: SmartFeatures.Detected? = null, onReminder: () -> Unit = {},
     onForward: (() -> Unit)? = null,
     onDoubleTap: (() -> Unit)? = null,
+    // Selección múltiple: con algo elegido, tocar cualquier burbuja la suma o la saca
+    selecting: Boolean = false,
+    selected: Boolean = false,
+    onSelect: (() -> Unit)? = null,
 ) {
     var menu by remember { mutableStateOf(false) }
     var dialog by remember { mutableStateOf("") }   // «original» (mensaje eliminado) o «history» (versiones de una edición)
@@ -124,18 +128,22 @@ fun MessageBubble(
     val bare = stickerFile != null && m.quotedText.isNullOrBlank()
 
     // Botón rápido de reenviar al costado, como WhatsApp: en multimedia y links (en textos, si se activó en Ajustes)
-    val quickForward = onForward != null && !revoked &&
+    val quickForward = onForward != null && !revoked && !selecting &&
         (m.mediaType != "text" || Prefs.forwardButtonAll || URL.containsMatchIn(m.text))
-    Box(Modifier.fillMaxWidth(), contentAlignment = if (m.fromMe) Alignment.CenterEnd else Alignment.CenterStart) {
+    Box(
+        Modifier.fillMaxWidth().background(if (selected) C.accent.copy(alpha = 0.22f) else Color.Transparent, RoundedCornerShape(6.dp)),
+        contentAlignment = if (m.fromMe) Alignment.CenterEnd else Alignment.CenterStart,
+    ) {
       Row(verticalAlignment = Alignment.CenterVertically) {
         if (quickForward && m.fromMe) QuickForwardButton { onForward?.invoke() }
         Column(
             Modifier.widthIn(max = 310.dp)
                 .background(if (bare) Color.Transparent else if (m.fromMe) C.bubbleOut else C.bubbleIn, RoundedCornerShape(10.dp))
                 .combinedClickable(
-                    onClick = {}, onLongClick = { menu = true },
+                    onClick = { if (selecting) onSelect?.invoke() },
+                    onLongClick = { if (selecting) onSelect?.invoke() else menu = true },
                     // Doble toque = reacción rápida (solo si está activado: si no, el toque simple no espera)
-                    onDoubleClick = onDoubleTap.takeIf { Prefs.doubleTapReact && !revoked && !m.id.startsWith("call_") },
+                    onDoubleClick = onDoubleTap.takeIf { Prefs.doubleTapReact && !revoked && !selecting && !m.id.startsWith("call_") },
                 )
                 .padding(horizontal = 9.dp, vertical = 5.dp),
         ) {
@@ -214,7 +222,17 @@ fun MessageBubble(
         }
         if (quickForward && !m.fromMe) QuickForwardButton { onForward?.invoke() }
       }
+        // Seleccionando: una capa encima de toda la fila toma los toques (que no se abran fotos ni links)
+        if (selecting && onSelect != null) {
+            Box(Modifier.matchParentSize().clickable(onClick = onSelect))
+        }
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            if (revoked && onSelect != null) {
+                DropdownMenuItem(text = { Text("Seleccionar") }, onClick = {
+                    menu = false
+                    onSelect()
+                })
+            }
             if (!revoked) {
                 Row(Modifier.padding(horizontal = 8.dp)) {
                     QUICK_REACTIONS.forEach { e ->
@@ -228,6 +246,12 @@ fun MessageBubble(
                     menu = false
                     onReply()
                 })
+                if (onSelect != null) {
+                    DropdownMenuItem(text = { Text("Seleccionar") }, onClick = {
+                        menu = false
+                        onSelect()
+                    })
+                }
                 if (onForward != null) {
                     DropdownMenuItem(text = { Text("Reenviar") }, onClick = {
                         menu = false

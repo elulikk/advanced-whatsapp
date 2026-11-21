@@ -42,7 +42,6 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.advancedwhatsapp.app.data.Chat
 import com.advancedwhatsapp.app.data.Db
-import com.advancedwhatsapp.app.data.Message
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -63,7 +62,7 @@ fun QuickForwardButton(onClick: () -> Unit) {
  * (más recientes primero) y se pueden buscar por nombre o número. [onSend] recibe los jids elegidos.
  */
 @Composable
-fun ForwardDialog(message: Message, onDismiss: () -> Unit, onSend: (List<String>) -> Unit) {
+fun ForwardDialog(preview: String, onDismiss: () -> Unit, onSend: (List<String>) -> Unit) {
     var query by remember { mutableStateOf("") }
     var chats by remember { mutableStateOf(emptyList<Chat>()) }
     val picked = remember { mutableStateListOf<Chat>() }
@@ -82,7 +81,7 @@ fun ForwardDialog(message: Message, onDismiss: () -> Unit, onSend: (List<String>
                         Column(Modifier.weight(1f)) {
                             Text("Reenviar a…", color = C.text, fontSize = 18.sp, fontWeight = FontWeight.Medium)
                             Text(
-                                Db.preview(message.mediaType, message.text).ifEmpty { "Mensaje" }, color = C.text3, fontSize = 12.sp,
+                                preview, color = C.text3, fontSize = 12.sp,
                                 maxLines = 1, overflow = TextOverflow.Ellipsis,
                             )
                         }

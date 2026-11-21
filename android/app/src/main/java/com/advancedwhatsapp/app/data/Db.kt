@@ -759,6 +759,26 @@ object Db {
         notifyChange(chat)
     }
 
+    /** «Eliminar para mí»: borra mensajes solo de este celular (en WhatsApp y en los otros dispositivos siguen). */
+    fun deleteMessagesLocal(ids: Collection<String>) {
+        if (ids.isEmpty()) return
+        val chats = ids.mapNotNull { getMessage(it)?.chatJid }.toSet()
+        val d = db
+        d.beginTransaction()
+        try {
+            for (id in ids) {
+                d.delete("reactions", "message_id = ?", arrayOf(id))
+                d.delete("message_edits", "message_id = ?", arrayOf(id))
+                d.delete("messages", "id = ?", arrayOf(id))
+            }
+            refreshPreviews(d, chats)
+            d.setTransactionSuccessful()
+        } finally {
+            d.endTransaction()
+        }
+        chats.forEach { notifyChange(it) }
+    }
+
     fun applyEdit(id: String, text: String) {
         val chat = getMessage(id)?.chatJid ?: return
         recordEdit(db, id, text.trim())

@@ -1,5 +1,13 @@
 # Changelog
 
+## Sin publicar (Android)
+
+### Nuevo
+- **Selección múltiple de mensajes** (Android): tocar y mantener una burbuja → «Seleccionar», y después tocar las demás.
+  Arriba aparecen destacar, copiar (con fecha, hora y quién lo mandó, si son varios), compartir con otras apps (textos y
+  archivos juntos), reenviar a uno o varios chats y eliminar: para mí (solo de este celular) o para todos (si son todos tuyos).
+- Título de la lista de chats como en la PC: blanco, letra fina y en un solo renglón.
+
 ## Sin publicar (Android 0.6.3 / PC)
 
 ### Nuevo

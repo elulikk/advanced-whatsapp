@@ -68,6 +68,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -88,6 +89,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -159,7 +162,11 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
     var messages by remember { mutableStateOf(emptyList<Message>()) }
     var limit by remember { mutableIntStateOf(PAGE) }
     var replyTo by remember { mutableStateOf<Message?>(null) }
-    var forwarding by remember { mutableStateOf<Message?>(null) }
+    var forwarding by remember { mutableStateOf<List<Message>?>(null) }
+    // Selección múltiple: ids elegidos (tocar y mantener → «Seleccionar»); con alguno, la barra de arriba cambia
+    val selectedIds = remember(jid) { mutableStateListOf<String>() }
+    var deleting by remember { mutableStateOf<List<Message>?>(null) }
+    val clipboardManager = LocalClipboardManager.current
     // El borrador guarda también el cursor: los emojis se insertan donde está. `draft` es solo su texto.
     val draftState = remember { mutableStateOf(TextFieldValue("")) }
     val draftText = remember { DraftText(draftState) }
@@ -251,6 +258,7 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
     }
 
     BackHandler(enabled = emojiOpen) { emojiOpen = false }
+    BackHandler(enabled = selectedIds.isNotEmpty() && !emojiOpen) { selectedIds.clear() }
 
     fun chooseScheduleTime() = pickDateTime(context, scheduleAt) { at ->
         if (at > nowSec()) {
@@ -308,6 +316,13 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
         }
     }
     LaunchedEffect(jid, limit) { reload() }
+    // Si un elegido desaparece (eliminado, o la lista se recargó sin él) sale de la selección
+    LaunchedEffect(messages) {
+        if (selectedIds.isNotEmpty()) {
+            val ids = messages.mapTo(HashSet()) { it.id }
+            selectedIds.retainAll { it in ids }
+        }
+    }
     LaunchedEffect(jid) {
         withContext(Dispatchers.IO) { Actions.chatPresence(jid, subscribe = true) }
     }
@@ -513,7 +528,43 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
-            TopAppBar(
+            // En orden de llegada (más viejo primero), como se van a copiar, compartir o reenviar
+            val picked = messages.filter { it.id in selectedIds }.sortedBy { it.timestamp }
+            if (selectedIds.isNotEmpty()) SelectionTopBar(
+                count = selectedIds.size,
+                canCopy = picked.any { it.text.isNotBlank() && it.mediaType != "revoked" },
+                canShare = MessageSelection.canShare(picked),
+                canForward = MessageSelection.forwardable(picked).isNotEmpty(),
+                allStarred = picked.isNotEmpty() && picked.all { it.starredAt > 0 },
+                onClose = { selectedIds.clear() },
+                onCopy = {
+                    clipboardManager.setText(AnnotatedString(MessageSelection.copyText(picked, chat?.name.orEmpty())))
+                    selectedIds.clear()
+                    scope.launch { snackbar.showSnackbar(if (picked.size == 1) "Mensaje copiado." else "Mensajes copiados.") }
+                },
+                onShare = {
+                    selectedIds.clear()
+                    picked.forEach { busyIds.value = busyIds.value + it.id }
+                    runTask {
+                        try {
+                            val intent = MessageSelection.buildShareIntent(context, picked, chat?.name.orEmpty())
+                            withContext(Dispatchers.Main) { context.startActivity(intent) }
+                        } finally {
+                            withContext(Dispatchers.Main) { busyIds.value = busyIds.value - picked.map { it.id }.toSet() }
+                        }
+                    }
+                },
+                onForward = {
+                    forwarding = MessageSelection.forwardable(picked)
+                    selectedIds.clear()
+                },
+                onStar = {
+                    val on = !picked.all { it.starredAt > 0 }
+                    selectedIds.clear()
+                    scope.launch(Dispatchers.IO) { picked.forEach { Db.setStarred(it.id, on) } }
+                },
+                onDelete = { deleting = picked },
+            ) else TopAppBar(
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Volver") } },
                 title = {
                     Row(
@@ -679,7 +730,10 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
                             onHideTranslation = { translations.remove(m.id) },
                             reminder = if (SmartFeatures.dateRemindersOn) SmartFeatures.futureDatetime(m) else null,
                             onReminder = { SmartFeatures.futureDatetime(m)?.let { found -> reminderFor = m to found } },
-                            onForward = if (Actions.canForward(m)) ({ forwarding = m }) else null,
+                            onForward = if (Actions.canForward(m)) ({ forwarding = listOf(m) }) else null,
+                            selecting = selectedIds.isNotEmpty(),
+                            selected = m.id in selectedIds,
+                            onSelect = { if (!selectedIds.remove(m.id)) selectedIds.add(m.id) },
                         )
                     }
                 }
@@ -798,11 +852,12 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
             lockedChat = false
         }, onDismiss = { lockDialog = "" })
     }
-    forwarding?.let { fm ->
-        ForwardDialog(fm, onDismiss = { forwarding = null }, onSend = { targets ->
+    forwarding?.let { list ->
+        ForwardDialog(MessageSelection.forwardPreview(list), onDismiss = { forwarding = null }, onSend = { targets ->
             forwarding = null
-            withBusy(fm.id) {
-                val failed = targets.filter { to -> runCatching { Actions.forward(to, fm) }.isFailure }
+            withBusy(list.first().id) {
+                // Un chat cuenta como fallido si no salió alguno de los mensajes; van en el orden en que llegaron
+                val failed = targets.filter { to -> list.map { fm -> runCatching { Actions.forward(to, fm) }.isSuccess }.any { !it } }
                 val ok = targets.size - failed.size
                 snackbar.showSnackbar(
                     when {
@@ -813,6 +868,26 @@ fun ChatScreen(jid: String, onBack: () -> Unit, onAnalysis: () -> Unit, onSchedu
                 )
             }
         })
+    }
+    deleting?.let { list ->
+        DeleteSelectedDialog(
+            count = list.size, forEveryone = MessageSelection.canDeleteForEveryone(list),
+            onForMe = {
+                deleting = null
+                selectedIds.clear()
+                runTask { Db.deleteMessagesLocal(list.map { it.id }) }
+            },
+            onForEveryone = {
+                deleting = null
+                selectedIds.clear()
+                runTask {
+                    val failed = list.count { m -> runCatching { Actions.deleteForEveryone(m) }.isFailure }
+                    if (failed > 0) throw IllegalStateException(
+                        if (failed == list.size) "No se pudo eliminar. ¿Está conectado WhatsApp?" else "No se pudieron eliminar $failed de ${list.size}.")
+                }
+            },
+            onDismiss = { deleting = null },
+        )
     }
     reminderFor?.let { (rm, found) ->
         ReminderDialog(
