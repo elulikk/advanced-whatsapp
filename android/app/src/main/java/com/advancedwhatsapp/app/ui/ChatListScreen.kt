@@ -203,7 +203,12 @@ fun ChatListScreen(
                             painter = androidx.compose.ui.res.painterResource(com.advancedwhatsapp.app.R.drawable.app_logo),
                             contentDescription = "Logo", modifier = Modifier.size(30.dp),
                         )
-                        Text("Advanced WhatsApp", color = C.ember, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(start = 8.dp))
+                        // Igual que en la PC: blanco, letra fina y espaciada, en un solo renglón
+                        Text(
+                            "Advanced WhatsApp", color = C.text, fontWeight = FontWeight.Light, fontSize = 19.sp,
+                            letterSpacing = 0.5.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(start = 8.dp),
+                        )
                     }
                 },
                 actions = {
