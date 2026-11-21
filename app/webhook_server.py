@@ -29,6 +29,7 @@ class WebhookSignals(QObject):
     poll_changed = Signal(dict)         # encuesta con votos nuevos: {id, chat_jid, name, multi, options: [{name, votes, mine}]}
     bulk_changed = Signal(dict)         # terminó un envío a varios: {id, state, total, sent, failed, targets}
     sync_received = Signal(dict)        # llegó un documento de sincronización del celular (no se guarda como mensaje)
+    status_viewed = Signal(dict)        # alguien vio uno de mis estados: {status_id, name, phone, ts}
 
 
 signals = WebhookSignals()
@@ -174,8 +175,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
             return
 
         elif self.path in ("/api/whatsapp/presence", "/api/whatsapp/call", "/api/whatsapp/contact_status",
-                           "/api/whatsapp/scheduled", "/api/whatsapp/bulk"):
+                           "/api/whatsapp/scheduled", "/api/whatsapp/bulk", "/api/whatsapp/status_view"):
             sig = {"/api/whatsapp/bulk": signals.bulk_changed,
+                   "/api/whatsapp/status_view": signals.status_viewed,
                    "/api/whatsapp/presence": signals.presence_changed,
                    "/api/whatsapp/call": signals.call_event,
                    "/api/whatsapp/contact_status": signals.contact_status,

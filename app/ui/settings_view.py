@@ -16,6 +16,7 @@ from PySide6.QtGui import QDesktopServices
 from app.config import (
     load_app_config, save_app_config, DATA_DIR, DB_PATH, GATEWAY_URL,
     FONT_SCALE_MIN, FONT_SCALE_MAX, get_chat_font_scale, APP_VERSION, get_pref, set_pref,
+    QUICK_REACTIONS, get_quick_reaction, set_quick_reaction,
     GATEWAY_PORT, WEBHOOK_PORT,
 )
 from app import windows_integration, chat_lock
@@ -88,6 +89,7 @@ class SettingsPanel(QWidget):
     locks_cleared = Signal()   # se quitó la contraseña: todos los chats quedaron desbloqueados
     starred_requested = Signal()   # abrir la lista de mensajes destacados
     privacy_changed = Signal()  # cambió algo que afecta la lista de chats (ocultos, archivado automático)
+    chat_display_changed = Signal()   # cambió cómo se dibujan los mensajes (segundos en la hora)
 
     def __init__(self, update_controller=None, parent=None):
         super().__init__(parent)
@@ -141,6 +143,9 @@ class SettingsPanel(QWidget):
         self.tabs.addTab(self.tab_whatsapp, "WhatsApp y conexión")
         self.tab_notify = self._create_notifications_tab()
         self.tabs.addTab(self.tab_notify, "Notificaciones y Windows")
+        from app.ui.privacy_tab import PrivacyTab
+        self.tab_privacy = PrivacyTab(self, self.gateway)
+        self.tabs.addTab(self.tab_privacy, "Privacidad y llamadas")
         from app.ui.extras_dialogs import build_messaging_tab
         self.tab_messaging = build_messaging_tab(self, self.gateway)
         self.tabs.addTab(self.tab_messaging, "Mensajería")
@@ -406,15 +411,8 @@ class SettingsPanel(QWidget):
               "(o Ctrl+Q).")
         layout.addWidget(g2)
 
-        g3 = QGroupBox("Privacidad")
-        l3 = QVBoxLayout(g3)
-        l3.setSpacing(6)
-        check(l3, "status_receipts", "Al ver un estado, avisar al contacto que lo viste",
-              "Igual que en el celular. Si lo desactivás, los estados se marcan como vistos solo en esta PC.")
-        check(l3, "typing_indicator", "Mostrar \"escribiendo…\" a la otra persona mientras escribo")
-        l3.addWidget(self._hint("Advanced WhatsApp figura \"en línea\" solo mientras la ventana está al frente, como WhatsApp "
-                                "Desktop; en segundo plano tu celular sigue recibiendo sus notificaciones."))
-        layout.addWidget(g3)
+        layout.addWidget(self._hint("Modo fantasma, «escribiendo…», visto de estados, filtro de llamadas y avisos de borrados: "
+                                    "pestaña «Privacidad y llamadas»."))
 
         g4 = QGroupBox("Chats bloqueados")
         l4 = QVBoxLayout(g4)
@@ -613,6 +611,35 @@ class SettingsPanel(QWidget):
             "El cambio se aplica al instante y se guarda solo. Dentro de un chat también puedes usar "
             "Ctrl + rueda del mouse, o Ctrl + / Ctrl − / Ctrl 0."))
         layout.addWidget(group)
+
+        group_chat = QGroupBox("Mensajes")
+        cl = QVBoxLayout(group_chat)
+        cl.setSpacing(6)
+        chk_seconds = QCheckBox("Mostrar los segundos en la hora de los mensajes")
+        chk_seconds.setChecked(get_pref("time_seconds"))
+        chk_seconds.toggled.connect(lambda on: (set_pref("time_seconds", on), self.chat_display_changed.emit()))
+        cl.addWidget(chk_seconds)
+        row_r = QHBoxLayout()
+        chk_dbl = QCheckBox("Doble clic sobre un mensaje para reaccionar con")
+        chk_dbl.setChecked(get_pref("double_click_react"))
+        chk_dbl.toggled.connect(lambda on: set_pref("double_click_react", on))
+        row_r.addWidget(chk_dbl)
+        self.combo_quick_emoji = QComboBox()
+        self.combo_quick_emoji.setEditable(True)
+        self.combo_quick_emoji.setFixedWidth(70)
+        current = get_quick_reaction()
+        emojis = list(QUICK_REACTIONS)
+        if current not in emojis:
+            emojis.insert(0, current)
+        self.combo_quick_emoji.addItems(emojis)
+        self.combo_quick_emoji.setCurrentText(current)
+        self.combo_quick_emoji.currentTextChanged.connect(lambda t: t.strip() and set_quick_reaction(t.strip()))
+        row_r.addWidget(self.combo_quick_emoji)
+        row_r.addStretch()
+        cl.addLayout(row_r)
+        cl.addWidget(self._hint("Otro doble clic con el mismo emoji saca la reacción. Para elegir cualquier otro emoji, "
+                                "usá la carita junto a la hora del mensaje."))
+        layout.addWidget(group_chat)
 
         group_keys = QGroupBox("Atajos de teclado")
         kl = QGridLayout(group_keys)

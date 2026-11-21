@@ -289,6 +289,8 @@ class MainWindow(QMainWindow):
         self.settings_panel.privacy_changed.connect(lambda: self.chat_list_panel.reload_chats(select_jid=self._current_jid_open()))
         self.settings_panel.locks_cleared.connect(lambda: self.chat_list_panel.reload_chats(select_jid=self._current_jid_open()))
         self.settings_panel.font_scale_changed.connect(self.chat_view_panel.set_font_scale)
+        self.settings_panel.chat_display_changed.connect(
+            lambda: self.chat_view_panel.refresh_messages(scroll_to_bottom=False))
         self.chat_view_panel.font_scale_changed.connect(self.settings_panel.set_font_scale_silently)
         self.settings_panel.test_notification_requested.connect(self._test_notification)
         self.settings_panel.starred_requested.connect(self.chat_view_panel.open_starred)
@@ -323,6 +325,7 @@ class MainWindow(QMainWindow):
         signals.reaction_changed.connect(self._on_reaction_changed)
         signals.presence_changed.connect(self.chat_view_panel.on_presence)
         signals.call_event.connect(self.notifications.on_call)
+        signals.status_viewed.connect(self.notifications.on_status_view)
         signals.call_event.connect(self._on_call_event)
         signals.contact_status.connect(self.status_panel.on_contact_status)
         signals.app_activate.connect(self.handle_uri)

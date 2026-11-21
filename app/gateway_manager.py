@@ -11,7 +11,7 @@ from typing import Optional, Dict, Any
 from app.config import (
     FROZEN, RUNTIME_DIR, GATEWAY_DIR, DATA_DIR, AUTH_DIR, MEDIA_DIR,
     GATEWAY_PORT, GATEWAY_URL, WEBHOOK_URL, CONNECTION_WEBHOOK_URL,
-    TOKEN_HEADER, get_gateway_token
+    TOKEN_HEADER, get_gateway_token, get_pref
 )
 
 _http = requests.Session()
@@ -443,8 +443,8 @@ class GatewayManager:
         if not chat_jid or not ids:
             return
         from app.organization import is_silent_read
-        if is_silent_read(chat_jid):
-            return   # lectura invisible en este chat: nunca se mandan tildes azules
+        if is_silent_read(chat_jid) or get_pref("ghost_mode"):
+            return   # lectura invisible en este chat (o modo fantasma): nunca se mandan tildes azules
 
         def _run():
             for start in range(0, len(ids), 100):
@@ -636,19 +636,44 @@ class GatewayManager:
         return self._json_call("POST", "contact-statuses/media", {"id": item_id}, timeout=90)
 
     def mark_contact_statuses_seen(self, ids, receipt: bool = True) -> Dict[str, Any]:
-        return self._json_call("POST", "contact-statuses/seen", {"ids": list(ids), "receipt": bool(receipt)}, timeout=15)
+        receipt = bool(receipt) and not get_pref("ghost_mode")
+        return self._json_call("POST", "contact-statuses/seen", {"ids": list(ids), "receipt": receipt}, timeout=15)
+
+    # ── Ajustes que aplica el gateway solo (filtro de llamadas, conservar estados eliminados) ──
+
+    def get_gateway_prefs(self) -> Dict[str, Any]:
+        """{success, keep_deleted_statuses, calls: {mode: off|blocklist|unknown|allowlist, list: [números]}}."""
+        return self._json_call("GET", "gateway-prefs", timeout=5)
+
+    def set_gateway_prefs(self, prefs: Dict[str, Any]) -> Dict[str, Any]:
+        return self._json_call("POST", "gateway-prefs", prefs, timeout=5)
+
+    # ── Privacidad de la cuenta (se aplica también en el celular) ──
+
+    def get_privacy(self) -> Dict[str, Any]:
+        """{success, last: all|contacts|contact_blacklist|none, online: all|match_last_seen, readreceipts: all|none}."""
+        return self._json_call("GET", "privacy", timeout=20)
+
+    def set_privacy(self, **values) -> Dict[str, Any]:
+        return self._json_call("POST", "privacy", values, timeout=20)
 
     # ── Presencia ──
 
     def set_presence(self, available: bool) -> None:
-        """'En línea' solo mientras la ventana está en primer plano (en segundo plano, sin bloquear la UI)."""
-        threading.Thread(target=self._json_call, args=("POST", "presence", {"available": bool(available)}),
+        """'En línea' solo mientras la ventana está en primer plano (en segundo plano, sin bloquear la UI).
+        En modo fantasma nunca figura en línea."""
+        available = bool(available) and not get_pref("ghost_mode")
+        threading.Thread(target=self._json_call, args=("POST", "presence", {"available": available}),
                          kwargs={"timeout": 5}, daemon=True, name="advancedwhatsapp-presence").start()
 
     def chat_presence(self, to: str, state: Optional[str] = None, subscribe: bool = False) -> None:
-        """'Escribiendo…' hacia un contacto y/o suscripción a su 'en línea'."""
+        """'Escribiendo…' hacia un contacto y/o suscripción a su 'en línea' (en modo fantasma no se manda nada)."""
         if not to:
             return
+        if get_pref("ghost_mode"):
+            state = None
+            if not subscribe:
+                return
         payload: Dict[str, Any] = {"to": to, "subscribe": bool(subscribe)}
         if state:
             payload["state"] = state

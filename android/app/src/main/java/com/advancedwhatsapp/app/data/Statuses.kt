@@ -18,6 +18,7 @@ data class StatusItem(
     val thumb: String?,        // miniatura JPEG en base64
     val hasMedia: Boolean,
     val seen: Boolean,
+    val deleted: Boolean = false,   // el contacto lo eliminó y el gateway lo conservó
 )
 
 data class StatusContact(
@@ -64,6 +65,7 @@ object Statuses {
         thumb = s.text("thumb"),
         hasMedia = s.optBoolean("has_media"),
         seen = s.optBoolean("seen"),
+        deleted = s.optBoolean("deleted"),
     )
 
     /** Baja la foto, el video o el audio y devuelve su ruta local. */
