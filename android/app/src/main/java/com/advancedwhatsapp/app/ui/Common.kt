@@ -8,6 +8,10 @@ import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -65,6 +69,46 @@ object C {
     val link = Color(0xFF53BDEB)
     val danger = Color(0xFFE5534B)
     val warn = Color(0xFFD9A33A)
+}
+
+/**
+ * Botón de acción dentro de una burbuja (Abrir, Descargar, Transcribir…): píldora con fondo, borde e ícono,
+ * para que se lea como botón y no como un link. [primary] lo pinta con el verde de la app.
+ */
+@Composable
+fun BubbleButton(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    primary: Boolean = false,
+    busy: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val shape = androidx.compose.foundation.shape.RoundedCornerShape(50)
+    val fg = when {
+        !enabled -> C.text3
+        primary -> C.onAccent
+        else -> C.text
+    }
+    androidx.compose.foundation.layout.Row(
+        modifier
+            .heightIn(min = 34.dp)
+            .clip(shape)
+            .background(if (primary) C.accent else Color(0x22FFFFFF), shape)
+            .then(if (primary) Modifier else Modifier.border(1.dp, Color(0x33FFFFFF), shape))
+            .clickable(enabled = enabled && !busy, onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(6.dp),
+    ) {
+        if (busy) {
+            androidx.compose.material3.CircularProgressIndicator(Modifier.size(16.dp), color = fg, strokeWidth = 2.dp)
+        } else if (icon != null) {
+            androidx.compose.material3.Icon(icon, null, tint = fg, modifier = Modifier.size(18.dp))
+        }
+        Text(label, color = fg, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+    }
 }
 
 private val colors = darkColorScheme(

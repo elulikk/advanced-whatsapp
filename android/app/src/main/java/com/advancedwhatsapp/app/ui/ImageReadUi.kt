@@ -9,7 +9,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.DocumentScanner
 import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -66,21 +69,22 @@ fun ImageReadBlock(m: Message) {
                     if (text.isEmpty()) continue
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(title.uppercase(), color = C.accent, fontSize = 11.sp, fontWeight = FontWeight.Medium)
-                        Text("Copiar", color = C.link, fontSize = 12.sp, modifier = Modifier.clickable { clipboard.setText(AnnotatedString(text)) })
+                        BubbleButton("Copiar", Icons.Default.ContentCopy) { clipboard.setText(AnnotatedString(text)) }
                     }
                     SelectionContainer { Text(text, color = C.text, fontSize = 14.sp, modifier = Modifier.padding(bottom = 4.dp)) }
                 }
                 if (hasFile) {
-                    Text("Rehacer", color = C.link, fontSize = 12.sp, modifier = Modifier.clickable { ImageReader.readNow(m.id) })
+                    BubbleButton("Rehacer", Icons.Default.Refresh, modifier = Modifier.padding(bottom = 4.dp)) { ImageReader.readNow(m.id) }
                 }
             }
         }
         !hasFile -> Unit   // nunca se baja una foto solo para leerla
         else -> {
             errors[m.id]?.let { Text("No se pudo leer la imagen: $it", color = C.text2, fontSize = 12.sp) }
-            TextButton(onClick = { ImageReader.readNow(m.id) }) {
-                Text(if (errors[m.id] != null) "Reintentar" else "Leer imagen", fontSize = 12.sp)
-            }
+            BubbleButton(
+                if (errors[m.id] != null) "Reintentar" else "Leer imagen", Icons.Default.DocumentScanner,
+                modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
+            ) { ImageReader.readNow(m.id) }
         }
     }
 }

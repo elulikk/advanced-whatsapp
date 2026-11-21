@@ -29,7 +29,11 @@ import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.SaveAlt
+import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Star
@@ -160,9 +164,10 @@ fun MessageBubble(
                     FileRow(Icons.Default.Description, m.text.ifEmpty { "Documento" }, m, busy, onOpenMedia, showCaptionAsName = true)
                     // Archivos que mandaste desde la PC a «Mi número»: guardarlos en Descargas con un toque
                     if (onSaveToDownloads != null && !revoked) {
-                        androidx.compose.material3.TextButton(onClick = onSaveToDownloads, enabled = !busy) {
-                            Text("Guardar en Descargas", color = C.accent, fontSize = 13.sp)
-                        }
+                        BubbleButton(
+                            "Guardar en Descargas", Icons.Default.SaveAlt, enabled = !busy,
+                            modifier = Modifier.padding(top = 2.dp, bottom = 4.dp), onClick = onSaveToDownloads,
+                        )
                     }
                 }
                 "poll" -> PollContent(m)
@@ -178,7 +183,7 @@ fun MessageBubble(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("🚫 Mensaje eliminado", color = C.text2, fontStyle = FontStyle.Italic, fontSize = 14.sp)
                     if (m.hasOriginal) {
-                        Text("  Ver original", color = C.link, fontSize = 13.sp, modifier = Modifier.clickable { dialog = "original" })
+                        BubbleButton("Ver original", Icons.Default.History, modifier = Modifier.padding(start = 8.dp)) { dialog = "original" }
                     }
                 }
             } else if (caption.isNotEmpty()) {
@@ -389,8 +394,7 @@ private fun ImageContent(m: Message, busy: Boolean, onOpen: () -> Unit) {
         ) {
             if (busy) CircularProgressIndicator(Modifier.size(24.dp))
             else {
-                Icon(Icons.Default.Image, null, tint = C.text2)
-                Text("Tocá para descargar", color = C.text2, fontSize = 13.sp, modifier = Modifier.padding(start = 8.dp))
+                BubbleButton("Descargar foto", Icons.Default.Download, primary = true, onClick = onOpen)
             }
         }
     }
@@ -405,10 +409,8 @@ private fun FileRow(icon: androidx.compose.ui.graphics.vector.ImageVector, title
     ) {
         Icon(icon, null, tint = C.text2)
         Text(title, color = C.text, fontSize = 14.sp, maxLines = if (showCaptionAsName) 2 else 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 8.dp).weight(1f))
-        when {
-            busy -> CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-            !have -> Icon(Icons.Default.Download, "Descargar", tint = C.text2)
-        }
+        if (have) BubbleButton("Abrir", Icons.Default.OpenInNew, busy = busy, onClick = onOpen)
+        else BubbleButton("Descargar", Icons.Default.Download, primary = true, busy = busy, onClick = onOpen)
     }
 }
 
@@ -451,7 +453,7 @@ private fun VoiceContent(
     if (t.isNotEmpty()) {
         TranscriptBlock(t, transcriptOpen, onToggleTranscript)
     } else {
-        TextButton(onClick = onTranscribe, enabled = !busy) { Text("Transcribir", fontSize = 12.sp) }
+        BubbleButton("Transcribir", Icons.Default.TextFields, enabled = !busy, modifier = Modifier.padding(top = 2.dp, bottom = 4.dp), onClick = onTranscribe)
     }
 }
 

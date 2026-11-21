@@ -15,125 +15,207 @@ import os
 import struct
 import sys
 
-from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QPointF, Qt
-from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QPainterPath, QPen, QTransform
+from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QPointF, QRectF, Qt
+from PySide6.QtGui import (QColor, QGuiApplication, QImage, QLinearGradient, QPainter, QPainterPath, QPen,
+                           QRadialGradient, QTransform)
 
 ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
 SIZES = (16, 20, 24, 32, 40, 48, 64, 128, 256)
-
-DARK = "#0b1114"
-GREEN = "#25D366"
-FLAME = "#FF6A1A"          # llama naranja
-FLAME_CORE = "#FFC531"     # centro amarillo
-RING_R, RING_W = 84, 11    # aro blanco dentro del globo (lienzo de 256)
-FLAME_SCALE = 1.0          # tamaño de la llama respecto de flame_path
-CORE_SCALE = 0.5           # la llamita amarilla: la llama achicada desde la base
 ANDROID_RES = os.path.join(os.path.dirname(ASSETS), "android", "app", "src", "main", "res")
 
+DARK = "#0b1114"
+# Geometría en un lienzo de 256 px: globo, aro blanco y disco interior comparten el centro
+CX, CY, BUBBLE_R = 130, 118, 102
+RING_R, RING_W = 80, 13
+DISC_R = RING_R - RING_W / 2
 
-def flame_path(s: float) -> QPainterPath:
-    """Llama (coordenadas de un lienzo de 256 px, escaladas por s)."""
+
+def _path(pts) -> QPainterPath:
+    """Camino cerrado: punto inicial y luego tríos de control de curvas cúbicas."""
     f = QPainterPath()
-    f.moveTo(128 * s, 62 * s)
-    f.cubicTo(138 * s, 88 * s, 168 * s, 100 * s, 168 * s, 134 * s)
-    f.cubicTo(168 * s, 158 * s, 150 * s, 176 * s, 128 * s, 176 * s)
-    f.cubicTo(106 * s, 176 * s, 88 * s, 158 * s, 88 * s, 134 * s)
-    f.cubicTo(88 * s, 116 * s, 98 * s, 104 * s, 108 * s, 96 * s)
-    f.cubicTo(108 * s, 108 * s, 116 * s, 114 * s, 120 * s, 114 * s)
-    f.cubicTo(114 * s, 96 * s, 118 * s, 78 * s, 128 * s, 62 * s)
+    f.moveTo(*pts[0])
+    for c in pts[1:]:
+        f.cubicTo(*(v for xy in c for v in xy))
     f.closeSubpath()
     return f
 
 
-def bubble_path(s: float) -> QPainterPath:
-    """Globo de chat redondo con la colita abajo a la izquierda (lienzo de 256 px escalado por s)."""
+def bubble_path() -> QPainterPath:
+    """Globo de chat redondo con la colita abajo a la izquierda, con la unión suavizada."""
     bubble = QPainterPath()
-    bubble.addEllipse(QPointF(128 * s, 122 * s), 104 * s, 104 * s)
+    bubble.addEllipse(QPointF(CX, CY), BUBBLE_R, BUBBLE_R)
     tail = QPainterPath()
-    tail.moveTo(56 * s, 180 * s)
-    tail.lineTo(22 * s, 240 * s)
-    tail.lineTo(96 * s, 216 * s)
+    tail.moveTo(52, 168)
+    tail.cubicTo(46, 196, 36, 216, 24, 236)          # borde izquierdo de la cola, apenas curvo
+    tail.cubicTo(50, 232, 76, 222, 100, 210)         # borde de abajo, vuelve al globo
     tail.closeSubpath()
     return bubble.united(tail)
 
 
-def flame_transform(s: float) -> QTransform:
-    """Lleva la llama de flame_path al centro del globo, al tamaño FLAME_SCALE."""
+def flame_path() -> QPainterPath:
+    """Llama: punta central apenas inclinada y dos lengüetas laterales con escotes redondeados."""
+    return _path([(131, 56),
+                  [(137, 78), (150, 92), (149, 116)],     # baja por la derecha de la punta
+                  [(149, 123), (158, 114), (166, 97)],    # escote y lengüeta derecha
+                  [(176, 113), (180, 130), (180, 148)],
+                  [(180, 173), (157, 192), (128, 192)],   # panza
+                  [(99, 192), (76, 173), (76, 148)],
+                  [(76, 129), (81, 112), (91, 97)],       # lengüeta izquierda
+                  [(99, 114), (108, 123), (108, 116)],    # escote izquierdo
+                  [(108, 90), (121, 78), (131, 56)]])
+
+
+def core_path() -> QPainterPath:
+    """Corazón amarillo de la llama, apoyado en la base."""
+    return _path([(129, 120),
+                  [(134, 138), (153, 148), (153, 166)],
+                  [(153, 180), (142, 188), (128, 188)],
+                  [(114, 188), (103, 180), (103, 166)],
+                  [(103, 155), (109, 147), (115, 141)],
+                  [(116, 150), (120, 154), (123, 154)],
+                  [(120, 143), (122, 132), (129, 120)]])
+
+
+def _color(c) -> QColor:
+    return QColor(c) if isinstance(c, str) else QColor(*c)
+
+
+def _grad(x0, y0, x1, y1, *stops) -> QLinearGradient:
+    g = QLinearGradient(x0, y0, x1, y1)
+    for pos, color in stops:
+        g.setColorAt(pos, _color(color))
+    return g
+
+
+def _radial(cx, cy, r, *stops) -> QRadialGradient:
+    g = QRadialGradient(cx, cy, r)
+    for pos, color in stops:
+        g.setColorAt(pos, _color(color))
+    return g
+
+
+def _inner_stroke(p: QPainter, path: QPainterPath, color, width: float) -> None:
+    """Borde por dentro de la figura (no la agranda ni la empasta como un contorno común)."""
+    p.save()
+    p.setClipPath(path)
+    p.setBrush(Qt.NoBrush)
+    p.setPen(QPen(_color(color), width * 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.drawPath(path)
+    p.restore()
+
+
+def _placed(path: QPainterPath, k: float, dx: float, dy: float) -> QPainterPath:
+    """Escala la figura k veces desde la base de la llama (128, 192) y la corre (dx, dy)."""
     t = QTransform()
-    t.translate(128 * s, 124 * s)
-    t.scale(FLAME_SCALE, FLAME_SCALE)
-    t.translate(-128 * s, -119 * s)
-    return t
+    t.translate(128 + dx, 192 + dy)
+    t.scale(k, k)
+    t.translate(-128, -192)
+    return t.map(path)
+
+
+def _paint(p: QPainter, detail: int) -> None:
+    """Dibuja el ícono en coordenadas de 256 px. detail: 2 = completo (48 px o más), 1 = 24-40 px, 0 = 16-20 px."""
+    bubble = bubble_path()
+    if detail == 2:   # sombra del globo: capas cada vez más anchas y tenues, corridas hacia abajo
+        shadow = QTransform.fromTranslate(0, 4).map(bubble)
+        p.setBrush(Qt.NoBrush)
+        for i in range(5, 0, -1):
+            p.setPen(QPen(QColor(0, 45, 20, 6), i * 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            p.drawPath(shadow)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(0, 45, 20, 22))
+        p.drawPath(shadow)
+    # cuerpo del globo
+    p.setPen(Qt.NoPen)
+    p.setBrush(_grad(60, 20, 190, 236, (0, "#5ce793"), (0.55, "#2cc463"), (1, "#14974a")))
+    p.drawPath(bubble)
+    _inner_stroke(p, bubble, (8, 105, 50, 150 if detail == 2 else 200), 3.5 if detail == 2 else 7)
+    if detail == 2:   # luz de borde arriba a la izquierda
+        p.save()
+        p.setClipPath(bubble)
+        p.setPen(QPen(QColor(255, 255, 255, 120), 3, Qt.SolidLine, Qt.RoundCap))
+        r = BUBBLE_R - 6
+        p.drawArc(QRectF(CX - r, CY - r, 2 * r, 2 * r), 100 * 16, 62 * 16)
+        p.restore()
+
+    if detail >= 1:
+        disc = QPainterPath()
+        disc.addEllipse(QPointF(CX, CY), DISC_R, DISC_R)
+        ring = QPainterPath()
+        ring.addEllipse(QPointF(CX, CY), RING_R + RING_W / 2, RING_R + RING_W / 2)
+        ring = ring.subtracted(disc)
+        p.setPen(Qt.NoPen)
+        if detail == 2:   # sombra del aro sobre el globo
+            p.setBrush(QColor(0, 60, 25, 45))
+            p.drawPath(QTransform.fromTranslate(0, 3).map(ring))
+        p.setBrush(_grad(0, CY - RING_R, 0, CY + RING_R, (0, "#ffffff"), (1, "#dcefe4")))
+        p.drawPath(ring)
+        if detail == 2:
+            _inner_stroke(p, ring, (120, 170, 140, 90), 1.2)
+        # disco interior con algo de profundidad
+        p.setBrush(_radial(CX - 14, CY - 30, DISC_R * 1.45, (0, "#4fe08b"), (0.6, "#28bb5f"), (1, "#178f47")))
+        p.drawPath(disc)
+        if detail == 2:
+            p.save()   # sombra interna arriba: el disco queda hundido respecto del aro
+            p.setClipPath(disc)
+            hole = QPainterPath()
+            hole.addRect(QRectF(0, 0, 256, 256))
+            inner = QPainterPath()
+            inner.addEllipse(QPointF(CX, CY + 5), DISC_R, DISC_R)
+            p.setBrush(QColor(0, 50, 20, 60))
+            p.drawPath(hole.subtracted(inner))
+            # resplandor cálido detrás de la llama
+            p.setBrush(_radial(CX - 2, CY + 26, 62, (0, (255, 214, 90, 120)), (1, (255, 214, 90, 0))))
+            p.drawPath(disc)
+            p.restore()
+
+    # llama: en los tamaños chicos más grande, para que se lea
+    k, dy = {2: (0.93, -4), 1: (1.04, -4), 0: (1.22, -4)}[detail]
+    flame = _placed(flame_path(), k, CX - 2 - 128, dy)
+    fb = flame.boundingRect()
+    p.setPen(Qt.NoPen)
+    p.setBrush(_grad(0, fb.top(), 0, fb.bottom(), (0, "#ffb53d"), (0.5, "#ff7a1f"), (1, "#e2400c")))
+    p.drawPath(flame)
+    _inner_stroke(p, flame, (190, 50, 8, 200 if detail == 2 else 235), 3 if detail == 2 else 6)
+    core = _placed(core_path(), k, CX - 2 - 128, dy)
+    cb = core.boundingRect()
+    p.setBrush(_grad(0, cb.top(), 0, cb.bottom(), (0, "#fff7c8"), (0.45, "#ffe066"), (1, "#ffb42a")))
+    p.drawPath(core)
+    if detail == 2:
+        _inner_stroke(p, core, (240, 140, 20, 150), 1.6)
+        # reflejo en el flanco izquierdo de la llama
+        hl = QPainterPath()
+        hl.moveTo(fb.left() + fb.width() * 0.12, fb.top() + fb.height() * 0.5)
+        hl.cubicTo(fb.left() + fb.width() * 0.1, fb.top() + fb.height() * 0.64,
+                   fb.left() + fb.width() * 0.14, fb.top() + fb.height() * 0.74,
+                   fb.left() + fb.width() * 0.2, fb.top() + fb.height() * 0.8)
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(QColor(255, 240, 210, 130), 3.2, Qt.SolidLine, Qt.RoundCap))
+        p.drawPath(hl)
 
 
 def draw_icon(size: int, background: str = None) -> QImage:
-    """Globo verde estilo WhatsApp con aro blanco y la llama naranja con centro amarillo (opción «Brasa»)."""
-    img = QImage(size, size, QImage.Format_ARGB32)
-    img.fill(QColor(background) if background else Qt.transparent)
+    """Globo verde estilo WhatsApp con aro blanco y llama naranja con corazón amarillo (opción «Brasa»).
+    Se dibuja a 4x (mínimo 512 px) y se achica con suavizado; en los tamaños chicos se simplifica el diseño."""
+    detail = 2 if size >= 48 else (1 if size >= 24 else 0)
+    big = max(512, size * 4)
+    img = QImage(big, big, QImage.Format_ARGB32_Premultiplied)
+    img.fill(Qt.transparent)
     p = QPainter(img)
     p.setRenderHint(QPainter.Antialiasing)
-    s = size / 256.0
-    p.setPen(Qt.NoPen)
-    p.setBrush(QColor(GREEN))
-    p.drawPath(bubble_path(s))
-    if size >= 24:   # en 16/20 px el aro se empasta: queda solo la llama
-        p.setPen(QPen(QColor("#ffffff"), RING_W * s))
-        p.setBrush(Qt.NoBrush)
-        p.drawEllipse(QPointF(128 * s, 122 * s), RING_R * s, RING_R * s)
-        p.setPen(Qt.NoPen)
-    flame = flame_transform(s).map(flame_path(s))
-    p.setBrush(QColor(FLAME))
-    p.drawPath(flame)
-    if size >= 24:
-        core = QTransform()
-        base = flame.boundingRect()
-        core.translate(base.center().x(), base.bottom())
-        core.scale(CORE_SCALE, CORE_SCALE)
-        core.translate(-base.center().x(), -base.bottom())
-        p.setBrush(QColor(FLAME_CORE))
-        p.drawPath(core.map(flame))
+    p.scale(big / 256, big / 256)
+    _paint(p, detail)
     p.end()
-    return img
+    out = img.scaled(size, size, Qt.IgnoreAspectRatio, Qt.SmoothTransformation).convertToFormat(QImage.Format_ARGB32)
+    if background:
+        base = QImage(size, size, QImage.Format_ARGB32)
+        base.fill(QColor(background))
+        bp = QPainter(base)
+        bp.drawImage(0, 0, out)
+        bp.end()
+        out = base
+    return out
 
-# Puntos de la llama (lienzo de 256 px) en el orden de flame_path: inicio y luego tríos de control de cada curva
-FLAME_PTS = [(128, 62), [(138, 88), (168, 100), (168, 134)], [(168, 158), (150, 176), (128, 176)],
-             [(106, 176), (88, 158), (88, 134)], [(88, 116), (98, 104), (108, 96)], [(108, 108), (116, 114), (120, 114)],
-             [(114, 96), (118, 78), (128, 62)]]
-
-
-def android_foreground_xml() -> str:
-    """Capa de adelante del ícono adaptativo (vector de 108x108 con la zona segura de 66 en el centro)."""
-    k, off = 72 / 256, 18
-
-    def flame_pts(scale_core=False):
-        pts = [FLAME_PTS[0]] + [pt for c in FLAME_PTS[1:] for pt in c]
-        pts = [((x - 128) * FLAME_SCALE + 128, (y - 119) * FLAME_SCALE + 124) for x, y in pts]
-        if scale_core:
-            cx, bottom = (min(x for x, _ in pts) + max(x for x, _ in pts)) / 2, max(y for _, y in pts)
-            pts = [((x - cx) * CORE_SCALE + cx, (y - bottom) * CORE_SCALE + bottom) for x, y in pts]
-        return pts
-
-    def path(pts):
-        f = lambda x, y: f"{off + x * k:.2f},{off + y * k:.2f}"
-        head, rest = pts[0], pts[1:]
-        return f"M{f(*head)}" + "".join("C" + " ".join(f(*pt) for pt in rest[i:i + 3]) for i in range(0, len(rest), 3)) + "z"
-
-    def circle(r):
-        cx, cy, r = off + 128 * k, off + 122 * k, r * k
-        return f"M{cx:.2f},{cy - r:.2f}a{r:.2f},{r:.2f} 0 1,1 0,{2 * r:.2f}a{r:.2f},{r:.2f} 0 1,1 0,{-2 * r:.2f}z"
-
-    tail = "M" + "L".join(f"{off + x * k:.2f},{off + y * k:.2f}" for x, y in ((56, 180), (22, 240), (96, 216))) + "z"
-    return f"""<?xml version="1.0" encoding="utf-8"?>
-<!-- Generado por tools/generar_iconos.py: globo verde con aro blanco y llama naranja (opción «Brasa») -->
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
-    <path android:fillColor="{GREEN}" android:pathData="{circle(104)}" />
-    <path android:fillColor="{GREEN}" android:pathData="{tail}" />
-    <path android:fillColor="#00000000" android:strokeColor="#FFFFFF" android:strokeWidth="{RING_W * k:.2f}" android:pathData="{circle(RING_R)}" />
-    <path android:fillColor="{FLAME}" android:pathData="{path(flame_pts())}" />
-    <path android:fillColor="{FLAME_CORE}" android:pathData="{path(flame_pts(True))}" />
-</vector>
-"""
 
 def png_bytes(img: QImage) -> bytes:
     data = QByteArray()
@@ -176,12 +258,25 @@ def main() -> int:
     images = {size: draw_icon(size) for size in SIZES}
     write_ico(os.path.join(ASSETS, "advancedwhatsapp.ico"), images)
     images[256].save(os.path.join(ASSETS, "advancedwhatsapp.png"), "PNG")
-    # Android: logo de la barra superior (el ícono del launcher es adaptativo, en mipmap-anydpi-v26 + drawable/ic_launcher_*.xml)
+    # Android: logo de la barra superior (el ícono del launcher es adaptativo: mipmap-anydpi-v26/ic_launcher.xml)
     logo_dir = os.path.join(ANDROID_RES, "drawable-nodpi")
     os.makedirs(logo_dir, exist_ok=True)
     draw_icon(192).save(os.path.join(logo_dir, "app_logo.png"), "PNG")
-    with open(os.path.join(ANDROID_RES, "drawable", "ic_launcher_foreground.xml"), "w", encoding="utf-8", newline=chr(10)) as f:
-        f.write(android_foreground_xml())
+    # Android: marca (logo + nombre) de la barra superior, la misma que la app de escritorio; 32 dp de alto a 4x
+    sys.path.insert(0, os.path.dirname(ASSETS))
+    from app.ui.brand import brand_image
+    brand_image(32, 4).save(os.path.join(logo_dir, "app_brand.png"), "PNG")
+    # capa de adelante del ícono adaptativo: PNG de 432 px con el globo ocupando 2/3 (zona segura de 66 sobre 108)
+    fg = QImage(432, 432, QImage.Format_ARGB32)
+    fg.fill(Qt.transparent)
+    fp = QPainter(fg)
+    fp.setRenderHint(QPainter.SmoothPixmapTransform)
+    fp.drawImage(72, 72, draw_icon(288))
+    fp.end()
+    fg.save(os.path.join(logo_dir, "ic_launcher_foreground.png"), "PNG")
+    old_xml = os.path.join(ANDROID_RES, "drawable", "ic_launcher_foreground.xml")
+    if os.path.exists(old_xml):
+        os.remove(old_xml)
     with open(os.path.join(ASSETS, "arrow_down.svg"), "w", encoding="utf-8") as f:
         f.write(ARROW_DOWN_SVG)
     with open(os.path.join(ASSETS, "check.svg"), "w", encoding="utf-8") as f:
